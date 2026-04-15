@@ -81,6 +81,9 @@ struct ArcNavBar: View {
     /// Visible arc region height — use with `+ safeAreaInsets.bottom` for the shell frame.
     /// Sized so the stroked track + caps fit fully inside the navbar.
     static let frameContentHeight: CGFloat = 308
+    /// Distance from the physical screen bottom (excl. safe area) to the home-button peak.
+    /// Use this to position content that should sit just above the active tab indicator.
+    static let homeButtonFromBottom: CGFloat = 86 + 16  // arcRadius + centerBottomInset
 
     @Binding var selectedPage: ShellPage
     @Binding var pageProgress: CGFloat
@@ -123,29 +126,28 @@ struct ArcNavBar: View {
     @State private var isEnlarged  = false
     @State private var lastTickIdx: Int = 1
 
-    /// Bump these to fire `.sensoryFeedback` (works reliably from gestures; UIKit generators often do not).
+    /// Bump these to fire `.sensoryFeedback` (reliable from gestures; works with mic + `allowHapticsAndSystemSoundsDuringRecording`).
     @State private var sensoryTouchDown = 0
     @State private var sensorySelection = 0
     @State private var sensoryRelease = 0
 
     // MARK: - Helpers
 
-    /// Single smooth transition of `pageProgress` so the knob stays on the arc (angle is linear in progress).
+    /// Springy tab transition: fast, with slight overshoot (“terlajak”) then settle on the arc.
     private func animateTabTap(to targetIndex: Int) {
         guard targetIndex >= 0, targetIndex < tabs.count else { return }
 
         let end = CGFloat(targetIndex)
-        let start = pageProgress
-        guard abs(end - start) > 0.001 else { return }
+        guard abs(end - pageProgress) > 0.001 else { return }
 
         sensorySelection += 1
 
-        // Linear time → constant angular speed along the arc. Duration scales with span.
-        let deltaTabs = abs(Double(end - start))
-        let duration = 0.32 + 0.14 * min(deltaTabs, 2)
+        let deltaTabs = abs(Double(end - pageProgress))
+        let response = max(0.22, 0.24 - 0.03 * min(deltaTabs, 2))
 
-        withAnimation(.linear(duration: duration)) {
+        withAnimation(.spring(response: response, dampingFraction: 0.62)) {
             pageProgress = end
+            selectedPage = tabs[targetIndex].page
         }
     }
 
@@ -214,7 +216,6 @@ struct ArcNavBar: View {
                 .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isEnlarged)
                 .gesture(indicatorDragGesture)
             }
-            // Rigid impacts read as a crisp “catch” and “settle” next to the spring animations.
             .sensoryFeedback(.impact(flexibility: .rigid, intensity: 1.2), trigger: sensoryTouchDown)
             .sensoryFeedback(.impact(weight: .heavy, intensity: 0.95), trigger: sensorySelection)
             .sensoryFeedback(.impact(flexibility: .rigid, intensity: 0.85), trigger: sensoryRelease)
@@ -234,7 +235,6 @@ struct ArcNavBar: View {
                     dragStartProgress = pageProgress
                     lastTickIdx       = Int(pageProgress.rounded())
 
-                    // ── Touch-down response (sensoryFeedback on sensoryTouchDown)
                     sensoryTouchDown += 1
 
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
@@ -266,7 +266,6 @@ struct ArcNavBar: View {
                                          Int(pageProgress.rounded())))
                 isDragging = false
 
-                // Release haptic only after a real drag (avoid tap-down + tap-up double haptic).
                 if abs(value.translation.width) > 3 {
                     sensoryRelease += 1
                 }

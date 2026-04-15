@@ -1,6 +1,17 @@
 import SwiftUI
 import PhotosUI
 
+// MARK: - Layout
+
+private enum HeroLayout {
+    /// Clearance needed so content sits just above the arc's home-button peak.
+    static func bottomChromeHeight(safeBottom: CGFloat) -> CGFloat {
+        safeBottom + ArcNavBar.homeButtonFromBottom + 60  // 40pt gap between shutter and home button
+    }
+
+    static let horizontalPadding: CGFloat = 8
+}
+
 // MARK: - Drag direction
 
 private enum DragDir { case up, down, left, right }
@@ -8,6 +19,7 @@ private enum DragDir { case up, down, left, right }
 // MARK: - Hero page
 
 struct HeroPageView: View {
+    var isActive: Bool = false
     @State private var camera = CameraService()
 
     // Shutter gesture state
@@ -30,16 +42,19 @@ struct HeroPageView: View {
             if camera.isAuthorized {
                 GeometryReader { geo in
                     ZStack {
-                        cameraContent
+                        cameraContent(geometry: geo)
                             .offset(y: showFeed ? -geo.size.height : 0)
                             .animation(.spring(response: 0.5, dampingFraction: 0.82), value: showFeed)
 
                         if showFeed {
-                            FriendsFeedView(onClose: { withAnimation { showFeed = false } })
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .bottom),
-                                    removal:   .move(edge: .bottom)
-                                ))
+                            FriendsFeedView(
+                                onClose: { withAnimation { showFeed = false } },
+                                bottomChromeHeight: HeroLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
+                            )
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom),
+                                removal:   .move(edge: .bottom)
+                            ))
                         }
                     }
                 }
@@ -53,45 +68,66 @@ struct HeroPageView: View {
                       matching: .images)
         .task {
             await camera.requestAccess()
-            camera.startSession()
+            // `onChange(of: isActive)` does not run for the initial value, so on first launch
+            // (Hero is the default tab) we must start here after auth succeeds.
+            if isActive && camera.isAuthorized {
+                camera.startSession()
+            }
         }
-        .onDisappear { camera.stopSession() }
+        .onChange(of: isActive) { _, active in
+            if active {
+                if camera.isAuthorized {
+                    camera.startSession()
+                }
+            } else {
+                camera.stopSession()
+            }
+        }
+        .onChange(of: camera.isAuthorized) { _, authorized in
+            if authorized && isActive {
+                camera.startSession()
+            }
+        }
     }
 
     // MARK: - Camera content
 
-    private var cameraContent: some View {
-        VStack(spacing: 32) {
-            viewfinder
+    private func cameraContent(geometry geo: GeometryProxy) -> some View {
+        let bottomChrome = HeroLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
+        let pad = HeroLayout.horizontalPadding
+        let usableW = max(0, geo.size.width - pad * 2)
+        // Layout is bottom-anchored: shutter sits just above navbar, preview sits just above shutter.
+        let shutterH: CGFloat = 100
+        let spacing:  CGFloat = 60
+        let availableH = geo.size.height - geo.safeAreaInsets.top - bottomChrome - shutterH - spacing
+        let side = max(120, min(usableW, availableH))
+
+        return VStack(spacing: spacing) {
+            viewfinder(side: side)
             shutterArea
         }
-        .padding(.top, 60)
-        .padding(.bottom, ArcNavBar.frameContentHeight)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, pad)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .padding(.bottom, bottomChrome)
     }
 
     // MARK: - Viewfinder
 
-    private var viewfinder: some View {
-        GeometryReader { geo in
-            let side = geo.size.width - 36
-            CameraPreviewView(session: camera.session)
-                .frame(width: side, height: side)
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                )
-                // Red border pulse while recording
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(Color.red.opacity(camera.isRecording ? 0.7 : 0), lineWidth: 2)
-                        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
-                                   value: camera.isRecording)
-                )
-                .frame(maxWidth: .infinity)
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .padding(.horizontal, 18)
+    private func viewfinder(side: CGFloat) -> some View {
+        CameraPreviewView(session: camera.session, isRunning: camera.isSessionRunning)
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.red.opacity(camera.isRecording ? 0.7 : 0), lineWidth: 2)
+                    .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
+                               value: camera.isRecording)
+            )
     }
 
     // MARK: - Shutter area (button + directional hints)
@@ -321,6 +357,8 @@ struct HeroPageView: View {
 
 private struct FriendsFeedView: View {
     let onClose: () -> Void
+    /// Matches `HeroLayout.bottomChromeHeight` so post cards sit in the same vertical band as the camera square.
+    var bottomChromeHeight: CGFloat = ArcNavBar.frameContentHeight
 
     @State private var currentIndex = 0
     @State private var dragOffset: CGFloat = 0
@@ -334,62 +372,65 @@ private struct FriendsFeedView: View {
     ]
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             AppTheme.espresso.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                // Top bar
-                HStack {
-                    Button {
-                        onClose()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "camera.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text("Camera")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                        .foregroundColor(AppTheme.cream.opacity(0.7))
-                    }
-                    Spacer()
-                    Text("Friends")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundColor(AppTheme.cream)
-                    Spacer()
-                    Text("\(currentIndex + 1) / \(posts.count)")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(AppTheme.cream.opacity(0.4))
-                        .frame(width: 50, alignment: .trailing)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 60)
-                .padding(.bottom, 20)
-
-                Spacer()
-
-                // Single post card
+            GeometryReader { geo in
+                let topInset = geo.safeAreaInsets.top
                 let post = posts[currentIndex]
-                FeedPostCard(
-                    handle: post.handle,
-                    caption: post.caption,
-                    isStall: post.isStall,
-                    index: currentIndex
-                )
-                .padding(.horizontal, 18)
-                .offset(y: dragOffset)
-
-                Spacer()
-
-                // Swipe hint
-                VStack(spacing: 4) {
-                    Image(systemName: currentIndex < posts.count - 1 ? "chevron.up" : "checkmark")
-                        .font(.system(size: 12, weight: .medium))
-                    Text(currentIndex < posts.count - 1 ? "swipe up for next" : "you're all caught up")
-                        .font(.system(size: 12))
+                VStack(spacing: 0) {
+                    VStack(spacing: 32) {
+                        FeedPostCard(
+                            handle: post.handle,
+                            caption: post.caption,
+                            isStall: post.isStall,
+                            index: currentIndex
+                        )
+                        .padding(.horizontal, HeroLayout.horizontalPadding)
+                        .offset(y: dragOffset)
+                        Color.clear.frame(height: 100)
+                    }
+                    VStack(spacing: 4) {
+                        Image(systemName: currentIndex < posts.count - 1 ? "chevron.up" : "checkmark")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(currentIndex < posts.count - 1 ? "swipe up for next" : "you're all caught up")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundColor(AppTheme.cream.opacity(0.3))
+                    .padding(.bottom, 10)
+                    Spacer(minLength: 0)
                 }
-                .foregroundColor(AppTheme.cream.opacity(0.3))
-                .padding(.bottom, ArcNavBar.frameContentHeight + 8)
+                .padding(.top, topInset + 8)
+                .padding(.bottom, bottomChromeHeight)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
+
+            // Top bar — overlays the same layout so the square post aligns with the camera square band.
+            HStack {
+                Button {
+                    onClose()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("Camera")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundColor(AppTheme.cream.opacity(0.7))
+                }
+                Spacer()
+                Text("Friends")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(AppTheme.cream)
+                Spacer()
+                Text("\(currentIndex + 1) / \(posts.count)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(AppTheme.cream.opacity(0.4))
+                    .frame(width: 50, alignment: .trailing)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 56)
+            .padding(.bottom, 12)
         }
         .gesture(
             DragGesture()

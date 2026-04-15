@@ -7,6 +7,7 @@ struct CafeHunterApp: App {
 
     init() {
         FirebaseApp.configure()
+        AppAudioSession.registerObservers()
     }
 
     var body: some Scene {

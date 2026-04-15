@@ -27,7 +27,7 @@ struct MainShellView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                         .offset(x: (0 - pageProgress) * geo.size.width)
 
-                    HeroPageView()
+                    HeroPageView(isActive: selectedPage == .hero)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .offset(x: (1 - pageProgress) * geo.size.width)
 

@@ -1,12 +1,11 @@
 import AVFoundation
 import SwiftUI
 
-/// A SwiftUI wrapper around AVCaptureVideoPreviewLayer.
-/// Fills its frame with the live camera feed using resizeAspectFill
-/// so there is no letterboxing inside the square viewfinder.
+/// Live camera feed using `AVCaptureVideoPreviewLayer` as a **sublayer** (more reliable than replacing `layerClass`).
 struct CameraPreviewView: UIViewRepresentable {
 
     let session: AVCaptureSession
+    var isRunning: Bool
 
     func makeUIView(context: Context) -> PreviewUIView {
         let view = PreviewUIView()
@@ -16,21 +15,38 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PreviewUIView, context: Context) {
-        // Session reference is stable; nothing to update.
+        _ = isRunning
+        uiView.previewLayer.session = session
+        uiView.previewLayer.videoGravity = .resizeAspectFill
+        uiView.setNeedsLayout()
+        uiView.layoutIfNeeded()
     }
 
-    // MARK: - Backing UIView
-
     final class PreviewUIView: UIView {
-        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
 
-        var previewLayer: AVCaptureVideoPreviewLayer {
-            layer as! AVCaptureVideoPreviewLayer
+        let previewLayer = AVCaptureVideoPreviewLayer()
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            clipsToBounds = true
+            backgroundColor = .black
+            layer.insertSublayer(previewLayer, at: 0)
         }
+
+        required init?(coder: NSCoder) { nil }
 
         override func layoutSubviews() {
             super.layoutSubviews()
-            previewLayer.frame = bounds
+            let r = bounds
+            guard r.width.isFinite, r.height.isFinite, r.width > 1, r.height > 1 else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            previewLayer.frame = r
+            CATransaction.commit()
+            if let connection = previewLayer.connection,
+               connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
         }
     }
 }

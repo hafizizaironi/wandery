@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import UIKit
 
 // MARK: - Filter type
 
@@ -114,7 +115,12 @@ struct MainMapView: View {
                         .shadow(radius: 4)
                 }
             }
-            Button { centerOnUser = true } label: {
+            Button {
+                print("[Haptic] location button tapped")
+                let gen = UIImpactFeedbackGenerator(style: .medium)
+                gen.impactOccurred()
+                centerOnUser = true
+            } label: {
                 Image(systemName: "location.fill")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(AppTheme.cafeAccent)

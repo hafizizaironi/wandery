@@ -8,6 +8,8 @@ final class CameraService: NSObject {
     // MARK: - Observable state
 
     var isAuthorized    = false
+    /// Drives SwiftUI preview refresh after `startRunning()` / `stopRunning()` (session object identity is unchanged).
+    var isSessionRunning = false
     var capturedImage: UIImage?
     var isRecording     = false
     var isLocked        = false          // recording continues without holding
@@ -41,22 +43,41 @@ final class CameraService: NSObject {
 
     func startSession() {
         guard isAuthorized else { return }
-        sessionQueue.async { [weak self] in
-            self?.configureSession()
-            self?.session.startRunning()
+        // Configure `AVAudioSession` on the main queue (see `AppAudioSession`), then start capture.
+        DispatchQueue.main.async { [weak self] in
+            try? AppAudioSession.configureForCameraCapture()
+            self?.sessionQueue.async { [weak self] in
+                guard let self else { return }
+                if self.session.inputs.isEmpty {
+                    self.configureSession()
+                }
+                if !self.session.isRunning {
+                    self.session.startRunning()
+                }
+                let running = self.session.isRunning
+                DispatchQueue.main.async { [weak self] in
+                    self?.isSessionRunning = running
+                }
+            }
         }
     }
 
     func stopSession() {
         sessionQueue.async { [weak self] in
-            guard let self, session.isRunning else { return }
-            session.stopRunning()
+            guard let self else { return }
+            if session.isRunning {
+                session.stopRunning()
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.isSessionRunning = false
+            }
         }
     }
 
     // MARK: - Photo
 
     func capture() {
+        guard session.isRunning else { return }
         let settings = AVCapturePhotoSettings()
         photoOutput.capturePhoto(with: settings, delegate: self)
     }
@@ -64,7 +85,7 @@ final class CameraService: NSObject {
     // MARK: - Video
 
     func startRecording() {
-        guard !isRecording else { return }
+        guard session.isRunning, !isRecording else { return }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".mov")
         movieOutput.maxRecordedDuration = CMTime(seconds: maxDuration,
