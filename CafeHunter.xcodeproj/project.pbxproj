@@ -6,13 +6,35 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		C4795F692F8AE41D002495D1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F682F8AE41D002495D1 /* GoogleSignIn */; };
+		C4795F6B2F8AE41D002495D1 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F6A2F8AE41D002495D1 /* GoogleSignInSwift */; };
+		C4795F712F8AE41D002495D1 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F702F8AE41D002495D1 /* FirebaseAuth */; };
+		C4795F732F8AE41D002495D1 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F722F8AE41D002495D1 /* FirebaseCore */; };
+		C4795F752F8AE41D002495D1 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F742F8AE41D002495D1 /* FirebaseFirestore */; };
+		C4795F772F8AE41D002495D1 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F762F8AE41D002495D1 /* FirebaseStorage */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		C4795F342F8ADCC7002495D1 /* CafeHunter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CafeHunter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		C4795F782F8ADCC8002495D1 /* Exceptions for "CafeHunter" folder in "CafeHunter" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = C4795F332F8ADCC7002495D1 /* CafeHunter */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		C4795F362F8ADCC7002495D1 /* CafeHunter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				C4795F782F8ADCC8002495D1 /* Exceptions for "CafeHunter" folder in "CafeHunter" target */,
+			);
 			path = CafeHunter;
 			sourceTree = "<group>";
 		};
@@ -23,6 +45,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C4795F712F8AE41D002495D1 /* FirebaseAuth in Frameworks */,
+				C4795F732F8AE41D002495D1 /* FirebaseCore in Frameworks */,
+				C4795F752F8AE41D002495D1 /* FirebaseFirestore in Frameworks */,
+				C4795F772F8AE41D002495D1 /* FirebaseStorage in Frameworks */,
+				C4795F692F8AE41D002495D1 /* GoogleSignIn in Frameworks */,
+				C4795F6B2F8AE41D002495D1 /* GoogleSignInSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +93,12 @@
 			);
 			name = CafeHunter;
 			packageProductDependencies = (
+				C4795F702F8AE41D002495D1 /* FirebaseAuth */,
+				C4795F722F8AE41D002495D1 /* FirebaseCore */,
+				C4795F742F8AE41D002495D1 /* FirebaseFirestore */,
+				C4795F762F8AE41D002495D1 /* FirebaseStorage */,
+				C4795F682F8AE41D002495D1 /* GoogleSignIn */,
+				C4795F6A2F8AE41D002495D1 /* GoogleSignInSwift */,
 			);
 			productName = CafeHunter;
 			productReference = C4795F342F8ADCC7002495D1 /* CafeHunter.app */;
@@ -94,6 +128,10 @@
 			);
 			mainGroup = C4795F2B2F8ADCC7002495D1;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				C4795F672F8AE41D002495D1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C4795F352F8ADCC7002495D1 /* Products */;
 			projectDirPath = "";
@@ -251,8 +289,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5GQ3DBXL52;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CafeHunter/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -282,8 +322,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5GQ3DBXL52;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CafeHunter/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -328,6 +370,58 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.12.0;
+			};
+		};
+		C4795F672F8AE41D002495D1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C4795F682F8AE41D002495D1 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4795F672F8AE41D002495D1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		C4795F6A2F8AE41D002495D1 /* GoogleSignInSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4795F672F8AE41D002495D1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignInSwift;
+		};
+		C4795F702F8AE41D002495D1 /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
+		C4795F722F8AE41D002495D1 /* FirebaseCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCore;
+		};
+		C4795F742F8AE41D002495D1 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		C4795F762F8AE41D002495D1 /* FirebaseStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseStorage;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = C4795F2C2F8ADCC7002495D1 /* Project object */;
 }
