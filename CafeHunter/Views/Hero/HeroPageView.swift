@@ -10,6 +10,17 @@ private enum HeroLayout {
     }
 
     static let horizontalPadding: CGFloat = 8
+    static let shutterAreaHeight: CGFloat = 100
+    static let viewfinderShutterSpacing: CGFloat = 60
+
+    /// Same square size as the live camera viewfinder (feed posts use this frame).
+    static func viewfinderSide(in geo: GeometryProxy) -> CGFloat {
+        let bottomChrome = bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
+        let pad = horizontalPadding
+        let usableW = max(0, geo.size.width - pad * 2)
+        let availableH = geo.size.height - geo.safeAreaInsets.top - bottomChrome - shutterAreaHeight - viewfinderShutterSpacing
+        return max(120, min(usableW, availableH))
+    }
 }
 
 // MARK: - Drag direction
@@ -49,7 +60,7 @@ struct HeroPageView: View {
                         if showFeed {
                             FriendsFeedView(
                                 onClose: { withAnimation { showFeed = false } },
-                                bottomChromeHeight: HeroLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
+                                geometry: geo
                             )
                             .transition(.asymmetric(
                                 insertion: .move(edge: .bottom),
@@ -94,20 +105,14 @@ struct HeroPageView: View {
 
     private func cameraContent(geometry geo: GeometryProxy) -> some View {
         let bottomChrome = HeroLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
-        let pad = HeroLayout.horizontalPadding
-        let usableW = max(0, geo.size.width - pad * 2)
-        // Layout is bottom-anchored: shutter sits just above navbar, preview sits just above shutter.
-        let shutterH: CGFloat = 100
-        let spacing:  CGFloat = 60
-        let availableH = geo.size.height - geo.safeAreaInsets.top - bottomChrome - shutterH - spacing
-        let side = max(120, min(usableW, availableH))
+        let side = HeroLayout.viewfinderSide(in: geo)
 
-        return VStack(spacing: spacing) {
+        return VStack(spacing: HeroLayout.viewfinderShutterSpacing) {
             viewfinder(side: side)
             shutterArea
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, pad)
+        .padding(.horizontal, HeroLayout.horizontalPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .padding(.bottom, bottomChrome)
     }
@@ -115,7 +120,8 @@ struct HeroPageView: View {
     // MARK: - Viewfinder
 
     private func viewfinder(side: CGFloat) -> some View {
-        CameraPreviewView(session: camera.session, isRunning: camera.isSessionRunning)
+        CameraPreviewView(session: camera.session, isRunning: camera.isSessionRunning,
+                          lensSwitchToken: camera.lensSwitchToken)
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
@@ -128,6 +134,37 @@ struct HeroPageView: View {
                     .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
                                value: camera.isRecording)
             )
+            .overlay(alignment: .top) {
+                if camera.hasLensToggleForCurrentCamera {
+                    lensToggleButton
+                        .padding(.top, 10)
+                }
+            }
+    }
+
+    /// Rear only: **1** ↔ **0.5** (smooth zoom on supported devices).
+    private var lensToggleButton: some View {
+        Button {
+            camera.toggleLens()
+        } label: {
+            Text(lensToggleLabel)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.black)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(Color.white.opacity(0.92))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(lensAccessibilityLabel)
+    }
+
+    private var lensToggleLabel: String {
+        camera.lensSlot == .wide ? "0.5" : "1"
+    }
+
+    private var lensAccessibilityLabel: String {
+        camera.lensSlot == .wide ? "Half x zoom, tap for one x" : "One x zoom, tap for half x"
     }
 
     // MARK: - Shutter area (button + directional hints)
@@ -357,8 +394,8 @@ struct HeroPageView: View {
 
 private struct FriendsFeedView: View {
     let onClose: () -> Void
-    /// Matches `HeroLayout.bottomChromeHeight` so post cards sit in the same vertical band as the camera square.
-    var bottomChromeHeight: CGFloat = ArcNavBar.frameContentHeight
+    /// Same geometry as the hero camera layer so the feed square matches the viewfinder frame.
+    let geometry: GeometryProxy
 
     @State private var currentIndex = 0
     @State private var dragOffset: CGFloat = 0
@@ -372,40 +409,40 @@ private struct FriendsFeedView: View {
     ]
 
     var body: some View {
-        ZStack(alignment: .top) {
+        let side = HeroLayout.viewfinderSide(in: geometry)
+        let bottomChrome = HeroLayout.bottomChromeHeight(safeBottom: geometry.safeAreaInsets.bottom)
+        let post = posts[currentIndex]
+
+        return ZStack(alignment: .top) {
             AppTheme.espresso.ignoresSafeArea()
 
-            GeometryReader { geo in
-                let topInset = geo.safeAreaInsets.top
-                let post = posts[currentIndex]
-                VStack(spacing: 0) {
-                    VStack(spacing: 32) {
-                        FeedPostCard(
-                            handle: post.handle,
-                            caption: post.caption,
-                            isStall: post.isStall,
-                            index: currentIndex
-                        )
-                        .padding(.horizontal, HeroLayout.horizontalPadding)
-                        .offset(y: dragOffset)
-                        Color.clear.frame(height: 100)
-                    }
-                    VStack(spacing: 4) {
-                        Image(systemName: currentIndex < posts.count - 1 ? "chevron.up" : "checkmark")
-                            .font(.system(size: 12, weight: .medium))
-                        Text(currentIndex < posts.count - 1 ? "swipe up for next" : "you're all caught up")
-                            .font(.system(size: 12))
-                    }
-                    .foregroundColor(AppTheme.cream.opacity(0.3))
-                    .padding(.bottom, 10)
-                    Spacer(minLength: 0)
-                }
-                .padding(.top, topInset + 8)
-                .padding(.bottom, bottomChromeHeight)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
+            // Bottom-anchored stack: same structure as `cameraContent` (square + gap + shutter band).
+            VStack(spacing: HeroLayout.viewfinderShutterSpacing) {
+                FeedPostCard(
+                    handle: post.handle,
+                    caption: post.caption,
+                    isStall: post.isStall,
+                    index: currentIndex
+                )
+                .frame(width: side, height: side)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .offset(y: dragOffset)
 
-            // Top bar — overlays the same layout so the square post aligns with the camera square band.
+                VStack(spacing: 4) {
+                    Image(systemName: currentIndex < posts.count - 1 ? "chevron.up" : "checkmark")
+                        .font(.system(size: 12, weight: .medium))
+                    Text(currentIndex < posts.count - 1 ? "swipe up for next" : "you're all caught up")
+                        .font(.system(size: 12))
+                }
+                .foregroundColor(AppTheme.cream.opacity(0.3))
+                .frame(maxWidth: .infinity)
+                .frame(height: HeroLayout.shutterAreaHeight)
+            }
+            .padding(.horizontal, HeroLayout.horizontalPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, bottomChrome)
+
+            // Top bar — floats above; does not shift the post (matches camera, which has no feed chrome).
             HStack {
                 Button {
                     onClose()
@@ -464,7 +501,7 @@ private struct FeedPostCard: View {
         ZStack(alignment: .bottomLeading) {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .fill(AppTheme.gradient(for: isStall ? .stall : .cafe, index: index))
-                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .stroke(AppTheme.cream.opacity(0.16), lineWidth: 1)

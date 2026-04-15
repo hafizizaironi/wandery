@@ -6,6 +6,14 @@ struct CameraPreviewView: UIViewRepresentable {
 
     let session: AVCaptureSession
     var isRunning: Bool
+    /// Increment before a physical lens swap; triggers a `CATransition` fade to cover the blank frame.
+    var lensSwitchToken: Int = 0
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var lastLensSwitchToken: Int = 0
+    }
 
     func makeUIView(context: Context) -> PreviewUIView {
         let view = PreviewUIView()
@@ -15,6 +23,15 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PreviewUIView, context: Context) {
+        // Apply a crossfade before a physical lens swap to hide the blank frame between inputs.
+        if lensSwitchToken != context.coordinator.lastLensSwitchToken {
+            context.coordinator.lastLensSwitchToken = lensSwitchToken
+            let transition = CATransition()
+            transition.duration = 0.35
+            transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            transition.type = .fade
+            uiView.previewLayer.add(transition, forKey: "lensSwitch")
+        }
         _ = isRunning
         uiView.previewLayer.session = session
         uiView.previewLayer.videoGravity = .resizeAspectFill
