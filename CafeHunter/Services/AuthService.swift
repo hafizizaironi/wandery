@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import FirebaseAuth
+import FirebaseStorage
 import GoogleSignIn
 import UIKit
 
@@ -64,6 +65,30 @@ class AuthService: ObservableObject {
 
     func signOut() throws {
         try Auth.auth().signOut()
+    }
+
+    // MARK: - Profile updates
+
+    func updateDisplayName(_ name: String) async throws {
+        guard let user else { return }
+        let request = user.createProfileChangeRequest()
+        request.displayName = name.trimmingCharacters(in: .whitespaces)
+        try await request.commitChanges()
+        try await user.reload()
+        await MainActor.run { self.user = Auth.auth().currentUser }
+    }
+
+    func updateProfilePhoto(_ image: UIImage) async throws {
+        guard let user,
+              let data = image.jpegData(compressionQuality: 0.75) else { return }
+        let ref = Storage.storage().reference().child("avatars/\(user.uid).jpg")
+        _ = try await ref.putDataAsync(data)
+        let url = try await ref.downloadURL()
+        let request = user.createProfileChangeRequest()
+        request.photoURL = url
+        try await request.commitChanges()
+        try await user.reload()
+        await MainActor.run { self.user = Auth.auth().currentUser }
     }
 }
 

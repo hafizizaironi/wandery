@@ -2,8 +2,9 @@ import FirebaseAuth
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var authService = AuthService()
+    @StateObject private var authService      = AuthService()
     @StateObject private var firestoreService = FirestoreService()
+    @StateObject private var statsService     = UserStatsService()
 
     var body: some View {
         ZStack {
@@ -14,13 +15,30 @@ struct ContentView: View {
             } else if authService.user == nil {
                 LoginView(authService: authService)
             } else {
-                MainShellView(authService: authService, firestoreService: firestoreService)
-                    .onAppear { firestoreService.subscribe() }
-                    .onDisappear { firestoreService.unsubscribe() }
+                MainShellView(
+                    authService:      authService,
+                    firestoreService: firestoreService,
+                    statsService:     statsService
+                )
+                .onAppear  { firestoreService.subscribe() }
+                .onDisappear { firestoreService.unsubscribe() }
             }
         }
         .animation(.easeInOut(duration: 0.35), value: authService.isLoading)
         .animation(.easeInOut(duration: 0.35), value: authService.user?.uid)
+        // Subscribe / unsubscribe stats listener when auth state changes
+        .onChange(of: authService.user?.uid) { _, uid in
+            if let uid {
+                statsService.subscribe(uid: uid)
+            } else {
+                statsService.unsubscribe()
+            }
+        }
+        .onAppear {
+            if let uid = authService.user?.uid {
+                statsService.subscribe(uid: uid)
+            }
+        }
     }
 }
 
