@@ -9,8 +9,9 @@ enum ShellPage: Int, CaseIterable {
 }
 
 struct MainShellView: View {
-    @ObservedObject var authService: AuthService
+    @ObservedObject var authService:      AuthService
     @ObservedObject var firestoreService: FirestoreService
+    @ObservedObject var statsService:     UserStatsService
 
     // Start on the Hero (feed) page — centre of the arc.
     @State private var selectedPage: ShellPage = .hero
@@ -31,7 +32,7 @@ struct MainShellView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                         .offset(x: (1 - pageProgress) * geo.size.width)
 
-                    ProfileHomeView(authService: authService)
+                    ProfileHomeView(authService: authService, statsService: statsService)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .offset(x: (2 - pageProgress) * geo.size.width)
                 }
