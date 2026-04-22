@@ -1,5 +1,5 @@
 {
-  "originHash" : "f26605caa55796c1b4a99e3dbcab289f7c209dffab4b967ad87d3789c478f7ee",
+  "originHash" : "6eff1cd79518e91f61425f6d2da40fcaa259aff6c7a38b08c52aee8ebb2868c9",
   "pins" : [
     {
       "identity" : "abseil-cpp-binary",
@@ -69,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/google/GoogleSignIn-iOS.git",
       "state" : {
-        "revision" : "913b4005ea26aebe1c97d54e35ad82a515924c71",
-        "version" : "9.1.0"
+        "branch" : "main",
+        "revision" : "6ad8c90700ecb28d645c8ff76535732f89c38315"
       }
     },
     {
@@ -125,6 +125,15 @@
       "state" : {
         "revision" : "a0bc79961d7be727d258d33d5a6b2f1023270ba1",
         "version" : "1.22.5"
+      }
+    },
+    {
+      "identity" : "lottie-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/airbnb/lottie-spm.git",
+      "state" : {
+        "revision" : "69faaefa7721fba9e434a52c16adf4329c9084db",
+        "version" : "4.6.0"
       }
     },
     {

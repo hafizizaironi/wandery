@@ -56,14 +56,14 @@ struct ProfileView: View {
                             Text(providerLabel)
                                 .font(.system(size: 10, weight: .semibold))
                                 .tracking(1.5)
-                                .foregroundColor(AppTheme.cafeAccent)
+                                .foregroundColor(AppTheme.textSecondary)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 5)
-                                .background(AppTheme.cafeAccent.opacity(0.12))
+                                .background(AppTheme.surfacePrimary)
                                 .cornerRadius(20)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 20)
-                                        .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
                                 )
                         }
                         .padding(.vertical, 32)
@@ -105,7 +105,7 @@ struct ProfileView: View {
                                 AccountRow(label: "Role") {
                                     Text("★ Admin")
                                         .font(.system(size: 11, weight: .semibold))
-                                        .foregroundColor(AppTheme.cream)
+                                        .foregroundColor(AppTheme.textOnAccent)
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
                                         .background(AppTheme.cafeAccent)
@@ -147,7 +147,7 @@ struct ProfileView: View {
                             .cornerRadius(12)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12)
-                                    .stroke(AppTheme.cafeAccent.opacity(0.1), lineWidth: 1)
+                                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
                             )
                         }
                         .padding(16)
@@ -161,20 +161,20 @@ struct ProfileView: View {
                         } label: {
                             Group {
                                 if isSigningOut {
-                                    ProgressView().tint(AppTheme.cafeAccent)
+                                    ProgressView().tint(AppTheme.textPrimary)
                                 } else {
                                     Text("Sign out")
                                         .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(AppTheme.cafeAccent)
+                                        .foregroundColor(AppTheme.textPrimary)
                                 }
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
-                            .background(AppTheme.cafeAccent.opacity(0.12))
+                            .background(AppTheme.surfacePrimary)
                             .cornerRadius(12)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12)
-                                    .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
                             )
                         }
                         .disabled(isSigningOut)
@@ -186,7 +186,7 @@ struct ProfileView: View {
             .navigationTitle("My Profile")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(AppTheme.espresso, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarColorScheme(.light, for: .navigationBar)
         }
         .presentationBackground(AppTheme.espresso)
     }
@@ -210,19 +210,19 @@ struct ProfileView: View {
     private var initialsAvatar: some View {
         ZStack {
             LinearGradient(
-                colors: [AppTheme.cafeAccent, Color(red: 0.478, green: 0.290, blue: 0.141)],
+                colors: [AppTheme.cafeAccent, AppTheme.cafeAccent.opacity(0.75)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             Text(initials)
                 .font(.system(size: 28, weight: .bold))
-                .foregroundColor(AppTheme.cream)
+                .foregroundColor(AppTheme.textOnAccent)
         }
     }
 
     private var divider: some View {
         Rectangle()
-            .fill(AppTheme.cafeAccent.opacity(0.12))
+            .fill(AppTheme.borderSubtle.opacity(0.5))
             .frame(height: 1)
             .padding(.horizontal, 16)
     }
@@ -250,7 +250,7 @@ struct StatCard: View {
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(AppTheme.cafeAccent.opacity(0.12), lineWidth: 1)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
         )
     }
 }
@@ -275,7 +275,7 @@ struct AccountRow<Trailing: View>: View {
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(AppTheme.cafeAccent.opacity(0.1), lineWidth: 1)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
         )
     }
 }

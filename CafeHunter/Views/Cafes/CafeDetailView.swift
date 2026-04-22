@@ -2,8 +2,6 @@ import SwiftUI
 
 struct CafeDetailSheetContent: View {
     let cafe: Cafe
-    let isAdmin: Bool
-    let onBack: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -28,21 +26,8 @@ struct CafeDetailSheetContent: View {
                         endPoint: .bottom
                     )
 
-                    // Back + type badge
+                    // Type badge (top-right of hero) — back button lives on the sheet header.
                     HStack {
-                        Button(action: onBack) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "chevron.left")
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text("Back")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                            .foregroundColor(AppTheme.cream.opacity(0.85))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(.ultraThinMaterial)
-                            .cornerRadius(20)
-                        }
                         Spacer()
                         Text(cafe.type.label.uppercased())
                             .font(.system(size: 9, weight: .bold))
@@ -64,10 +49,10 @@ struct CafeDetailSheetContent: View {
                         Text("\(cafe.neighborhood.uppercased()) · RAWANG")
                             .font(.system(size: 10, weight: .medium))
                             .tracking(1.5)
-                            .foregroundColor(accent.opacity(0.85))
+                            .foregroundColor(.white.opacity(0.85))
                         Text(cafe.name)
                             .font(.system(size: 22, weight: .bold))
-                            .foregroundColor(AppTheme.cream)
+                            .foregroundColor(.white)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
@@ -99,11 +84,11 @@ struct CafeDetailSheetContent: View {
                             ForEach(cafe.vibeTags, id: \.self) { tag in
                                 Text(tag)
                                     .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(accent)
+                                    .foregroundColor(AppTheme.textSecondary)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 5)
-                                    .background(accent.opacity(0.1))
-                                    .overlay(Capsule().stroke(accent.opacity(0.4), lineWidth: 1))
+                                    .background(AppTheme.textPrimary.opacity(0.04))
+                                    .overlay(Capsule().stroke(AppTheme.borderSubtle, lineWidth: 1))
                                     .clipShape(Capsule())
                             }
                         }
@@ -139,7 +124,7 @@ struct CafeDetailSheetContent: View {
                             sectionLabel("About")
                             Text(cafe.description)
                                 .font(.system(size: 14))
-                                .foregroundColor(AppTheme.cream.opacity(0.7))
+                                .foregroundColor(AppTheme.textPrimary.opacity(0.8))
                                 .lineSpacing(4)
                         }
                     }
@@ -158,32 +143,31 @@ struct CafeDetailSheetContent: View {
                         }
                     }
 
-                    // Admin controls
-                    if isAdmin {
-                        adminControls
-                    }
+                    placeEditorControls
 
-                    Color.clear.frame(height: 8)
+                    // Reserve room so the last control sits comfortably above
+                    // the arc navbar at max scroll-down.
+                    Color.clear.frame(height: 170)
                 }
                 .padding(16)
             }
         }
     }
 
-    // MARK: - Admin controls
+    // MARK: - Edit & delete
 
     @ViewBuilder
-    private var adminControls: some View {
+    private var placeEditorControls: some View {
         VStack(spacing: 8) {
             Button(action: onEdit) {
                 Label("Edit details", systemImage: "pencil")
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(AppTheme.cafeAccent)
+                    .foregroundColor(AppTheme.textPrimary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
-                    .background(AppTheme.cafeAccent.opacity(0.08))
+                    .background(AppTheme.surfacePrimary)
                     .cornerRadius(12)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.cafeAccent.opacity(0.35), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.borderSubtle, lineWidth: 1))
             }
 
             if confirmDelete {
@@ -250,7 +234,7 @@ struct CafeDetailSheetContent: View {
         Text(title.uppercased())
             .font(.system(size: 10, weight: .semibold))
             .tracking(2)
-            .foregroundColor(AppTheme.cream.opacity(0.35))
+            .foregroundColor(AppTheme.textSecondary)
     }
 }
 
@@ -265,17 +249,17 @@ struct InfoCard: View {
             Text(title.uppercased())
                 .font(.system(size: 10, weight: .semibold))
                 .tracking(1.5)
-                .foregroundColor(AppTheme.cream.opacity(0.35))
+                .foregroundColor(AppTheme.textSecondary)
             Text(value)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(AppTheme.cream)
+                .foregroundColor(AppTheme.textPrimary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.cream.opacity(0.05))
+        .background(AppTheme.textPrimary.opacity(0.04))
         .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.cream.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.borderSubtle, lineWidth: 1))
     }
 }
 

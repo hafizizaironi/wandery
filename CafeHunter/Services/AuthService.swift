@@ -64,6 +64,7 @@ class AuthService: ObservableObject {
     }
 
     func signOut() throws {
+        NotificationService.shared.removeAllTokensForCurrentUser()
         try Auth.auth().signOut()
     }
 

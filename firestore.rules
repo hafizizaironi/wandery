@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function postAuthorId(postId) {
+      return get(/databases/$(database)/documents/posts/$(postId)).data.authorId;
+    }
+
+    function canReadPost(postId) {
+      let author = postAuthorId(postId);
+      return isSelf(author) ||
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(author));
+    }
+
+    // Existing places (café directory)
+    match /places/{placeId} {
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn();
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create, update: if isSelf(uid);
+      allow delete: if false;
+
+      match /friends/{friendUid} {
+        allow read: if signedIn() && (isSelf(uid) || request.auth.uid == friendUid);
+        allow create, delete: if isSelf(uid);
+        allow update: if false;
+      }
+
+      match /fcmTokens/{tokenId} {
+        allow read, write, delete: if isSelf(uid);
+      }
+    }
+
+    match /usernames/{name} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /friendRequests/{requestId} {
+      allow read: if signedIn() &&
+        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.status == "pending";
+      allow update: if signedIn() &&
+        resource.data.toUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /posts/{postId} {
+      allow read: if signedIn() && (
+        resource.data.authorId == request.auth.uid ||
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(resource.data.authorId))
+      );
+      allow create: if signedIn()
+        && request.resource.data.authorId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.authorId == request.auth.uid;
+
+      match /reactions/{reactorUid} {
+        allow read: if signedIn() && canReadPost(postId);
+        allow create, update: if signedIn()
+          && request.auth.uid == reactorUid
+          && canReadPost(postId);
+        allow delete: if signedIn() && request.auth.uid == reactorUid;
+      }
+    }
+  }
+}

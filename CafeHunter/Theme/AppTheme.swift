@@ -22,38 +22,65 @@ extension Color {
     }
 }
 
-// MARK: - App theme
+// MARK: - App theme (Clay & Ink)
 
 enum AppTheme {
-    // Backgrounds
-    static let espresso   = Color(red: 0.102, green: 0.059, blue: 0.027) // #1a0f07
-    static let stallBg    = Color(red: 0.055, green: 0.118, blue: 0.063) // #0e1e10
 
-    // Accents
-    static let cafeAccent = Color(red: 0.769, green: 0.384, blue: 0.176) // #c4622d
-    static let stallAccent = Color(red: 0.831, green: 0.584, blue: 0.165) // #d4952a
+    // MARK: Semantic tokens
 
-    // Text
-    static let cream      = Color(red: 0.961, green: 0.937, blue: 0.902) // #f5efe6
-    static let glassStroke = Color.white.opacity(0.24)
+    /// Main screen canvas — near-white warm
+    static let surfaceCanvas = Color(hex: "#F7F5F2")
+    /// Chrome — nav, cards, selected fill (same as accentSecondary)
+    static let surfacePrimary = Color(hex: "#EDEBE6")
 
-    // Status
-    static let successGreen = Color(red: 0.416, green: 0.667, blue: 0.416) // #6aaa6a
+    /// “Ink” — main text
+    static let textPrimary = Color(hex: "#282520")
+    static let textSecondary = Color(hex: "#282520").opacity(0.55)
+
+    /// Terracotta — use sparingly: primary CTAs, key chips, nav knob, map pins
+    static let accentAction = Color(hex: "#B5523A")
+    /// Chrome tone — borders / selected; matches `surfacePrimary`
+    static let accentSecondary = Color(hex: "#EDEBE6")
+
+    static let borderSubtle = Color(hex: "#CCCAC3").opacity(0.6)
+
+    /// Stalls — muted sage
+    static let stallAccent = Color(hex: "#7A8B6F")
+
+    /// Text on terracotta / `accentAction` buttons
+    static let textOnAccent = Color.white
+
+    /// Dark scrim over unpredictable camera preview
+    static let cameraScrim = Color.black.opacity(0.5)
+
+    // MARK: Status (unchanged)
+
+    static let successGreen = Color(red: 0.416, green: 0.667, blue: 0.416)
     static let errorRed     = Color(red: 0.878, green: 0.361, blue: 0.361)
 
-    // Helpers
+    // MARK: Legacy aliases
+
+    static var espresso: Color { surfaceCanvas }
+    static var stallBg: Color { stallAccent.opacity(0.08) }
+    static var cafeAccent: Color { accentAction }
+    static var cream: Color { textPrimary }
+    static var glassStroke: Color { borderSubtle }
+
+    // MARK: Place-type helpers
+
     static func accent(for type: PlaceType) -> Color {
         type == .cafe ? cafeAccent : stallAccent
     }
 
+    /// Fills for type chips — chrome; pair with `accent` stroke, not a saturated fill
     static func background(for type: PlaceType) -> Color {
-        type == .cafe ? espresso : stallBg
+        surfacePrimary
     }
 
     static func cafeGradient(_ index: Int) -> LinearGradient {
         let configs: [(Color, Color)] = [
-            (Color(red: 0.102, green: 0.059, blue: 0.027), Color(red: 0.478, green: 0.549, blue: 0.369)),
-            (Color(red: 0.176, green: 0.102, blue: 0.055), Color(red: 0.769, green: 0.384, blue: 0.176)),
+            (Color(hex: "#E3DDD8"), surfaceCanvas),
+            (Color(hex: "#D1B4A7"), Color(hex: "#F7F5F2")),
         ]
         let c = configs[index % configs.count]
         return LinearGradient(colors: [c.0, c.1], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -61,8 +88,8 @@ enum AppTheme {
 
     static func stallGradient(_ index: Int) -> LinearGradient {
         let configs: [(Color, Color)] = [
-            (Color(red: 0.055, green: 0.118, blue: 0.063), Color(red: 0.416, green: 0.667, blue: 0.416)),
-            (Color(red: 0.102, green: 0.208, blue: 0.125), Color(red: 0.831, green: 0.584, blue: 0.165)),
+            (Color(hex: "#D2D6CD"), surfaceCanvas),
+            (Color(hex: "#8F9A85"), Color(hex: "#EEF0EA")),
         ]
         let c = configs[index % configs.count]
         return LinearGradient(colors: [c.0, c.1], startPoint: .topLeading, endPoint: .bottomTrailing)

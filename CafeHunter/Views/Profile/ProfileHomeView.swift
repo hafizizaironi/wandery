@@ -4,11 +4,15 @@ import FirebaseAuth
 // MARK: - Profile home (tab page)
 
 struct ProfileHomeView: View {
-    @ObservedObject var authService:  AuthService
-    @ObservedObject var statsService: UserStatsService
+    @ObservedObject var authService:   AuthService
+    @ObservedObject var statsService:  UserStatsService
+    @ObservedObject var socialService: SocialService
 
     @State private var showEditProfile     = false
     @State private var selectedAchievement: Achievement?
+    @State private var addFriendQuery      = ""
+    @State private var friendBusy          = false
+    @State private var friendMessage       = ""
 
     // MARK: - Computed helpers
 
@@ -16,6 +20,13 @@ struct ProfileHomeView: View {
 
     private var displayName: String {
         user?.displayName ?? user?.email?.components(separatedBy: "@").first ?? "Explorer"
+    }
+
+    private var usernameLine: String {
+        if let u = socialService.profile?.username, !u.isEmpty {
+            return "@\(u)"
+        }
+        return "Set a username to add friends"
     }
 
     private var daysActive: Int {
@@ -82,6 +93,10 @@ struct ProfileHomeView: View {
                 VStack(spacing: 0) {
                     heroHeader
                     statsRow
+                    if !socialService.incomingRequests.isEmpty {
+                        friendRequestsSection
+                    }
+                    friendSearchSection
                     storySection
                     achievementsSection
                     settingsSection
@@ -89,12 +104,12 @@ struct ProfileHomeView: View {
                 .padding(.bottom, ArcNavBar.frameContentHeight + 24)
             }
         }
-        .sheet(isPresented: $showEditProfile) {
+        .floatingPanel(isPresented: $showEditProfile) {
             if let u = user {
                 EditProfileView(user: u, authService: authService)
             }
         }
-        .sheet(item: $selectedAchievement) { achievement in
+        .floatingPanel(item: $selectedAchievement) { achievement in
             AchievementDetailSheet(
                 achievement:  achievement,
                 isUnlocked:   isUnlocked(achievement),
@@ -107,7 +122,6 @@ struct ProfileHomeView: View {
 
     private var heroHeader: some View {
         ZStack {
-            // Warm layered background
             LinearGradient(
                 colors: [
                     Color(red: 0.14, green: 0.08, blue: 0.04),
@@ -121,7 +135,6 @@ struct ProfileHomeView: View {
             VStack(spacing: 14) {
                 Spacer().frame(height: 56)
 
-                // Tappable avatar
                 Button { showEditProfile = true } label: {
                     ZStack(alignment: .bottomTrailing) {
                         avatarView
@@ -153,19 +166,35 @@ struct ProfileHomeView: View {
                 }
                 .buttonStyle(.plain)
 
-                // Name
                 Text(displayName)
                     .font(.system(size: 24, weight: .bold))
                     .foregroundColor(AppTheme.cream)
 
-                // Hunting since
+                Text(usernameLine)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(AppTheme.cream.opacity(0.45))
+
                 if !huntingSinceText.isEmpty {
                     Text(huntingSinceText)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(AppTheme.cream.opacity(0.45))
+                        .font(.system(size: 11))
+                        .foregroundColor(AppTheme.cream.opacity(0.3))
                 }
 
-                // Edit profile pill
+                // Share username if set
+                if let name = socialService.profile?.username, !name.isEmpty {
+                    ShareLink(item: "Add me on CafeHunter: @\(name)") {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(AppTheme.cafeAccent)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(AppTheme.cafeAccent.opacity(0.1))
+                            .cornerRadius(20)
+                            .overlay(RoundedRectangle(cornerRadius: 20)
+                                .stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1))
+                    }
+                }
+
                 Button { showEditProfile = true } label: {
                     Text("Edit Profile")
                         .font(.system(size: 13, weight: .semibold))
@@ -236,6 +265,100 @@ struct ProfileHomeView: View {
         .padding(.bottom, 8)
     }
 
+    // MARK: - Friend requests
+
+    private var friendRequestsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("FRIEND REQUESTS",
+                          trailing: "\(socialService.incomingRequests.count) pending")
+
+            ForEach(socialService.incomingRequests) { req in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("@\(req.fromUsername)")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(AppTheme.cream)
+                        Text("wants to connect")
+                            .font(.system(size: 11))
+                            .foregroundColor(AppTheme.cream.opacity(0.45))
+                    }
+                    Spacer()
+                    Button("Decline") {
+                        Task { try? await socialService.rejectRequest(req) }
+                    }
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(AppTheme.cream.opacity(0.5))
+
+                    Button("Accept") {
+                        Task { try? await socialService.acceptRequest(req) }
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(AppTheme.cafeAccent)
+                    .cornerRadius(10)
+                }
+                .padding(14)
+                .background(AppTheme.cream.opacity(0.05))
+                .cornerRadius(14)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1)
+                )
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+    }
+
+    // MARK: - Friend search
+
+    private var friendSearchSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("ADD FRIEND")
+
+            HStack(spacing: 10) {
+                TextField("username", text: $addFriendQuery)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(size: 14))
+                    .foregroundColor(AppTheme.cream)
+                    .tint(AppTheme.cafeAccent)
+                    .padding(12)
+                    .background(AppTheme.cream.opacity(0.06))
+                    .cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12)
+                        .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1))
+
+                Button {
+                    Task { await sendFriendRequest() }
+                } label: {
+                    Text("Add")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(friendBusy
+                                    ? AppTheme.cafeAccent.opacity(0.4)
+                                    : AppTheme.cafeAccent)
+                        .cornerRadius(12)
+                }
+                .disabled(friendBusy || addFriendQuery.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            if !friendMessage.isEmpty {
+                Text(friendMessage)
+                    .font(.system(size: 12))
+                    .foregroundColor(friendMessage.contains("Sent")
+                                     ? AppTheme.successGreen
+                                     : AppTheme.errorRed)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+    }
+
     // MARK: - Your story
 
     private var storySection: some View {
@@ -244,7 +367,6 @@ struct ProfileHomeView: View {
                 .padding(.horizontal, 16)
 
             if milestones.isEmpty {
-                // Empty state
                 Text("Your story is just beginning —\ngo find your first spot! ☕")
                     .font(.system(size: 13))
                     .foregroundColor(AppTheme.cream.opacity(0.4))
@@ -257,7 +379,6 @@ struct ProfileHomeView: View {
                         ForEach(milestones) { item in
                             StoryCard(item: item)
                         }
-                        // Teaser card if few milestones
                         if milestones.count < 4 {
                             StoryTeaserCard()
                         }
@@ -267,7 +388,7 @@ struct ProfileHomeView: View {
                 }
             }
         }
-        .padding(.top, 20)
+        .padding(.top, 24)
     }
 
     // MARK: - Achievements
@@ -300,7 +421,6 @@ struct ProfileHomeView: View {
 
     private var settingsSection: some View {
         VStack(spacing: 12) {
-            // Admin badge
             if authService.isAdmin {
                 HStack {
                     Image(systemName: "star.fill")
@@ -320,7 +440,6 @@ struct ProfileHomeView: View {
                 )
             }
 
-            // Sign out
             Button {
                 try? authService.signOut()
             } label: {
@@ -357,6 +476,23 @@ struct ProfileHomeView: View {
                     .foregroundColor(AppTheme.cafeAccent)
             }
         }
+    }
+
+    // MARK: - Send friend request
+
+    private func sendFriendRequest() async {
+        let query = addFriendQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return }
+        friendBusy    = true
+        friendMessage = ""
+        do {
+            try await socialService.sendFriendRequest(toUsername: query)
+            friendMessage    = "Sent! 🎉"
+            addFriendQuery   = ""
+        } catch {
+            friendMessage = error.localizedDescription
+        }
+        friendBusy = false
     }
 }
 
@@ -535,14 +671,12 @@ struct AchievementDetailSheet: View {
             AppTheme.espresso.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Handle bar
                 Capsule()
                     .fill(AppTheme.cream.opacity(0.2))
                     .frame(width: 38, height: 4)
                     .padding(.top, 14)
                     .padding(.bottom, 32)
 
-                // Badge
                 ZStack {
                     Circle()
                         .fill(isUnlocked
@@ -573,14 +707,12 @@ struct AchievementDetailSheet: View {
 
                 Spacer().frame(height: 24)
 
-                // Title
                 Text(achievement.title)
                     .font(.system(size: 22, weight: .bold))
                     .foregroundColor(AppTheme.cream)
 
                 Spacer().frame(height: 8)
 
-                // Tagline or requirement
                 Text(isUnlocked ? achievement.flavourText : achievement.subtitle)
                     .font(.system(size: 14))
                     .foregroundColor(AppTheme.cream.opacity(0.55))
@@ -589,7 +721,6 @@ struct AchievementDetailSheet: View {
 
                 Spacer().frame(height: 20)
 
-                // Status pill
                 if let date = unlockedDate {
                     let f: DateFormatter = {
                         let df = DateFormatter()
@@ -618,7 +749,5 @@ struct AchievementDetailSheet: View {
                 Spacer()
             }
         }
-        .presentationDetents([.medium])
-        .presentationBackground(AppTheme.espresso)
     }
 }

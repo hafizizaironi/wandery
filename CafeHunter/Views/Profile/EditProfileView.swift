@@ -22,111 +22,119 @@ struct EditProfileView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AppTheme.espresso.ignoresSafeArea()
+        VStack(spacing: 0) {
 
-                ScrollView {
-                    VStack(spacing: 32) {
+            // ── Inline header ──
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(AppTheme.cream.opacity(0.55))
 
-                        // MARK: Avatar picker
-                        PhotosPicker(selection: $selectedItem, matching: .images) {
-                            ZStack(alignment: .bottomTrailing) {
-                                avatarPreview
-                                    .frame(width: 104, height: 104)
-                                    .clipShape(Circle())
-                                    .overlay(
-                                        Circle().stroke(
-                                            LinearGradient(
-                                                colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            ),
-                                            lineWidth: 3
-                                        )
-                                    )
-                                    .shadow(color: AppTheme.cafeAccent.opacity(0.35), radius: 14)
+                Spacer()
 
-                                // Camera badge
-                                Circle()
-                                    .fill(AppTheme.cafeAccent)
-                                    .frame(width: 30, height: 30)
-                                    .overlay(
-                                        Image(systemName: "camera.fill")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundColor(.white)
-                                    )
-                                    .shadow(color: AppTheme.cafeAccent.opacity(0.5), radius: 6)
-                                    .offset(x: 2, y: 2)
-                            }
-                        }
-                        .onChange(of: selectedItem) { _, item in
-                            Task {
-                                if let data = try? await item?.loadTransferable(type: Data.self),
-                                   let img = UIImage(data: data) {
-                                    pendingImage = img
-                                }
-                            }
-                        }
-                        .padding(.top, 8)
+                Text("Edit Profile")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(AppTheme.cream)
 
-                        // MARK: Display name
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("DISPLAY NAME")
-                                .font(.system(size: 10, weight: .semibold))
-                                .tracking(2)
-                                .foregroundColor(AppTheme.cream.opacity(0.35))
+                Spacer()
 
-                            TextField("Your name", text: $displayName)
-                                .font(.system(size: 16))
-                                .foregroundColor(AppTheme.cream)
-                                .tint(AppTheme.cafeAccent)
-                                .padding(14)
-                                .background(AppTheme.cream.opacity(0.06))
-                                .cornerRadius(12)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
-                                )
-                        }
-
-                        // MARK: Error
-                        if let msg = errorMessage {
-                            Text(msg)
-                                .font(.system(size: 12))
-                                .foregroundColor(AppTheme.errorRed)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 8)
-                        }
+                Button(action: save) {
+                    if isSaving {
+                        ProgressView()
+                            .tint(AppTheme.cafeAccent)
+                            .frame(width: 44)
+                    } else {
+                        Text("Save")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(AppTheme.cafeAccent)
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 24)
                 }
+                .disabled(isSaving)
             }
-            .navigationTitle("Edit Profile")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(AppTheme.espresso, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                        .foregroundColor(AppTheme.cream.opacity(0.55))
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(action: save) {
-                        if isSaving {
-                            ProgressView().tint(AppTheme.cafeAccent)
-                        } else {
-                            Text("Save")
-                                .fontWeight(.semibold)
-                                .foregroundColor(AppTheme.cafeAccent)
+            .padding(.horizontal, 20)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+
+            Divider()
+                .background(AppTheme.cafeAccent.opacity(0.12))
+
+            ScrollView {
+                VStack(spacing: 32) {
+
+                    // MARK: Avatar picker
+                    PhotosPicker(selection: $selectedItem, matching: .images) {
+                        ZStack(alignment: .bottomTrailing) {
+                            avatarPreview
+                                .frame(width: 104, height: 104)
+                                .clipShape(Circle())
+                                .overlay(
+                                    Circle().stroke(
+                                        LinearGradient(
+                                            colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        ),
+                                        lineWidth: 3
+                                    )
+                                )
+                                .shadow(color: AppTheme.cafeAccent.opacity(0.35), radius: 14)
+
+                            Circle()
+                                .fill(AppTheme.cafeAccent)
+                                .frame(width: 30, height: 30)
+                                .overlay(
+                                    Image(systemName: "camera.fill")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(.white)
+                                )
+                                .shadow(color: AppTheme.cafeAccent.opacity(0.5), radius: 6)
+                                .offset(x: 2, y: 2)
                         }
                     }
-                    .disabled(isSaving)
+                    .onChange(of: selectedItem) { _, item in
+                        Task {
+                            if let data = try? await item?.loadTransferable(type: Data.self),
+                               let img = UIImage(data: data) {
+                                pendingImage = img
+                            }
+                        }
+                    }
+                    .padding(.top, 8)
+
+                    // MARK: Display name
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("DISPLAY NAME")
+                            .font(.system(size: 10, weight: .semibold))
+                            .tracking(2)
+                            .foregroundColor(AppTheme.cream.opacity(0.35))
+
+                        TextField("Your name", text: $displayName)
+                            .font(.system(size: 16))
+                            .foregroundColor(AppTheme.cream)
+                            .tint(AppTheme.cafeAccent)
+                            .padding(14)
+                            .background(AppTheme.cream.opacity(0.06))
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
+                            )
+                    }
+
+                    // MARK: Error
+                    if let msg = errorMessage {
+                        Text(msg)
+                            .font(.system(size: 12))
+                            .foregroundColor(AppTheme.errorRed)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 8)
+                    }
                 }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 24)
             }
         }
-        .presentationBackground(AppTheme.espresso)
+        .background(AppTheme.espresso)
     }
 
     // MARK: - Avatar preview
@@ -170,8 +178,8 @@ struct EditProfileView: View {
     // MARK: - Save
 
     private func save() {
-        let trimmed = displayName.trimmingCharacters(in: .whitespaces)
-        isSaving    = true
+        let trimmed  = displayName.trimmingCharacters(in: .whitespaces)
+        isSaving     = true
         errorMessage = nil
 
         Task {

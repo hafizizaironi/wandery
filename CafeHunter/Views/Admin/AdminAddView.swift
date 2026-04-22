@@ -54,28 +54,56 @@ struct AdminAddView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AppTheme.espresso.ignoresSafeArea()
+        VStack(spacing: 0) {
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+            // ── Inline header (replaces NavigationStack toolbar) ──
+            HStack {
+                Button("Cancel", action: onClose)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(AppTheme.cream.opacity(0.55))
+
+                Spacer()
+
+                Text(isEdit ? "Edit Place" : "Add New Place")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(AppTheme.cream)
+
+                Spacer()
+
+                // Mirror Cancel width so title stays centred
+                Text("Cancel")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.clear)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+
+            Divider()
+                .background(AppTheme.cafeAccent.opacity(0.12))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
 
                         // Type picker
                         AdminField(label: "Type") {
                             HStack(spacing: 8) {
                                 ForEach(PlaceType.allCases, id: \.self) { t in
+                                    let picked = type == t
                                     Button { type = t } label: {
                                         Text(t == .cafe ? "☕ Café" : "🍜 Street Stall")
                                             .font(.system(size: 13, weight: .semibold))
-                                            .foregroundColor(type == t ? AppTheme.cream : AppTheme.cream.opacity(0.4))
+                                            .foregroundColor(picked ? AppTheme.accent(for: t) : AppTheme.textSecondary)
                                             .frame(maxWidth: .infinity)
                                             .padding(.vertical, 10)
-                                            .background(type == t ? AppTheme.accent(for: t) : AppTheme.cream.opacity(0.05))
+                                            .background(picked ? AppTheme.surfacePrimary : AppTheme.textPrimary.opacity(0.04))
                                             .cornerRadius(12)
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: 12)
-                                                    .stroke(type == t ? Color.clear : AppTheme.cream.opacity(0.1), lineWidth: 1)
+                                                    .stroke(
+                                                        picked ? AppTheme.accent(for: t).opacity(0.4) : AppTheme.borderSubtle,
+                                                        lineWidth: 1
+                                                    )
                                             )
                                     }
                                     .buttonStyle(.plain)
@@ -233,15 +261,15 @@ struct AdminAddView: View {
                         Button { Task { await submit() } } label: {
                             Group {
                                 if isSaving {
-                                    ProgressView().tint(AppTheme.cream)
+                                    ProgressView().tint(AppTheme.textOnAccent)
                                 } else if isSuccess {
                                     Label("Saved!", systemImage: "checkmark")
                                         .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(AppTheme.cream)
+                                        .foregroundColor(AppTheme.textOnAccent)
                                 } else {
                                     Text(isEdit ? "Save Changes" : "Add \(type == .stall ? "Stall" : "Café")")
                                         .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(AppTheme.cream)
+                                        .foregroundColor(AppTheme.textOnAccent)
                                 }
                             }
                             .frame(maxWidth: .infinity)
@@ -257,24 +285,14 @@ struct AdminAddView: View {
                     .padding(20)
                 }
             }
-            .navigationTitle(isEdit ? "Edit Place" : "Add New Place")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onClose)
-                        .foregroundColor(AppTheme.cream.opacity(0.6))
-                }
-            }
-            .toolbarBackground(AppTheme.espresso, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .navigationDestination(isPresented: $showMapPicker) {
-                MapPickerView { coord in
-                    latText = String(format: "%.6f", coord.latitude)
-                    lngText = String(format: "%.6f", coord.longitude)
-                }
+        .background(AppTheme.espresso)
+        // Map picker presented full-screen (no NavigationStack needed)
+        .fullScreenCover(isPresented: $showMapPicker) {
+            MapPickerView { coord in
+                latText = String(format: "%.6f", coord.latitude)
+                lngText = String(format: "%.6f", coord.longitude)
             }
         }
-        .presentationBackground(AppTheme.espresso)
     }
 
     // MARK: - Photo thumbnails
@@ -410,11 +428,11 @@ struct AdminTextField: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
-                    isFocused ? AppTheme.cafeAccent.opacity(0.7) : AppTheme.cafeAccent.opacity(0.25),
+                    isFocused ? AppTheme.cafeAccent.opacity(0.55) : AppTheme.borderSubtle,
                     lineWidth: 1
                 )
         )
-        .foregroundColor(AppTheme.cream)
+        .foregroundColor(AppTheme.textPrimary)
         .font(.system(size: 13))
         .tint(AppTheme.cafeAccent)
     }

@@ -19,6 +19,29 @@ struct ArcShape: Shape {
     }
 }
 
+/// Filled "banana" pill that hugs the arc — used as the host shape for
+/// Apple's Liquid Glass (`.glassEffect(in:)`) so the backdrop actually
+/// refracts through the arc instead of being a flat blur.
+struct ArcBandShape: Shape {
+    var center:     CGPoint
+    var radius:     CGFloat
+    var startAngle: Angle
+    var endAngle:   Angle
+    var thickness:  CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addArc(center:     center,
+                    radius:     radius,
+                    startAngle: startAngle,
+                    endAngle:   endAngle,
+                    clockwise:  false)
+        return path.strokedPath(
+            StrokeStyle(lineWidth: thickness, lineCap: .round)
+        )
+    }
+}
+
 private func pointOnCircle(angleDeg: Double, center: CGPoint, radius: CGFloat) -> CGPoint {
     let rad = Angle.degrees(angleDeg).radians
     return CGPoint(x: center.x + radius * CGFloat(cos(rad)),
@@ -55,17 +78,50 @@ private struct ArcKnobIndicator: View, Animatable {
                                     center: center, radius: arcRadius)
 
         ZStack {
+            // Soft halo behind the terracotta knob — subtle glow so the
+            // active circle reads as "floating" above the arc glass.
             Circle()
-                .fill(Color(hex: "#1a1208"))
+                .fill(Color.white.opacity(0.14))
                 .frame(width: 72, height: 72)
+                .blur(radius: 6)
+
+            // Active terracotta knob — rich depth + crisp top highlight.
             Circle()
-                .fill(Color(hex: "#c87d2a").opacity(0.65))
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            AppTheme.accentAction,
+                            AppTheme.accentAction.opacity(0.82)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
                 .frame(width: 60, height: 60)
-                .shadow(color: Color(hex: "#c87d2a").opacity(0.30),
-                        radius: 10, x: 0, y: 3)
+                // Specular catchlight on the knob — reads as a polished dome.
+                .liquidGlassShine(in: Circle(), strength: 0.9)
+                .overlay(
+                    Circle()
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.70),
+                                    Color.white.opacity(0.15),
+                                    Color.clear
+                                ],
+                                startPoint: .top, endPoint: .bottom
+                            ),
+                            lineWidth: 1
+                        )
+                )
+                .shadow(color: AppTheme.accentAction.opacity(0.35),
+                        radius: 12, x: 0, y: 4)
+                .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 1)
+
             Image(systemName: activeIcon)
                 .font(.system(size: 22, weight: .semibold))
-                .foregroundColor(.white.opacity(0.85))
+                .foregroundColor(AppTheme.textOnAccent)
+                .shadow(color: .black.opacity(0.18), radius: 1, x: 0, y: 1)
         }
         .frame(width: 72, height: 72)
         .scaleEffect(isEnlarged ? 1.24 : 1.0, anchor: .center)
@@ -161,49 +217,122 @@ struct ArcNavBar: View {
             // Track uses the same angles as tabs: map @ left end, profile @ right end, hero @ -90°.
             let startAng = Angle.degrees(trackStartDeg)
             let endAng   = Angle.degrees(trackEndDeg)
+            let trackWidth: CGFloat = 58
+
+            let bandShape = ArcBandShape(
+                center:     center,
+                radius:     arcRadius,
+                startAngle: startAng,
+                endAngle:   endAng,
+                thickness:  trackWidth
+            )
 
             ZStack {
-                // ── Glass arc track ────────────────────────────────────────
-                let trackWidth: CGFloat = 58
-                ArcShape(center: center, radius: arcRadius,
-                         startAngle: startAng, endAngle: endAng)
-                    .stroke(Color.black.opacity(0.55),
-                            style: StrokeStyle(lineWidth: trackWidth, lineCap: .round))
-
-                ArcShape(center: center, radius: arcRadius,
-                         startAngle: startAng, endAngle: endAng)
-                    .stroke(
-                        LinearGradient(colors: [Color.white.opacity(0.22),
-                                                Color.white.opacity(0.07)],
-                                       startPoint: .top, endPoint: .bottom),
-                        style: StrokeStyle(lineWidth: trackWidth, lineCap: .round)
+                // ── Liquid-glass arc track ─────────────────────────────────
+                // Apple Liquid Glass applied directly to the banana-shape;
+                // `.interactive()` gives the real-time refraction + edge
+                // specular highlight you see on Apple's iOS 26 surfaces.
+                bandShape
+                    .fill(Color.clear)
+                    .glassEffect(
+                        .regular.interactive(),
+                        in: bandShape
                     )
+                    // Specular highlight — the "light bent through glass"
+                    // catch-light that makes the arc feel 3D.
+                    .liquidGlassShine(in: bandShape, strength: 1.1)
 
-                // ── Ghost tab circles ──────────────────────────────────────
+                // Very light terracotta breath — just enough to tie the
+                // nav to the palette without fighting the refraction.
+                bandShape
+                    .fill(AppTheme.accentAction.opacity(0.04))
+                    .allowsHitTesting(false)
+
+                // Bright outer rim — the thin wet-edge reflection you see on
+                // Apple's glass controls when light hits the top of the dome.
+                ArcShape(
+                    center:     center,
+                    radius:     arcRadius + trackWidth * 0.44,
+                    startAngle: startAng,
+                    endAngle:   endAng
+                )
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.75),
+                            Color.white.opacity(0.25),
+                            Color.white.opacity(0.05),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint:   .bottom
+                    ),
+                    style: StrokeStyle(lineWidth: 1.2, lineCap: .round)
+                )
+                .allowsHitTesting(false)
+
+                // Crest sparkle — an extra-bright nib right at the arc peak
+                // where most reflected light would hit a real glass dome.
+                ArcShape(
+                    center:     center,
+                    radius:     arcRadius + trackWidth * 0.44,
+                    startAngle: Angle.degrees(-90.0 - 14),
+                    endAngle:   Angle.degrees(-90.0 + 14)
+                )
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.0),
+                            Color.white.opacity(0.85),
+                            Color.white.opacity(0.0)
+                        ],
+                        startPoint: .leading,
+                        endPoint:   .trailing
+                    ),
+                    style: StrokeStyle(lineWidth: 1.4, lineCap: .round)
+                )
+                .blur(radius: 0.4)
+                .allowsHitTesting(false)
+
+                // Inner rim — a whisper of depth on the under-side.
+                ArcShape(
+                    center:     center,
+                    radius:     arcRadius - trackWidth * 0.44,
+                    startAngle: startAng,
+                    endAngle:   endAng
+                )
+                .stroke(
+                    AppTheme.accentAction.opacity(0.12),
+                    style: StrokeStyle(lineWidth: 0.8, lineCap: .round)
+                )
+                .allowsHitTesting(false)
+
+                // ── Tab icons sitting on the glass ─────────────────────────
                 ForEach(0 ..< tabs.count, id: \.self) { idx in
                     let tab     = tabs[idx]
-                    let pos     = pointOnCircle(angleDeg: angleDeg(for: Double(idx)),
-                                               center: center, radius: arcRadius)
+                    let pos     = pointOnCircle(
+                        angleDeg: angleDeg(for: Double(idx)),
+                        center:   center,
+                        radius:   arcRadius
+                    )
                     let dist    = abs(CGFloat(idx) - pageProgress)
-                    let opacity = max(0.12, 0.38 - dist * 0.22)
+                    let opacity = max(0.32, 0.78 - dist * 0.28)
 
                     Button {
                         animateTabTap(to: idx)
                     } label: {
-                        ZStack {
-                            Circle()
-                                .fill(Color.white.opacity(0.08))
-                                .frame(width: 46, height: 46)
-                            Image(systemName: tab.icon)
-                                .font(.system(size: 19, weight: .semibold))
-                                .foregroundColor(.white.opacity(opacity))
-                        }
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundColor(AppTheme.textPrimary.opacity(opacity))
+                            .shadow(color: .white.opacity(0.35), radius: 0.5, x: 0, y: 0.5)
+                            .frame(width: 46, height: 46)
+                            .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .position(pos)
                 }
 
-                // ── Moving active indicator (`Animatable` → motion follows the arc, not a chord)
+                // ── Moving active indicator (on top of everything)
                 ArcKnobIndicator(
                     pageProgress: pageProgress,
                     isEnlarged: isEnlarged,

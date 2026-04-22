@@ -30,6 +30,28 @@ struct MapPickerView: View {
                 .shadow(radius: 6)
                 .offset(y: -17)
 
+            // Top-left close button
+            VStack {
+                HStack {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(AppTheme.cream)
+                            .frame(width: 36, height: 36)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(AppTheme.glassStroke, lineWidth: 1))
+                    }
+                    .padding(.leading, 16)
+                    .padding(.top, 56)
+
+                    Spacer()
+                }
+                Spacer()
+            }
+
             // Bottom panel
             VStack {
                 Spacer()
@@ -44,7 +66,7 @@ struct MapPickerView: View {
                     } label: {
                         Text("Confirm Location")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(AppTheme.cream)
+                            .foregroundColor(AppTheme.textOnAccent)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
                             .background(AppTheme.cafeAccent)
@@ -55,9 +77,5 @@ struct MapPickerView: View {
                 .background(.ultraThinMaterial)
             }
         }
-        .navigationTitle("Pick Location")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.visible, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
     }
 }

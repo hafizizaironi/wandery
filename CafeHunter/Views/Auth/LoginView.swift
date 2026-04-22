@@ -36,7 +36,7 @@ struct LoginView: View {
                     .frame(maxWidth: .infinity)
                     .overlay(alignment: .bottom) {
                         Rectangle()
-                            .fill(AppTheme.cafeAccent.opacity(0.15))
+                            .fill(AppTheme.borderSubtle.opacity(0.7))
                             .frame(height: 1)
                     }
 
@@ -52,22 +52,22 @@ struct LoginView: View {
                                 Text("Continue with Google")
                                     .font(.system(size: 14, weight: .semibold))
                             }
-                            .foregroundColor(AppTheme.espresso)
+                            .foregroundColor(AppTheme.textPrimary)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
-                            .background(AppTheme.cream)
+                            .background(Color.white)
                             .cornerRadius(12)
                         }
                         .disabled(isLoading)
 
                         // Divider
                         HStack {
-                            Rectangle().fill(AppTheme.cream.opacity(0.1)).frame(height: 1)
+                            Rectangle().fill(AppTheme.textPrimary.opacity(0.12)).frame(height: 1)
                             Text("or")
                                 .font(.system(size: 12))
-                                .foregroundColor(AppTheme.cream.opacity(0.3))
+                                .foregroundColor(AppTheme.textSecondary)
                                 .padding(.horizontal, 8)
-                            Rectangle().fill(AppTheme.cream.opacity(0.1)).frame(height: 1)
+                            Rectangle().fill(AppTheme.textPrimary.opacity(0.12)).frame(height: 1)
                         }
 
                         // Form
@@ -93,11 +93,11 @@ struct LoginView: View {
                             } label: {
                                 Group {
                                     if isLoading {
-                                        ProgressView().tint(AppTheme.cream)
+                                        ProgressView().tint(AppTheme.textOnAccent)
                                     } else {
                                         Text(mode == .login ? "Sign in" : "Create account")
                                             .font(.system(size: 14, weight: .semibold))
-                                            .foregroundColor(AppTheme.cream)
+                                            .foregroundColor(AppTheme.textOnAccent)
                                     }
                                 }
                                 .frame(maxWidth: .infinity)
@@ -130,9 +130,9 @@ struct LoginView: View {
                 .cornerRadius(20)
                 .overlay(
                     RoundedRectangle(cornerRadius: 20)
-                        .stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
+                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
                 )
-                .shadow(color: .black.opacity(0.5), radius: 24)
+                .shadow(color: .black.opacity(0.12), radius: 24)
                 .padding(.horizontal, 24)
 
                 Spacer()
@@ -218,13 +218,13 @@ struct AuthTextField: View {
         .focused($isFocused)
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .background(AppTheme.cream.opacity(0.06))
+        .background(AppTheme.surfacePrimary.opacity(0.25))
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(isFocused ? AppTheme.cafeAccent.opacity(0.7) : AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
+                .stroke(isFocused ? AppTheme.cafeAccent.opacity(0.55) : AppTheme.borderSubtle, lineWidth: 1)
         )
-        .foregroundColor(AppTheme.cream)
+        .foregroundColor(AppTheme.textPrimary)
         .font(.system(size: 14))
         .tint(AppTheme.cafeAccent)
     }

@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 /// Live camera feed using `AVCaptureVideoPreviewLayer` as a **sublayer** (more reliable than replacing `layerClass`).
 struct CameraPreviewView: UIViewRepresentable {
@@ -60,9 +61,37 @@ struct CameraPreviewView: UIViewRepresentable {
             CATransaction.setDisableActions(true)
             previewLayer.frame = r
             CATransaction.commit()
-            if let connection = previewLayer.connection,
-               connection.isVideoRotationAngleSupported(90) {
-                connection.videoRotationAngle = 90
+            if let connection = previewLayer.connection {
+                let angle = Self.rotationAngleForInterface()
+                if connection.isVideoRotationAngleSupported(angle) {
+                    connection.videoRotationAngle = angle
+                }
+                // Front camera defaults to mirrored; turn off so preview matches saved photo/video.
+                // Must disable automatic mirroring before setting `isVideoMirrored` or the runtime throws.
+                if connection.isVideoMirroringSupported {
+                    connection.automaticallyAdjustsVideoMirroring = false
+                    connection.isVideoMirrored = false
+                }
+            }
+        }
+
+        /// Align preview with the active window orientation (fixed **90** often caused letterboxing on some devices).
+        private static func rotationAngleForInterface() -> CGFloat {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else {
+                return 90
+            }
+            let orientation: UIInterfaceOrientation
+            if #available(iOS 26.0, *) {
+                orientation = scene.effectiveGeometry.interfaceOrientation
+            } else {
+                orientation = scene.interfaceOrientation
+            }
+            switch orientation {
+            case .portrait: return 90
+            case .portraitUpsideDown: return 270
+            case .landscapeLeft: return 0
+            case .landscapeRight: return 180
+            default: return 90
             }
         }
     }

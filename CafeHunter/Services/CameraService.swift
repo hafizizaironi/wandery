@@ -26,6 +26,10 @@ final class CameraService: NSObject {
     /// Drives SwiftUI preview refresh after `startRunning()` / `stopRunning()` (session object identity is unchanged).
     var isSessionRunning = false
     var capturedImage: UIImage?
+    /// Set when video recording finishes successfully (preview + upload); square export when possible.
+    var capturedVideoURL: URL?
+    /// True while square video export runs after recording (preview shows a spinner).
+    var isProcessingVideo = false
     var isRecording     = false
     var isLocked        = false          // recording continues without holding
     var recordingProgress: Double = 0   // 0 → 1 over maxDuration seconds
@@ -43,6 +47,8 @@ final class CameraService: NSObject {
     private var currentInput: AVCaptureDeviceInput?
 
     private var progressTask: Task<Void, Never>?
+    private var videoExportTask: Task<Void, Never>?
+    private var pendingRawVideoURL: URL?
     private let maxDuration: TimeInterval = 5
     /// Cancels in-flight linear zoom steps when the user toggles again.
     private var zoomRampGeneration: UInt = 0
@@ -81,20 +87,43 @@ final class CameraService: NSObject {
             try? AppAudioSession.configureForCameraCapture()
             self?.sessionQueue.async { [weak self] in
                 guard let self else { return }
+
+                let wasRunning = self.session.isRunning
+
                 if self.session.inputs.isEmpty {
                     self.configureSession()
                 }
-                if !self.session.isRunning {
+                if !wasRunning {
                     self.session.startRunning()
+                    self.applyRearZoom(slot: slotSnapshot, animated: false, effectivePosition: .back)
                 }
-                // Virtual fused cameras often ignore or clamp zoom until the session is running (same as Camera).
-                self.applyRearZoom(slot: slotSnapshot, animated: false, effectivePosition: .back)
+
                 let running = self.session.isRunning
                 DispatchQueue.main.async { [weak self] in
-                    self?.isSessionRunning = running
+                    guard let self else { return }
+                    self.isSessionRunning = running
+                    if !wasRunning {
+                        self.resetExposureTargetBiasToDefault()
+                    }
                 }
             }
         }
+    }
+
+    /// Clears preview state and removes temporary video file if any.
+    func discardCapture() {
+        videoExportTask?.cancel()
+        videoExportTask = nil
+        if let raw = pendingRawVideoURL {
+            try? FileManager.default.removeItem(at: raw)
+            pendingRawVideoURL = nil
+        }
+        if let url = capturedVideoURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        capturedVideoURL = nil
+        capturedImage = nil
+        isProcessingVideo = false
     }
 
     func stopSession() {
@@ -112,15 +141,92 @@ final class CameraService: NSObject {
     // MARK: - Photo
 
     func capture() {
+        capturedVideoURL = nil
+
+        #if targetEnvironment(simulator)
+        deliverBlankCapturePlaceholder()
+        #else
         guard session.isRunning else { return }
+        sessionQueue.sync { self.applyNaturalVideoMirroringToOutputs() }
+
+        guard hasReadyPhotoVideoConnection else {
+            deliverBlankCapturePlaceholder()
+            return
+        }
+
         let settings = AVCapturePhotoSettings()
+        if #available(iOS 16.0, *) {
+            let maxDim = photoOutput.maxPhotoDimensions
+            if maxDim.width > 0, maxDim.height > 0 {
+                settings.maxPhotoDimensions = maxDim
+            }
+        }
         photoOutput.capturePhoto(with: settings, delegate: self)
+        #endif
+    }
+
+    /// Simulator and other no-camera paths: still image so review / upload flows can run.
+    private var hasReadyPhotoVideoConnection: Bool {
+        guard let conn = photoOutput.connection(with: .video) else { return false }
+        return conn.isEnabled && conn.isActive
+    }
+
+    private func deliverBlankCapturePlaceholder() {
+        let image = Self.blankCapturePlaceholder()
+        Task { @MainActor in
+            self.capturedImage = image
+        }
+    }
+
+    private static func blankCapturePlaceholder() -> UIImage {
+        let side: CGFloat = 1080
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format)
+        return renderer.image { ctx in
+            UIColor(red: 0.94, green: 0.93, blue: 0.91, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 36, weight: .medium),
+                .foregroundColor: UIColor(white: 0.55, alpha: 1),
+                .paragraphStyle: paragraph,
+            ]
+            let text = "Simulator\n(no camera)" as NSString
+            let bounds = text.boundingRect(
+                with: CGSize(width: side - 80, height: 200),
+                options: [.usesLineFragmentOrigin],
+                attributes: attrs,
+                context: nil
+            )
+            text.draw(
+                in: CGRect(
+                    x: (side - bounds.width) / 2,
+                    y: (side - bounds.height) / 2,
+                    width: bounds.width,
+                    height: bounds.height
+                ),
+                withAttributes: attrs
+            )
+        }
     }
 
     // MARK: - Video
 
     func startRecording() {
+        #if targetEnvironment(simulator)
+        return
+        #else
         guard session.isRunning, !isRecording else { return }
+        capturedImage = nil
+        capturedVideoURL = nil
+        sessionQueue.sync { [weak self] in
+            guard let self else { return }
+            self.applyNaturalVideoMirroringToOutputs()
+            self.reapplyDevice60fpsFrameDuration()
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".mov")
         movieOutput.maxRecordedDuration = CMTime(seconds: maxDuration,
@@ -137,6 +243,7 @@ final class CameraService: NSObject {
                 try? await Task.sleep(for: .milliseconds(50))
             }
         }
+        #endif
     }
 
     func stopRecording() {
@@ -191,6 +298,7 @@ final class CameraService: NSObject {
             }
 
             session.commitConfiguration()
+            applyNaturalVideoMirroringToOutputs()
             let lensForMainActor = outLensSlot
             applyRearZoom(slot: lensForMainActor, animated: false, effectivePosition: newPos)
             Task { @MainActor in
@@ -227,8 +335,11 @@ final class CameraService: NSObject {
 
     private func configureSession() {
         session.beginConfiguration()
-        defer { session.commitConfiguration() }
-        session.sessionPreset = .photo
+        defer {
+            session.commitConfiguration()
+            applyNaturalVideoMirroringToOutputs()
+        }
+        session.sessionPreset = .hd1920x1080
 
         if lensSlot == .wide, !Self.rearHasHalfWideCapability {
             Task { @MainActor in self.lensSlot = .primary }
@@ -256,7 +367,9 @@ final class CameraService: NSObject {
         session.addInput(input)
         currentInput = input
 
-        if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
+        if session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+        }
         if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
 
         if let audioDevice = AVCaptureDevice.default(for: .audio),
@@ -265,13 +378,88 @@ final class CameraService: NSObject {
             session.addInput(audioInput)
         }
 
+        Self.applyHD60VideoRecordingSettings(device: device, session: session)
+
         // Zoom is applied in `startSession` after `startRunning()` so fused devices honor factors.
+    }
+
+    /// 1080p-class HD at 60 fps when the hardware supports it; falls back to `hd1920x1080` preset + 60 fps frame duration.
+    private static func applyHD60VideoRecordingSettings(device: AVCaptureDevice, session: AVCaptureSession) {
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+
+            if let format = preferredFormat1080p60fps(on: device) {
+                session.sessionPreset = .inputPriority
+                device.activeFormat = format
+            } else {
+                session.sessionPreset = .hd1920x1080
+            }
+
+            let fps60 = CMTime(value: 1, timescale: 60)
+            device.activeVideoMinFrameDuration = fps60
+            device.activeVideoMaxFrameDuration = fps60
+        } catch {
+            session.sessionPreset = .hd1920x1080
+        }
+    }
+
+    /// Picks a full HD format that advertises 60 fps in its supported frame-rate range.
+    private static func preferredFormat1080p60fps(on device: AVCaptureDevice) -> AVCaptureDevice.Format? {
+        for format in device.formats {
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let w = Int(dims.width)
+            let h = Int(dims.height)
+            let is1080p = (w == 1920 && h == 1080) || (w == 1080 && h == 1920)
+            guard is1080p else { continue }
+            let supports60 = format.videoSupportedFrameRateRanges.contains { range in
+                range.minFrameRate <= 60 && range.maxFrameRate >= 60
+            }
+            if supports60 { return format }
+        }
+        return nil
+    }
+
+    /// Match saved stills/video: disable the default front-camera horizontal mirror on capture outputs.
+    private func applyNaturalVideoMirroringToOutputs() {
+        for output in [photoOutput as AVCaptureOutput, movieOutput] {
+            guard let c = output.connection(with: .video), c.isVideoMirroringSupported else { continue }
+            c.automaticallyAdjustsVideoMirroring = false
+            c.isVideoMirrored = false
+        }
+    }
+
+    /// iOS removed frame-rate APIs on `AVCaptureConnection`; match capture rate on the device instead.
+    private func reapplyDevice60fpsFrameDuration() {
+        guard let device = currentInput?.device else { return }
+        let fps60 = CMTime(value: 1, timescale: 60)
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.activeVideoMinFrameDuration = fps60
+            device.activeVideoMaxFrameDuration = fps60
+        } catch {}
+    }
+
+    /// Uses neutral EV bias (0) so exposure follows automatic metering without a baked-in offset.
+    func resetExposureTargetBiasToDefault() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.currentInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                let neutral: Float = 0
+                let target = max(device.minExposureTargetBias, min(neutral, device.maxExposureTargetBias))
+                device.setExposureTargetBias(target, completionHandler: nil)
+            } catch {}
+        }
     }
 
     private func reconfigureVideoInput() {
         session.beginConfiguration()
         defer {
             session.commitConfiguration()
+            applyNaturalVideoMirroringToOutputs()
             applyRearZoom(slot: lensSlot, animated: false, effectivePosition: .back)
         }
 
@@ -288,11 +476,13 @@ final class CameraService: NSObject {
            session.canAddInput(input) {
             session.addInput(input)
             currentInput = input
+            Self.applyHD60VideoRecordingSettings(device: device, session: session)
         } else if let device = Self.videoDevice(position: .back, lensSlot: .primary),
                   let input = try? AVCaptureDeviceInput(device: device),
                   session.canAddInput(input) {
             session.addInput(input)
             currentInput = input
+            Self.applyHD60VideoRecordingSettings(device: device, session: session)
             Task { @MainActor in self.lensSlot = .primary }
         }
     }
@@ -432,9 +622,11 @@ extension CameraService: AVCapturePhotoCaptureDelegate {
                                  didFinishProcessingPhoto photo: AVCapturePhoto,
                                  error: Error?) {
         guard error == nil,
-              let data  = photo.fileDataRepresentation(),
-              let image = UIImage(data: data) else { return }
-        Task { @MainActor in self.capturedImage = image }
+              let data = photo.fileDataRepresentation() else { return }
+        Task { @MainActor in
+            guard let image = UIImage(data: data) else { return }
+            self.capturedImage = CameraCaptureProcessing.squareCenterUIImage(image)
+        }
     }
 }
 
@@ -445,6 +637,30 @@ extension CameraService: AVCaptureFileOutputRecordingDelegate {
                                 didFinishRecordingTo outputFileURL: URL,
                                 from connections: [AVCaptureConnection],
                                 error: Error?) {
-        // TODO: offer save-to-library or video preview
+        guard error == nil else { return }
+        let rawURL = outputFileURL
+        Task { @MainActor in
+            self.isProcessingVideo = true
+            self.pendingRawVideoURL = rawURL
+            self.videoExportTask = Task { @MainActor in
+                defer {
+                    self.isProcessingVideo = false
+                    self.videoExportTask = nil
+                }
+                do {
+                    let square = try await CameraCaptureProcessing.exportSquareVideo(from: rawURL)
+                    try Task.checkCancellation()
+                    try? FileManager.default.removeItem(at: rawURL)
+                    self.capturedVideoURL = square
+                    self.pendingRawVideoURL = nil
+                } catch is CancellationError {
+                    try? FileManager.default.removeItem(at: rawURL)
+                    self.pendingRawVideoURL = nil
+                } catch {
+                    self.capturedVideoURL = rawURL
+                    self.pendingRawVideoURL = nil
+                }
+            }
+        }
     }
 }

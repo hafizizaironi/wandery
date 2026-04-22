@@ -4,6 +4,7 @@ import GoogleSignIn
 
 @main
 struct CafeHunterApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
         FirebaseApp.configure()

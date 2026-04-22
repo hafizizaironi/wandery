@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var authService      = AuthService()
     @StateObject private var firestoreService = FirestoreService()
     @StateObject private var statsService     = UserStatsService()
+    @StateObject private var socialService    = SocialService()
 
     var body: some View {
         ZStack {
@@ -14,11 +15,16 @@ struct ContentView: View {
                 SplashView()
             } else if authService.user == nil {
                 LoginView(authService: authService)
+            } else if socialService.isLoadingProfile {
+                SplashView()
+            } else if socialService.needsUsername {
+                UsernameOnboardingView(socialService: socialService, authService: authService)
             } else {
                 MainShellView(
                     authService:      authService,
                     firestoreService: firestoreService,
-                    statsService:     statsService
+                    statsService:     statsService,
+                    socialService:    socialService
                 )
                 .onAppear  { firestoreService.subscribe() }
                 .onDisappear { firestoreService.unsubscribe() }
@@ -39,6 +45,9 @@ struct ContentView: View {
                 statsService.subscribe(uid: uid)
             }
         }
+        .task(id: authService.user?.uid) {
+            socialService.start(for: authService.user)
+        }
     }
 }
 
@@ -50,6 +59,7 @@ struct SplashView: View {
             AppTheme.espresso.ignoresSafeArea()
             Text("☕")
                 .font(.system(size: 60))
+                .foregroundColor(AppTheme.cream.opacity(0.85))
                 .scaleEffect(pulsing ? 1.1 : 0.95)
                 .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulsing)
                 .onAppear { pulsing = true }
