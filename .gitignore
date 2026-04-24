@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+DerivedData/
+build/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# Node / Firebase Functions
+functions/node_modules/
+functions/.env
+functions/.env.*
+functions/.runtimeconfig.json
+functions/npm-debug.log*
+functions/yarn-debug.log*
+functions/yarn-error.log*
+
+# Secrets / env
+.env
+.env.*
+
+# Claude Code local state
+.claude/
+
+# Session export caveat files
+*-local-command-caveatcaveat-*.txt

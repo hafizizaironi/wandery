@@ -5,7 +5,8 @@ import FirebaseAuth
 struct EditProfileView: View {
     let user: FirebaseAuth.User
     @ObservedObject var authService: AuthService
-    @Environment(\.dismiss) private var dismiss
+    /// Required when presented outside NavigationStack/sheet (e.g. floating panel).
+    var onClose: () -> Void
 
     @State private var displayName: String
     @State private var selectedItem: PhotosPickerItem?
@@ -13,9 +14,10 @@ struct EditProfileView: View {
     @State private var isSaving = false
     @State private var errorMessage: String?
 
-    init(user: FirebaseAuth.User, authService: AuthService) {
+    init(user: FirebaseAuth.User, authService: AuthService, onClose: @escaping () -> Void) {
         self.user        = user
         self.authService = authService
+        self.onClose     = onClose
         _displayName     = State(initialValue: user.displayName ?? "")
     }
 
@@ -26,7 +28,7 @@ struct EditProfileView: View {
 
             // ── Inline header ──
             HStack {
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { onClose() }
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(AppTheme.cream.opacity(0.55))
 
@@ -150,6 +152,7 @@ struct EditProfileView: View {
                 default: initialsCircle
                 }
             }
+            .id(url.absoluteString)
         } else {
             initialsCircle
         }
@@ -190,7 +193,10 @@ struct EditProfileView: View {
                 if let img = pendingImage {
                     try await authService.updateProfilePhoto(img)
                 }
-                await MainActor.run { dismiss() }
+                await MainActor.run {
+                    isSaving = false
+                    onClose()
+                }
             } catch {
                 await MainActor.run {
                     errorMessage = error.localizedDescription

@@ -79,10 +79,10 @@ extension View {
 private struct LiquidGlassHUDModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
+            // No `.interactive()` — it defers tap recognition while resolving touch vs. glass tracking.
             .glassEffect(
                 .regular
-                    .tint(AppTheme.accentAction.opacity(0.07))
-                    .interactive(),
+                    .tint(AppTheme.accentAction.opacity(0.07)),
                 in: Circle()
             )
             .liquidGlassShine(in: Circle(), strength: 1.0)
@@ -145,9 +145,12 @@ struct MainMapView: View {
     @State private var targetCoordinate: CLLocationCoordinate2D?
     @State private var locationManager = LocationManager()
 
-    // Cute "happy" breathing loop for the Show List pill.
-    @State private var showListBreathing = false
-    @State private var showListPressed   = false
+    // Show List pill idle animation — periodic "happy jump".
+    @State private var showListJumpOffset: CGFloat = 0
+    @State private var showListJumpScale:  CGFloat = 1.0
+    @State private var showListDotPulse    = false
+    @State private var showListPressed     = false
+    @State private var showListIdleTask:   Task<Void, Never>? = nil
 
     private let peekHeight: CGFloat = 210
     @State private var screenHeight: CGFloat = 700
@@ -236,12 +239,12 @@ struct MainMapView: View {
                     .foregroundColor(AppTheme.textPrimary)
                     .frame(width: 44, height: 44)
                     .liquidGlassHUD()
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Add café or stall")
 
             Button {
-                print("[Haptic] location button tapped")
                 let gen = UIImpactFeedbackGenerator(style: .medium)
                 gen.impactOccurred()
                 centerOnUser = true
@@ -251,6 +254,7 @@ struct MainMapView: View {
                     .foregroundColor(AppTheme.textPrimary)
                     .frame(width: 44, height: 44)
                     .liquidGlassHUD()
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Center on my location")
@@ -272,6 +276,11 @@ struct MainMapView: View {
 
     private func showListFloatingButton(safeBottom: CGFloat) -> some View {
         let pill = Button {
+            // Open the sheet immediately; the tap squash is purely decorative.
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+                if sheetHeight < peekHeight { sheetHeight = peekHeight }
+                showListOverlay = true
+            }
             withAnimation(.spring(response: 0.28, dampingFraction: 0.6)) {
                 showListPressed = true
             }
@@ -280,26 +289,21 @@ struct MainMapView: View {
                     showListPressed = false
                 }
             }
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
-                if sheetHeight < peekHeight { sheetHeight = peekHeight }
-                showListOverlay = true
-            }
         } label: {
             HStack(spacing: 8) {
-                // Accent dot — little heartbeat pulse so the pill feels alive.
                 Circle()
                     .fill(AppTheme.accentAction)
                     .frame(width: 6, height: 6)
                     .shadow(
-                        color: AppTheme.accentAction.opacity(showListBreathing ? 0.85 : 0.45),
-                        radius: showListBreathing ? 5 : 2.5,
+                        color: AppTheme.accentAction.opacity(showListDotPulse ? 0.85 : 0.40),
+                        radius: showListDotPulse ? 5 : 2,
                         x: 0, y: 0
                     )
-                    .scaleEffect(showListBreathing ? 1.15 : 0.92)
+                    .scaleEffect(showListDotPulse ? 1.3 : 1.0)
+                    .animation(.easeInOut(duration: 0.18), value: showListDotPulse)
 
                 Image(systemName: "list.bullet")
                     .font(.system(size: 12, weight: .bold))
-                    .rotationEffect(.degrees(showListBreathing ? -3 : 3))
                 Text("Show list")
                     .font(.system(size: 12, weight: .semibold))
                     .tracking(0.3)
@@ -308,11 +312,9 @@ struct MainMapView: View {
             .padding(.leading, 12)
             .padding(.trailing, 14)
             .padding(.vertical, 10)
-            // Real Apple Liquid Glass capsule — refracts the map behind it.
             .glassEffect(
                 .regular
-                    .tint(AppTheme.accentAction.opacity(0.08))
-                    .interactive(),
+                    .tint(AppTheme.accentAction.opacity(0.08)),
                 in: Capsule()
             )
             .liquidGlassShine(in: Capsule(), strength: 1.0)
@@ -334,9 +336,9 @@ struct MainMapView: View {
             .shadow(color: AppTheme.accentAction.opacity(0.18),
                     radius: 10, x: 0, y: 3)
             .shadow(color: .black.opacity(0.10), radius: 6, x: 0, y: 2)
-            // Gentle "breathing" loop + tiny bob + press squish.
-            .scaleEffect(showListPressed ? 0.94 : (showListBreathing ? 1.035 : 1.0))
-            .offset(y: showListBreathing ? -1.5 : 1.5)
+            // Jump offset + scale drive the periodic hop; press squash stays.
+            .scaleEffect(showListPressed ? 0.94 : showListJumpScale)
+            .offset(y: showListJumpOffset)
         }
         .buttonStyle(.plain)
 
@@ -347,12 +349,55 @@ struct MainMapView: View {
         .padding(.bottom, listShowButtonBottomInset(safeBottom: safeBottom))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(true)
-        .onAppear {
-            // Kick off the infinite breathing/bob loop once the pill is on-screen.
-            guard !showListBreathing else { return }
-            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
-                showListBreathing = true
+        .onAppear { startShowListIdleAnimation() }
+        .onDisappear { stopShowListIdleAnimation() }
+    }
+
+    /// Launches a looping Task that fires a springy "happy jump" on the pill
+    /// every 3 seconds. Restarted fresh each time the pill enters the view tree.
+    private func startShowListIdleAnimation() {
+        stopShowListIdleAnimation()
+        showListJumpOffset = 0
+        showListJumpScale  = 1.0
+        showListDotPulse   = false
+
+        showListIdleTask = Task {
+            // Short initial pause so it doesn't jump the instant it appears.
+            try? await Task.sleep(for: .seconds(1.2))
+            while !Task.isCancelled {
+                await performHappyJump()
+                try? await Task.sleep(for: .seconds(3.0))
             }
+        }
+    }
+
+    private func stopShowListIdleAnimation() {
+        showListIdleTask?.cancel()
+        showListIdleTask = nil
+    }
+
+    @MainActor
+    private func performHappyJump() async {
+        // Phase 1 – squish down slightly before launching.
+        withAnimation(.spring(response: 0.12, dampingFraction: 0.82)) {
+            showListJumpScale  = 0.92
+            showListJumpOffset = 2
+        }
+        try? await Task.sleep(for: .milliseconds(110))
+
+        // Phase 2 – spring upward with overshoot.
+        withAnimation(.spring(response: 0.30, dampingFraction: 0.45)) {
+            showListJumpScale  = 1.08
+            showListJumpOffset = -12
+            showListDotPulse   = true
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+
+        // Phase 3 – settle back to rest.
+        withAnimation(.spring(response: 0.40, dampingFraction: 0.65)) {
+            showListJumpScale  = 1.0
+            showListJumpOffset = 0
+            showListDotPulse   = false
         }
     }
 
@@ -519,18 +564,17 @@ struct BottomSheetView<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── Header: back (left, detail-only) · drag handle (centered) · hide (right)
+            // ── Header: back (left, detail-only) · drag handle (center) · hide (right)
+            // Drag only on the handle strip; handle is below the HStack so side buttons stay tappable
+            // (Spacer does not absorb hits — center falls through to the drag gesture).
             ZStack {
-                // Drag handle — always centered on the sheet width, independent
-                // of whether the back button is visible, so it doesn't shift
-                // between list and detail mode.
-                Color.clear
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .highPriorityGesture(dragGesture)
                 Capsule()
                     .fill(AppTheme.textPrimary.opacity(0.22))
                     .frame(width: 48, height: 5)
+                    .padding(.horizontal, 48)
+                    .padding(.vertical, 18)
+                    .contentShape(Rectangle())
+                    .gesture(dragGesture)
 
                 HStack(spacing: 10) {
                     if let onBack {
@@ -557,7 +601,6 @@ struct BottomSheetView<Content: View>: View {
             style: .continuous
         ))
         .shadow(color: .black.opacity(0.28), radius: 24, x: 0, y: -6)
-        .simultaneousGesture(dragGesture)
     }
 
     /// Compact liquid-glass icon button used in the sheet header.
@@ -573,8 +616,7 @@ struct BottomSheetView<Content: View>: View {
                 .frame(width: 34, height: 34)
                 .glassEffect(
                     .regular
-                        .tint(AppTheme.accentAction.opacity(0.07))
-                        .interactive(),
+                        .tint(AppTheme.accentAction.opacity(0.07)),
                     in: Circle()
                 )
                 .liquidGlassShine(in: Circle(), strength: 1.0)

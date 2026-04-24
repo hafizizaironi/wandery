@@ -52,6 +52,9 @@ struct CafeMapView: View {
             span: MKCoordinateSpan(latitudeDelta: 0.04, longitudeDelta: 0.04)
         )
     )
+    // Incremented every time the user taps "center"; lets onChange fire even
+    // when the value was already true (e.g. location unavailable last time).
+    @State private var centerRequestID: Int = 0
 
     var body: some View {
         Map(position: $position) {
@@ -71,14 +74,31 @@ struct CafeMapView: View {
         .ignoresSafeArea()
         .onAppear { locationManager.requestPermission() }
         .onChange(of: centerOnUser) { _, shouldCenter in
-            guard shouldCenter, let coord = locationManager.userLocation else { return }
+            guard shouldCenter else { return }
+            // Always clear the trigger so subsequent taps always fire onChange.
+            centerOnUser = false
+            if let coord = locationManager.userLocation {
+                withAnimation {
+                    position = .region(MKCoordinateRegion(
+                        center: coord,
+                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                    ))
+                }
+            } else {
+                // GPS not ready — record that the user wants to center;
+                // we'll fly there once location arrives.
+                centerRequestID += 1
+            }
+        }
+        .onChange(of: locationManager.userLocation?.latitude) { _, _ in
+            guard let coord = locationManager.userLocation, centerRequestID > 0 else { return }
+            centerRequestID = 0
             withAnimation {
                 position = .region(MKCoordinateRegion(
                     center: coord,
                     span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
                 ))
             }
-            centerOnUser = false
         }
         .onChange(of: targetCoordinate?.latitude) { _, _ in
             guard let coord = targetCoordinate else { return }

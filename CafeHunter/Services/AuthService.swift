@@ -68,6 +68,17 @@ class AuthService: ObservableObject {
         try Auth.auth().signOut()
     }
 
+    /// Reloads the signed-in user from Firebase (e.g. after avatar/name changed on another device).
+    func refreshCurrentUser() async {
+        guard let user = Auth.auth().currentUser else { return }
+        do {
+            try await user.reload()
+            await MainActor.run { self.user = Auth.auth().currentUser }
+        } catch {
+            // Keep existing cached user on failure.
+        }
+    }
+
     // MARK: - Profile updates
 
     func updateDisplayName(_ name: String) async throws {
@@ -80,9 +91,11 @@ class AuthService: ObservableObject {
     }
 
     func updateProfilePhoto(_ image: UIImage) async throws {
-        guard let user,
-              let data = image.jpegData(compressionQuality: 0.75) else { return }
-        let ref = Storage.storage().reference().child("avatars/\(user.uid).jpg")
+        guard let user else { return }
+        guard let data = Self.jpegDataForAvatar(image) else { return }
+        // New object path each time so `photoURL` changes and other devices / URL caches load fresh bytes.
+        let ref = Storage.storage().reference()
+            .child("avatars/\(user.uid)/\(UUID().uuidString).jpg")
         _ = try await ref.putDataAsync(data)
         let url = try await ref.downloadURL()
         let request = user.createProfileChangeRequest()
@@ -90,6 +103,30 @@ class AuthService: ObservableObject {
         try await request.commitChanges()
         try await user.reload()
         await MainActor.run { self.user = Auth.auth().currentUser }
+    }
+
+    /// Downscales to keep uploads fast; Auth photo URL is app-specific (not Google account).
+    private static func jpegDataForAvatar(_ image: UIImage, maxEdge: CGFloat = 1024, quality: CGFloat = 0.78) -> Data? {
+        jpegData(from: downscaleImage(image, maxEdge: maxEdge), quality: quality)
+    }
+
+    private static func downscaleImage(_ image: UIImage, maxEdge: CGFloat) -> UIImage {
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return image }
+        let maxSide = max(size.width, size.height)
+        guard maxSide > maxEdge else { return image }
+        let scale = maxEdge / maxSide
+        let newSize = CGSize(width: round(size.width * scale), height: round(size.height * scale))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+    }
+
+    private static func jpegData(from image: UIImage, quality: CGFloat) -> Data? {
+        image.jpegData(compressionQuality: quality)
     }
 }
 

@@ -7,6 +7,10 @@ struct ProfileHomeView: View {
     @ObservedObject var authService:   AuthService
     @ObservedObject var statsService:  UserStatsService
     @ObservedObject var socialService: SocialService
+    /// True while this shell page is the visible tab (Map / Hero / Profile pager).
+    var isTabActive: Bool
+
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showEditProfile     = false
     @State private var selectedAchievement: Achievement?
@@ -106,7 +110,9 @@ struct ProfileHomeView: View {
         }
         .floatingPanel(isPresented: $showEditProfile) {
             if let u = user {
-                EditProfileView(user: u, authService: authService)
+                EditProfileView(user: u, authService: authService) {
+                    showEditProfile = false
+                }
             }
         }
         .floatingPanel(item: $selectedAchievement) { achievement in
@@ -115,6 +121,15 @@ struct ProfileHomeView: View {
                 isUnlocked:   isUnlocked(achievement),
                 unlockedDate: unlockDate(for: achievement)
             )
+        }
+        .onChange(of: isTabActive) { _, active in
+            guard active else { return }
+            Task { await authService.refreshCurrentUser() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, isTabActive {
+                Task { await authService.refreshCurrentUser() }
+            }
         }
     }
 
@@ -227,6 +242,7 @@ struct ProfileHomeView: View {
                 default: initialsCircle
                 }
             }
+            .id(url.absoluteString)
         } else {
             initialsCircle
         }
@@ -363,8 +379,14 @@ struct ProfileHomeView: View {
 
     private var storySection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionHeader("YOUR STORY SO FAR")
-                .padding(.horizontal, 16)
+            VStack(alignment: .leading, spacing: 6) {
+                sectionHeader("YOUR STORY SO FAR")
+                Text("Milestones from your hunt and achievements — not your Hero feed posts.")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppTheme.cream.opacity(0.35))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 16)
 
             if milestones.isEmpty {
                 Text("Your story is just beginning —\ngo find your first spot! ☕")

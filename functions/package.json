@@ -2,7 +2,7 @@
   "name": "cafehunter-functions",
   "description": "Cloud Functions for CafeHunter push notifications",
   "engines": {
-    "node": "18"
+    "node": "22"
   },
   "main": "index.js",
   "dependencies": {
