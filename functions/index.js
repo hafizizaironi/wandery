@@ -3,6 +3,7 @@ const admin = require("firebase-admin");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const { logger } = require("firebase-functions/v2");
+const geofire = require("geofire-common");
 
 admin.initializeApp();
 
@@ -20,7 +21,7 @@ async function sendToUser(uid, title, body, data = {}) {
   const tokens = snap.docs.map((d) => d.data().token).filter(Boolean);
   if (tokens.length === 0) return;
   const dataPayload = Object.fromEntries(
-    Object.entries(data).map(([k, v]) => [k, String(v)])
+    Object.entries(data).map(([k, v]) => [k, String(v)]),
   );
   for (const token of tokens) {
     try {
@@ -141,9 +142,9 @@ exports.generateCharacter = onCall(
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${REPLICATE_API_TOKEN.value()}`,
+          "Authorization": `Bearer ${REPLICATE_API_TOKEN.value()}`,
           "Content-Type": "application/json",
-          Prefer: "wait",
+          "Prefer": "wait",
         },
         body: JSON.stringify({
           input: {
@@ -155,7 +156,7 @@ exports.generateCharacter = onCall(
             go_fast: true,
           },
         }),
-      }
+      },
     );
 
     if (!predictionResp.ok) {
@@ -208,5 +209,131 @@ exports.generateCharacter = onCall(
 
     logger.info("generateCharacter: success", { filename });
     return { imageURL: publicURL };
-  }
+  },
+);
+
+// ─── Place dedup / create ────────────────────────────────────────────────
+// Single source-of-truth for inserting into the `places` collection.
+// Dedup priority:
+//   1. exact match on googlePlaceId (preferred — Google's stable ID)
+//   2. fuzzy name match within ~75m radius (handles user-added stalls)
+// Returns { placeId, placeName, created } so the client can stamp the post
+// with placeId immediately and update its UI.
+const PLACE_TYPES = new Set(["cafe", "stall", "restaurant"]);
+const PLACE_NEARBY_RADIUS_METERS = 75;
+
+function normalizeName(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+exports.findOrCreatePlace = onCall(
+  { timeoutSeconds: 15, memory: "256MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "Sign in to tag a place.");
+    }
+
+    const { name, type, lat, lng, googlePlaceId } = request.data || {};
+    const cleanName = String(name || "").trim();
+    if (cleanName.length < 1 || cleanName.length > 120) {
+      throw new HttpsError("invalid-argument", "Place name required (1–120 chars).");
+    }
+    if (!PLACE_TYPES.has(type)) {
+      throw new HttpsError("invalid-argument", "Unknown place type.");
+    }
+    if (typeof lat !== "number" || typeof lng !== "number" ||
+        lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      throw new HttpsError("invalid-argument", "Valid lat/lng required.");
+    }
+
+    const db = admin.firestore();
+    const placesCol = db.collection("places");
+
+    // 1) Google place_id is the strongest dedup signal.
+    if (typeof googlePlaceId === "string" && googlePlaceId.length > 0) {
+      const existing = await placesCol
+        .where("googlePlaceId", "==", googlePlaceId)
+        .limit(1)
+        .get();
+      if (!existing.empty) {
+        const doc = existing.docs[0];
+        return { placeId: doc.id, placeName: doc.data().name, created: false };
+      }
+    }
+
+    // 2) Fuzzy match within radius via geohash bounds.
+    const center = [lat, lng];
+    const bounds = geofire.geohashQueryBounds(center, PLACE_NEARBY_RADIUS_METERS);
+    const normalized = normalizeName(cleanName);
+    const matches = [];
+    for (const b of bounds) {
+      const snap = await placesCol
+        .orderBy("geohash")
+        .startAt(b[0])
+        .endAt(b[1])
+        .get();
+      for (const d of snap.docs) {
+        const data = d.data();
+        const dist = geofire.distanceBetween([data.lat, data.lng], center) * 1000;
+        if (dist > PLACE_NEARBY_RADIUS_METERS) continue;
+        if (normalizeName(data.name) === normalized) {
+          matches.push({ id: d.id, data });
+        }
+      }
+    }
+    if (matches.length > 0) {
+      const m = matches[0];
+      return { placeId: m.id, placeName: m.data.name, created: false };
+    }
+
+    // 3) Create — transaction re-checks googlePlaceId to close the race.
+    // On conflict (RACE_LOST), re-read the winning row outside the txn.
+    const RACE_LOST = "race-lost";
+    const newRef = placesCol.doc();
+    const geohash = geofire.geohashForLocation(center);
+    try {
+      await db.runTransaction(async (tx) => {
+        if (typeof googlePlaceId === "string" && googlePlaceId.length > 0) {
+          const recheck = await tx.get(
+            placesCol.where("googlePlaceId", "==", googlePlaceId).limit(1),
+          );
+          if (!recheck.empty) {
+            throw new Error(RACE_LOST);
+          }
+        }
+        tx.set(newRef, {
+          name: cleanName,
+          type,
+          lat,
+          lng,
+          geohash,
+          source: googlePlaceId ? "google" : "user",
+          googlePlaceId: googlePlaceId || null,
+          createdBy: uid,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          globalVisitCount: 0,
+          lastVisitedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+    } catch (err) {
+      if (err && err.message === RACE_LOST) {
+        const winner = await placesCol
+          .where("googlePlaceId", "==", googlePlaceId)
+          .limit(1)
+          .get();
+        if (!winner.empty) {
+          const w = winner.docs[0];
+          return { placeId: w.id, placeName: w.data().name, created: false };
+        }
+      }
+      throw err;
+    }
+
+    return { placeId: newRef.id, placeName: cleanName, created: true };
+  },
 );

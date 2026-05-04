@@ -45,6 +45,10 @@ final class CameraService: NSObject {
     private let movieOutput  = AVCaptureMovieFileOutput()
     private let sessionQueue = DispatchQueue(label: "com.cafehunter.camera.session")
     private var currentInput: AVCaptureDeviceInput?
+    /// Added on `startRecording`, removed in the file-output delegate. Keeping it off the
+    /// capture session outside recording prevents iOS from putting connected Bluetooth
+    /// audio devices into HFP call mode.
+    private var audioInput: AVCaptureDeviceInput?
 
     private var progressTask: Task<Void, Never>?
     private var videoExportTask: Task<Void, Never>?
@@ -84,7 +88,6 @@ final class CameraService: NSObject {
         guard isAuthorized else { return }
         let slotSnapshot = lensSlot
         DispatchQueue.main.async { [weak self] in
-            try? AppAudioSession.configureForCameraCapture()
             self?.sessionQueue.async { [weak self] in
                 guard let self else { return }
 
@@ -222,8 +225,21 @@ final class CameraService: NSObject {
         guard session.isRunning, !isRecording else { return }
         capturedImage = nil
         capturedVideoURL = nil
+
+        // Activate audio session before adding the input so iOS doesn't briefly
+        // negotiate the wrong category. Failure is non-fatal (recording still
+        // captures video); we only log in debug.
+        do {
+            try AppAudioSession.activateForRecording()
+        } catch {
+            #if DEBUG
+            print("[Camera] activateForRecording failed: \(error.localizedDescription)")
+            #endif
+        }
+
         sessionQueue.sync { [weak self] in
             guard let self else { return }
+            self.addAudioInputIfNeeded()
             self.applyNaturalVideoMirroringToOutputs()
             self.reapplyDevice60fpsFrameDuration()
         }
@@ -372,11 +388,8 @@ final class CameraService: NSObject {
         }
         if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
 
-        if let audioDevice = AVCaptureDevice.default(for: .audio),
-           let audioInput  = try? AVCaptureDeviceInput(device: audioDevice),
-           session.canAddInput(audioInput) {
-            session.addInput(audioInput)
-        }
+        // Audio input is added lazily in `startRecording` and removed when the file
+        // output finishes. See `audioInput` declaration for the BT-HFP rationale.
 
         Self.applyHD60VideoRecordingSettings(device: device, session: session)
 
@@ -418,6 +431,28 @@ final class CameraService: NSObject {
             if supports60 { return format }
         }
         return nil
+    }
+
+    /// Add the audio capture input. Call from `sessionQueue`.
+    private func addAudioInputIfNeeded() {
+        guard audioInput == nil else { return }
+        guard let device = AVCaptureDevice.default(for: .audio),
+              let input = try? AVCaptureDeviceInput(device: device) else { return }
+        session.beginConfiguration()
+        if session.canAddInput(input) {
+            session.addInput(input)
+            audioInput = input
+        }
+        session.commitConfiguration()
+    }
+
+    /// Remove the audio capture input. Call from `sessionQueue` after the file output finishes.
+    private func removeAudioInput() {
+        guard let input = audioInput else { return }
+        session.beginConfiguration()
+        session.removeInput(input)
+        session.commitConfiguration()
+        audioInput = nil
     }
 
     /// Match saved stills/video: disable the default front-camera horizontal mirror on capture outputs.
@@ -637,6 +672,14 @@ extension CameraService: AVCaptureFileOutputRecordingDelegate {
                                 didFinishRecordingTo outputFileURL: URL,
                                 from connections: [AVCaptureConnection],
                                 error: Error?) {
+        // Tear down the audio path now that the file is finalized — keeps Bluetooth
+        // devices in A2DP between recordings.
+        sessionQueue.async { [weak self] in
+            self?.removeAudioInput()
+        }
+        Task { @MainActor in
+            AppAudioSession.deactivate()
+        }
         guard error == nil else { return }
         let rawURL = outputFileURL
         Task { @MainActor in

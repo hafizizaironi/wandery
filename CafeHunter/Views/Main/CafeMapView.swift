@@ -40,8 +40,10 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
 struct CafeMapView: View {
     let cafes: [Cafe]
+    let friendPlaces: [FriendPlace]
     let activeCafeId: String?
     let onPinClick: (String) -> Void
+    let onFriendPinClick: (FriendPlace) -> Void
     @Binding var centerOnUser: Bool
     @Binding var targetCoordinate: CLLocationCoordinate2D?
     var locationManager: LocationManager
@@ -58,6 +60,7 @@ struct CafeMapView: View {
 
     var body: some View {
         Map(position: $position) {
+            // Legacy curated cafes — drawn first so friend pins layer on top.
             ForEach(cafes) { cafe in
                 if let id = cafe.id {
                     Annotation(cafe.name,
@@ -66,6 +69,15 @@ struct CafeMapView: View {
                         CafePinView(cafe: cafe, isActive: id == activeCafeId)
                             .onTapGesture { onPinClick(id) }
                     }
+                }
+            }
+            // Friend-tagged places — visually distinct (avatar + accent).
+            ForEach(friendPlaces) { place in
+                Annotation(place.name,
+                           coordinate: CLLocationCoordinate2D(latitude: place.lat, longitude: place.lng),
+                           anchor: .bottom) {
+                    FriendPlacePinView(place: place)
+                        .onTapGesture { onFriendPinClick(place) }
                 }
             }
             UserAnnotation()
@@ -137,6 +149,48 @@ struct CafePinView: View {
 
             PinTail()
                 .fill(isActive ? accent : AppTheme.espresso)
+                .frame(width: 8, height: 5)
+        }
+    }
+}
+
+/// Pin for a friend-tagged place. Visually distinct from CafePinView so users
+/// can distinguish "friend was here" pins from the legacy curated rows.
+/// Shows a "+N" badge when more than one friend has visited the place.
+struct FriendPlacePinView: View {
+    let place: FriendPlace
+
+    private var accent: Color { AppTheme.accentAction }
+    private var distinctFriends: Int {
+        Set(place.posts.map(\.authorId)).count
+    }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            ZStack(alignment: .topTrailing) {
+                ZStack {
+                    Circle()
+                        .fill(accent)
+                        .frame(width: 42, height: 42)
+                        .shadow(color: accent.opacity(0.5), radius: 8)
+                    Text(place.type.emoji)
+                        .font(.system(size: 19))
+                }
+                .overlay(Circle().stroke(Color.white, lineWidth: 2.5))
+
+                if distinctFriends > 1 {
+                    Text("\(distinctFriends)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(AppTheme.textPrimary))
+                        .overlay(Capsule().stroke(Color.white, lineWidth: 1.5))
+                        .offset(x: 6, y: -4)
+                }
+            }
+            PinTail()
+                .fill(accent)
                 .frame(width: 8, height: 5)
         }
     }

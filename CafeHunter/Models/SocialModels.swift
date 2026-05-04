@@ -17,6 +17,8 @@ struct FriendPost: Identifiable, Equatable {
     let mediaURL: String
     let thumbnailURL: String?
     let createdAt: Date
+    let placeId: String?
+    let placeName: String?
 
     var isVideo: Bool { mediaType == "video" }
 
@@ -29,7 +31,9 @@ struct FriendPost: Identifiable, Equatable {
         mediaType: String,
         mediaURL: String,
         thumbnailURL: String?,
-        createdAt: Date
+        createdAt: Date,
+        placeId: String? = nil,
+        placeName: String? = nil
     ) {
         self.id = id
         self.authorId = authorId
@@ -39,6 +43,8 @@ struct FriendPost: Identifiable, Equatable {
         self.mediaURL = mediaURL
         self.thumbnailURL = thumbnailURL
         self.createdAt = createdAt
+        self.placeId = placeId
+        self.placeName = placeName
     }
 
     init?(document: QueryDocumentSnapshot) {
@@ -55,6 +61,8 @@ struct FriendPost: Identifiable, Equatable {
         self.mediaType = mediaType
         self.mediaURL = mediaURL
         thumbnailURL = d["thumbnailURL"] as? String
+        placeId = d["placeId"] as? String
+        placeName = d["placeName"] as? String
         if let ts = d["createdAt"] as? Timestamp {
             createdAt = ts.dateValue()
         } else {

@@ -65,6 +65,9 @@ private enum HeroCardID: Hashable {
 struct HeroPageView: View {
     var isActive: Bool = false
     @ObservedObject var socialService: SocialService
+    /// Fired when a feed post's place pill is tapped — parent (MainShellView)
+    /// switches to the map page and centers on the tagged place.
+    var onJumpToPlace: (String) -> Void = { _ in }
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var camera = CameraService()
@@ -96,6 +99,10 @@ struct HeroPageView: View {
     // Mode state
     @State private var showPhotosPicker = false
     @State private var selectedPhoto: PhotosPickerItem?
+
+    // Place tagging
+    @State private var pendingPlace: PlaceSelection?
+    @State private var showPlacePicker = false
 
     // MARK: - Body
 
@@ -285,6 +292,10 @@ struct HeroPageView: View {
     }
 
     private func postFromCapture() async {
+        // Re-entrancy guard: tap-to-post fires from a gesture that can deliver
+        // twice in quick succession. Without this we'd race two uploads + two
+        // findOrCreatePlace calls (the "GTMSessionFetcher already running" log).
+        guard !isPosting else { return }
         postError = ""
         isPosting = true
         defer { isPosting = false }
@@ -292,19 +303,38 @@ struct HeroPageView: View {
             try await socialService.uploadAndCreatePost(
                 image: camera.capturedImage,
                 videoURL: camera.capturedVideoURL,
-                caption: previewCaption
+                caption: previewCaption,
+                place: pendingPlace
             )
             previewCaption = ""
+            pendingPlace = nil
             reviewPostTranslation = .zero
             camera.discardCapture()
             syncCameraSessionForCaptureReview()
         } catch {
-            postError = error.localizedDescription
+            postError = friendlyPostError(error)
         }
+    }
+
+    /// Translate raw NSError / FunctionsError into something the user can act on.
+    private func friendlyPostError(_ error: Error) -> String {
+        let ns = error as NSError
+        let lower = ns.localizedDescription.lowercased()
+        if lower.contains("not found") || ns.code == 5 /* FunctionsErrorCode.notFound */ {
+            return "Couldn't reach the place service. Try again in a moment."
+        }
+        if lower.contains("network") || lower.contains("offline") {
+            return "No internet — your post wasn't saved."
+        }
+        if pendingPlace != nil && lower.contains("location") {
+            return "Couldn't get your location to save the place. Enable Location and try again."
+        }
+        return "Couldn't post: \(ns.localizedDescription)"
     }
 
     private func retakeFromReview() {
         previewCaption = ""
+        pendingPlace = nil
         postError = ""
         reviewPostTranslation = .zero
         camera.discardCapture()
@@ -395,9 +425,15 @@ struct HeroPageView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
 
-                FeedPostCard(post: post, index: index, socialService: socialService, isVideoActive: isVideoActive)
-                    .frame(width: side, height: side)
-                    .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
+                FeedPostCard(
+                    post: post,
+                    index: index,
+                    socialService: socialService,
+                    isVideoActive: isVideoActive,
+                    onPlaceTap: { placeId in onJumpToPlace(placeId) }
+                )
+                .frame(width: side, height: side)
+                .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
             }
 
             // Reactions + comment hug the card; Spacer fills leftover space above navbar.
@@ -477,10 +513,61 @@ struct HeroPageView: View {
                     .onTapGesture { captionFocused = false }
             }
 
-            HStack(alignment: .bottom) {
+            VStack(spacing: 8) {
                 Spacer(minLength: 0)
-                // Invisible Text drives pill width; overlays render visual + input.
-                Text(previewCaption.isEmpty ? "whats on your mind☺️?" : previewCaption)
+                placeTagPill
+                HStack(alignment: .bottom) {
+                    Spacer(minLength: 0)
+                    captionPillBody
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .overlay {
+            if camera.isProcessingVideo {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.15)
+            }
+        }
+    }
+
+    private var placeTagPill: some View {
+        Button {
+            showPlacePicker = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: pendingPlace == nil ? "mappin.and.ellipse" : "mappin.circle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(pendingPlace?.name ?? "Tag a place")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.black.opacity(0.45), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showPlacePicker) {
+            PlacePickerSheet { selection in
+                pendingPlace = selection
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var captionPillBody: some View {
+        // Invisible Text drives pill width; overlays render visual + input.
+        Text(previewCaption.isEmpty ? "whats on your mind☺️?" : previewCaption)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.clear)
                     .fixedSize()
@@ -521,24 +608,6 @@ struct HeroPageView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(liquidGlassPill)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
-        }
-        .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
-        .overlay {
-            if camera.isProcessingVideo {
-                ProgressView()
-                    .tint(.white)
-                    .scaleEffect(1.15)
-            }
-        }
     }
 
     /// Rear only: **1** ↔ **0.5** (smooth zoom on supported devices).
@@ -986,6 +1055,7 @@ private struct FeedPostCard: View {
     @ObservedObject var socialService: SocialService
     /// Only the page aligned with the vertical pager should play; keeps off-screen and background posts silent.
     let isVideoActive: Bool
+    var onPlaceTap: (String) -> Void = { _ in }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -1010,15 +1080,45 @@ private struct FeedPostCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
 
-            if !post.caption.isEmpty {
-                captionPill
-                    .padding(.bottom, 16)
+            if !post.caption.isEmpty || post.placeName != nil {
+                VStack(spacing: 6) {
+                    if let placeName = post.placeName, let placeId = post.placeId {
+                        Button {
+                            onPlaceTap(placeId)
+                        } label: {
+                            placePill(name: placeName)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if !post.caption.isEmpty {
+                        captionPill
+                    }
+                }
+                .padding(.bottom, 16)
             }
         }
         .overlay(
             RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.15), lineWidth: 1)
         )
+    }
+
+    private func placePill(name: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "mappin.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+            Text(name)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(
+            Capsule().fill(.ultraThinMaterial)
+                .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 2)
+        )
+        .padding(.horizontal, 20)
     }
 
     private var captionPill: some View {

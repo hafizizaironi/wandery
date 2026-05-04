@@ -1,0 +1,148 @@
+CAFEHUNTER / WANDERY — REDIRECTION ROADMAP
+============================================
+Pivot: Locket-style close-friends food map. Photo-first posts tagged to a
+place via Google Places. 20-friend cap. Map shows friend-tagged places +
+crowd-trending places. Achievements drive discovery.
+
+Status legend: [x] done · [ ] todo · [~] partial
+
+
+PHASE 1 — Place tagging foundation                                  [x] DONE
+============================================================================
+Shipped 2026-05-04. Build green, lint green.
+
+[x] PlaceType.restaurant added (🍽️ Restaurant)
+[x] Slim Place model (geohash, source, googlePlaceId, globalVisitCount,
+    lastVisitedAt, createdAt, createdBy)
+[x] FriendPost gains optional placeId / placeName
+[x] PlacePickerSheet UI (search, type chips, type override, "add new place")
+[x] PlacePickerService wraps GooglePlacesSwift (nearby + autocomplete +
+    fetch-coords; food-only filter; Google PlaceType ↔ ours mapping)
+[x] LocationProvider for one-shot CoreLocation
+[x] PlacesClient init in CafeHunterApp from Info.plist (GMSPlacesAPIKey)
+[x] Composer integration: 📍 pill above caption pill, sheet selection
+    threaded into uploadAndCreatePost(... place:)
+[x] SocialService.uploadAndCreatePost stamps placeId/placeName
+[x] Cloud Function findOrCreatePlace — googlePlaceId-first dedup, then
+    geohash + normalized-name fuzzy match within 75m, transaction guards
+    races, geofire-common 6.0.0 installed
+
+Outstanding before Phase 2 ships in prod:
+[x] firebase deploy --only functions:findOrCreatePlace  (deployed 2026-05-04)
+[ ] firestore.rules: deny direct client writes to places/* — only the
+    callable may create places. (Not blocking Phase 2 dev locally with
+    emulator.)
+[ ] Real-device test of the picker (location auth, distance display,
+    autocomplete UX). Simulator location is faked; surface bugs only show
+    on hardware.
+
+
+PHASE 2 — Friend-tagged places on the map                          [x] DONE
+============================================================================
+Shipped 2026-05-04. Build green.
+
+Decisions locked:
+- Legacy curated Cafe rows STAY visible on the map (drawn under friend
+  pins so they don't fight for attention).
+- Place-detail sheet shows ALL friend posts at that place as a card
+  stack, most recent on top.
+
+[x] FriendPlacesService: derives [FriendPlace] from socialService.feedPosts
+    (which already includes self + 29 friends, capped 50). Hydrates
+    places/{id} docs in parallel, caches, sorted by most-recent visit.
+[x] CafeMapView: second annotation layer (FriendPlacePinView) with
+    accent color + "+N" badge when >1 distinct friend has visited.
+[x] PlaceDetailSheet: card-stack (3-deep visible) with most recent on
+    top. Tap a back card to bring forward, swipe front card to advance.
+    Header shows place name + "X visits by Y friends".
+[x] AddCafe entry already feature-gated (addCafeEnabled = false) — no
+    work needed.
+
+Outstanding:
+[ ] Real-device test: post from one device, confirm pin appears on
+    map for a friend on another device.
+[ ] Card swipe direction polish (currently just advances forward;
+    swipe-up could pop a card off entirely for a more tactile feel).
+
+
+PHASE 3 — Trending nearby (crowd signal)                            [ ]
+============================================================================
+Goal: hint places frequented by the broader user base, even if no friend
+has tagged them.
+
+Tasks:
+[ ] Cloud Function onPostCreate trigger — increments
+    places/{placeId}.globalVisitCount and updates lastVisitedAt.
+    Idempotent: derive (postId,placeId) and skip on retry.
+[ ] Map "trending" query: places.where(geohash within bounds)
+    .orderBy("globalVisitCount","desc").limit(20). Reuse the geohash
+    bounds helper from findOrCreatePlace.
+[ ] Same geohash-bound query path also feeds the PlacePicker so the user
+    sees nearby places tagged by OTHER users — not just their own. Needs
+    a small Swift port of geofire-common's geohashQueryBounds, or a new
+    "nearbyPlaces" callable that wraps it server-side.
+[ ] Visual distinction:
+    - Friend pin → accent color, with avatar.
+    - Trending pin → dim/secondary color, "👥 N" badge for count, no
+      identity revealed.
+[ ] Privacy: never expose WHO visited a trending pin — count only.
+[ ] DECISION OPEN: minimum visit threshold to surface (proposed: ≥3) so
+    one-off taggings don't clutter the map.
+
+
+PHASE 4 — Server-side 20-friend cap                                 [ ]
+============================================================================
+Goal: cap enforced even with a tampered client.
+
+Tasks:
+[ ] Callable acceptFriendRequest(requestId): in a transaction, check
+    both users' friend counts < 20, then atomic dual-write to
+    users/{a}/friends/{b} and users/{b}/friends/{a}. Update request
+    status. Reject with friendly error if either side is full.
+[ ] firestore.rules: deny direct client writes to
+    users/{uid}/friends/{friendId}. Only the callable writes.
+[ ] FriendsView UI: show "X / 20" indicator. Disable accept/send when
+    full.
+[ ] Migration check: any existing user > 20? (Probably none — small
+    base.) Function refuses new adds gracefully when full.
+
+
+PHASE 5 — Discovery achievements                                    [ ]
+============================================================================
+Goal: badges reward exploration, not arbitrary milestones. All driven by
+Cloud Function triggers (no client claims = no cheating).
+
+Proposed triggers (review/cull before implementing):
+
+  Pioneer       — First to create a places/ doc (created:true return
+                  from findOrCreatePlace).
+  Wanderer      — 5 distinct places tagged in a calendar month.
+  Local Guide   — A place YOU pioneered hits 10 globalVisitCount.
+  Tastemaker    — A place you pioneered visited by 3+ non-friends.
+  Loyal         — 5 posts at the same place. Counter on
+                  users/{uid}/placeStats/{placeId}.
+
+Tasks:
+[ ] Confirm/edit the achievement list above.
+[ ] Cloud Functions for each trigger.
+[ ] Achievement unlock UI (likely already partially exists in
+    Models/Achievement.swift — check).
+
+
+SUGGESTED SHIP ORDER
+============================================================================
+2 → 3 → 5 → 4
+
+- Phase 2 unlocks the entire UX promise.
+- Phase 3 makes the map worth opening daily.
+- Phase 5 drives the behavior loop.
+- Phase 4 is "harden before public launch" — important but invisible
+  until then.
+
+
+OPEN QUESTIONS (parked)
+============================================================================
+- Phase 3 trending threshold (default ≥3 visits)?
+- Phase 5 achievement list — keep all five, or trim?
+- Deploy findOrCreatePlace to prod now, or stay on emulator until Phase 2
+  is ready and we can test the full loop end-to-end?

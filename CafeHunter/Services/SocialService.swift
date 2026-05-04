@@ -1,7 +1,9 @@
 import AVFoundation
 import Combine
+import CoreLocation
 @preconcurrency import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 import FirebaseStorage
 import UIKit
 
@@ -243,7 +245,10 @@ final class SocialService: ObservableObject {
         ])
     }
 
-    func uploadAndCreatePost(image: UIImage?, videoURL: URL?, caption: String) async throws {
+    func uploadAndCreatePost(image: UIImage?,
+                             videoURL: URL?,
+                             caption: String,
+                             place: PlaceSelection? = nil) async throws {
         guard let authorUid = uid else { throw SocialError.notSignedIn }
         guard profile?.username != nil else { throw SocialError.needsUsername }
         let cap = String(caption.prefix(25))
@@ -253,6 +258,13 @@ final class SocialService: ObservableObject {
         // can leave the field null until the server ack, which excludes the row from ordered queries.
         let createdAt = Timestamp(date: Date())
 
+        // Resolve / dedup the place via Cloud Function before stamping the post.
+        // Bypassed for placeless posts.
+        let resolvedPlace: (id: String, name: String)? = try await {
+            guard let place else { return nil }
+            return try await resolvePlace(place)
+        }()
+
         if let image {
             let processed = CameraCaptureProcessing.preparePhotoForUpload(image) ?? image
             guard let data = processed.jpegData(compressionQuality: 0.82) else { throw SocialError.uploadFailed }
@@ -260,14 +272,19 @@ final class SocialService: ObservableObject {
             let ref = Storage.storage().reference().child(path)
             _ = try await ref.putDataAsync(data)
             let url = try await ref.downloadURL()
-            try await postRef.setData([
+            var payload: [String: Any] = [
                 "authorId": authorUid,
                 "authorUsername": profile?.username ?? "user",
                 "caption": cap,
                 "mediaType": "image",
                 "mediaURL": url.absoluteString,
                 "createdAt": createdAt,
-            ])
+            ]
+            if let resolvedPlace {
+                payload["placeId"] = resolvedPlace.id
+                payload["placeName"] = resolvedPlace.name
+            }
+            try await postRef.setData(payload)
             prependOptimisticFeedPost(FriendPost(
                 id: postId,
                 authorId: authorUid,
@@ -276,7 +293,9 @@ final class SocialService: ObservableObject {
                 mediaType: "image",
                 mediaURL: url.absoluteString,
                 thumbnailURL: nil,
-                createdAt: createdAt.dateValue()
+                createdAt: createdAt.dateValue(),
+                placeId: resolvedPlace?.id,
+                placeName: resolvedPlace?.name
             ))
             return
         }
@@ -308,6 +327,10 @@ final class SocialService: ObservableObject {
             if let thumbURL {
                 payload["thumbnailURL"] = thumbURL
             }
+            if let resolvedPlace {
+                payload["placeId"] = resolvedPlace.id
+                payload["placeName"] = resolvedPlace.name
+            }
             try await postRef.setData(payload)
             prependOptimisticFeedPost(FriendPost(
                 id: postId,
@@ -317,11 +340,53 @@ final class SocialService: ObservableObject {
                 mediaType: "video",
                 mediaURL: url.absoluteString,
                 thumbnailURL: thumbURL,
-                createdAt: createdAt.dateValue()
+                createdAt: createdAt.dateValue(),
+                placeId: resolvedPlace?.id,
+                placeName: resolvedPlace?.name
             ))
             return
         }
         throw SocialError.uploadFailed
+    }
+
+    /// Calls the `findOrCreatePlace` Cloud Function — server-side dedup ensures
+    /// the same place isn't created twice across users. Returns the resolved
+    /// (placeId, placeName) for stamping on the post.
+    private func resolvePlace(_ sel: PlaceSelection) async throws -> (id: String, name: String) {
+        // Fast path: user picked an existing DB row from the picker — we
+        // already have a stable placeId, so skip the cloud round-trip.
+        if let existingId = sel.id, !sel.isNew {
+            return (existingId, sel.name)
+        }
+
+        var lat = sel.lat
+        var lng = sel.lng
+        // User-added-by-name flow: no coords yet, fall back to current location.
+        if lat == 0 && lng == 0 {
+            if let coord = await LocationProvider.shared.currentCoordinate() {
+                lat = coord.latitude
+                lng = coord.longitude
+            } else {
+                throw SocialError.uploadFailed
+            }
+        }
+        var payload: [String: Any] = [
+            "name": sel.name,
+            "type": sel.type.rawValue,
+            "lat": lat,
+            "lng": lng,
+        ]
+        if let gid = sel.googlePlaceId {
+            payload["googlePlaceId"] = gid
+        }
+        let callable = Functions.functions().httpsCallable("findOrCreatePlace")
+        let result = try await callable.call(payload)
+        guard let dict = result.data as? [String: Any],
+              let id = dict["placeId"] as? String,
+              let name = dict["placeName"] as? String else {
+            throw SocialError.uploadFailed
+        }
+        return (id, name)
     }
 
     private func generateVideoThumbnail(videoURL: URL, postId: String, authorUid: String) async throws -> String {

@@ -4,9 +4,23 @@ import FirebaseFirestore
 enum PlaceType: String, Codable, CaseIterable {
     case cafe
     case stall
+    case restaurant
 
-    var emoji: String { self == .cafe ? "☕" : "🍜" }
-    var label: String { self == .cafe ? "Café" : "Street Stall" }
+    var emoji: String {
+        switch self {
+        case .cafe: return "☕"
+        case .stall: return "🍜"
+        case .restaurant: return "🍽️"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .cafe: return "Café"
+        case .stall: return "Street Stall"
+        case .restaurant: return "Restaurant"
+        }
+    }
 }
 
 struct Cafe: Identifiable, Codable {
@@ -22,6 +36,25 @@ struct Cafe: Identifiable, Codable {
     var vibeTags: [String] = []
     var description: String = ""
     var photos: [String] = []
+}
+
+/// Slim place record created on-demand from a tagged post.
+/// Distinct from `Cafe` (the legacy admin-curated record) — `Place` is what
+/// the close-friends map is built on. Deduped server-side via geohash + name.
+struct Place: Identifiable, Codable {
+    @DocumentID var id: String?
+    var name: String = ""
+    var type: PlaceType = .restaurant
+    var lat: Double = 0
+    var lng: Double = 0
+    var geohash: String = ""
+    /// "google" when imported from Google Places, "user" when added manually.
+    var source: String = "google"
+    /// Google Places place_id, when available — used for dedup.
+    var googlePlaceId: String?
+    var globalVisitCount: Int = 0
+    var lastVisitedAt: Date?
+    var createdAt: Date?
 }
 
 struct CafeFormData {

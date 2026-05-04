@@ -148,6 +148,7 @@ struct ArcNavBar: View {
 
     @Binding var selectedPage: ShellPage
     @Binding var pageProgress: CGFloat
+    var showAddButton: Bool = true
     var onAddTap: () -> Void = {}
 
     private let tabs: [(page: ShellPage, icon: String)] = [
@@ -340,8 +341,10 @@ struct ArcNavBar: View {
 
                 // ── Add-cafe "+" — sits at the geometric center of the
                 //    arc's imaginary circle (below the arc, cradled by it).
-                AddCafeButton(action: onAddTap)
-                    .position(center)
+                if showAddButton {
+                    AddCafeButton(action: onAddTap)
+                        .position(center)
+                }
 
                 // ── Moving active indicator (on top of everything)
                 ArcKnobIndicator(

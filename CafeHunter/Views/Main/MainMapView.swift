@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import UIKit
+import FirebaseFirestore
 
 // MARK: - Liquid-glass shine (specular highlight)
 
@@ -132,7 +133,13 @@ enum FilterType: String, CaseIterable {
 struct MainMapView: View {
     @ObservedObject var authService: AuthService
     @ObservedObject var firestoreService: FirestoreService
+    @ObservedObject var socialService: SocialService
+    /// Set externally (e.g. from a feed pill tap) to fly to a place + open
+    /// the detail sheet. Cleared once consumed.
+    @Binding var pendingPlaceJumpId: String?
 
+    @State private var friendPlacesService = FriendPlacesService()
+    @State private var activeFriendPlace: FriendPlace?
     @State private var activeCafeId: String?
     @State private var sheetView: SheetViewMode = .list
     @State private var filter: FilterType = .all
@@ -176,12 +183,28 @@ struct MainMapView: View {
             // Map
             CafeMapView(
                 cafes: filteredCafes,
+                friendPlaces: friendPlacesService.places,
                 activeCafeId: activeCafeId,
                 onPinClick: { id in selectCafe(id) },
+                onFriendPinClick: { place in activeFriendPlace = place },
                 centerOnUser: $centerOnUser,
                 targetCoordinate: $targetCoordinate,
                 locationManager: locationManager
             )
+            .task(id: socialService.feedPosts.map(\.id)) {
+                await friendPlacesService.refresh(from: socialService.feedPosts)
+            }
+            .sheet(item: $activeFriendPlace) { place in
+                PlaceDetailSheet(place: place) {
+                    activeFriendPlace = nil
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.hidden)
+            }
+            .onChange(of: pendingPlaceJumpId) { _, newId in
+                guard let placeId = newId else { return }
+                Task { await consumePlaceJump(placeId: placeId) }
+            }
 
             // Top-right HUD buttons
             topButtons
@@ -228,21 +251,28 @@ struct MainMapView: View {
 
     // MARK: - Top buttons
 
+    /// Admin "+" entry point is hidden for now — the new conversational
+    /// AddCafe flow (and this legacy admin sheet) are both gated off until
+    /// the flow is fully wired up. Flip to `true` to bring it back.
+    private let showAdminAddButton = false
+
     private var topButtons: some View {
         VStack(spacing: 10) {
-            Button {
-                editCafe = nil
-                showAdmin = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(AppTheme.textPrimary)
-                    .frame(width: 44, height: 44)
-                    .liquidGlassHUD()
-                    .contentShape(Circle())
+            if showAdminAddButton {
+                Button {
+                    editCafe = nil
+                    showAdmin = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(AppTheme.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .liquidGlassHUD()
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add café or stall")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Add café or stall")
 
             Button {
                 let gen = UIImpactFeedbackGenerator(style: .medium)
@@ -480,6 +510,43 @@ struct MainMapView: View {
     }
 
     // MARK: - Navigation helpers
+
+    /// Reaction to `pendingPlaceJumpId` being set externally. Looks up the
+    /// place in the local cache; falls back to a Firestore fetch if it isn't
+    /// yet hydrated (e.g. user tapped a pill before the feed listener fired).
+    private func consumePlaceJump(placeId: String) async {
+        defer { pendingPlaceJumpId = nil }
+
+        // 1. Local cache hit — fast path.
+        if let place = friendPlacesService.places.first(where: { $0.id == placeId }) {
+            targetCoordinate = CLLocationCoordinate2D(latitude: place.lat, longitude: place.lng)
+            activeFriendPlace = place
+            return
+        }
+
+        // 2. Cache miss — fetch the place doc directly + synthesize a
+        //    one-post FriendPlace so the sheet still opens.
+        let db = Firestore.firestore()
+        do {
+            let doc = try await db.collection("places")
+                .document(placeId)
+                .getDocument(as: Place.self)
+            let postsAtPlace = socialService.feedPosts.filter { $0.placeId == placeId }
+            let synthesized = FriendPlace(
+                id: placeId,
+                name: doc.name,
+                type: doc.type,
+                lat: doc.lat,
+                lng: doc.lng,
+                posts: postsAtPlace.sorted { $0.createdAt > $1.createdAt }
+            )
+            targetCoordinate = CLLocationCoordinate2D(latitude: doc.lat, longitude: doc.lng)
+            activeFriendPlace = synthesized
+        } catch {
+            // Place was deleted or unreadable — silently no-op so the user
+            // isn't stranded with a confusing error after a UI tap.
+        }
+    }
 
     private func selectCafe(_ id: String) {
         activeCafeId = id

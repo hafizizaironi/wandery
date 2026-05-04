@@ -19,6 +19,10 @@
 	<string>948965115871-n8slnvmmug5q35llr90ds21ijib7k2uv.apps.googleusercontent.com</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Save photos and videos you capture to your library.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Used to find nearby places to tag your post</string>
+	<key>GMSPlacesAPIKey</key>
+	<string>AIzaSyBuw7GN0DGzKl-qAAXpnQZ_4cyKBXr7yko</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
