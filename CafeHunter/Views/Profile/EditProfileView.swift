@@ -29,14 +29,14 @@ struct EditProfileView: View {
             // ── Inline header ──
             HStack {
                 Button("Cancel") { onClose() }
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(AppTheme.cream.opacity(0.55))
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.cream.opacity(0.55))
 
                 Spacer()
 
                 Text("Edit Profile")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(AppTheme.cream)
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cream)
 
                 Spacer()
 
@@ -47,8 +47,8 @@ struct EditProfileView: View {
                             .frame(width: 44)
                     } else {
                         Text("Save")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(AppTheme.cafeAccent)
+                            .font(.subheadline).bold()
+                            .foregroundStyle(AppTheme.cafeAccent)
                     }
                 }
                 .disabled(isSaving)
@@ -69,7 +69,7 @@ struct EditProfileView: View {
                             avatarPreview
                                 .frame(width: 104, height: 104)
                                 .clipShape(Circle())
-                                .overlay(
+                                .overlay {
                                     Circle().stroke(
                                         LinearGradient(
                                             colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
@@ -78,17 +78,17 @@ struct EditProfileView: View {
                                         ),
                                         lineWidth: 3
                                     )
-                                )
+                                }
                                 .shadow(color: AppTheme.cafeAccent.opacity(0.35), radius: 14)
 
                             Circle()
                                 .fill(AppTheme.cafeAccent)
                                 .frame(width: 30, height: 30)
-                                .overlay(
+                                .overlay {
                                     Image(systemName: "camera.fill")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(.white)
-                                )
+                                        .font(.footnote).bold()
+                                        .foregroundStyle(.white)
+                                }
                                 .shadow(color: AppTheme.cafeAccent.opacity(0.5), radius: 6)
                                 .offset(x: 2, y: 2)
                         }
@@ -106,28 +106,28 @@ struct EditProfileView: View {
                     // MARK: Display name
                     VStack(alignment: .leading, spacing: 8) {
                         Text("DISPLAY NAME")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.caption2).bold()
                             .tracking(2)
-                            .foregroundColor(AppTheme.cream.opacity(0.35))
+                            .foregroundStyle(AppTheme.cream.opacity(0.35))
 
                         TextField("Your name", text: $displayName)
-                            .font(.system(size: 16))
-                            .foregroundColor(AppTheme.cream)
+                            .font(.callout)
+                            .foregroundStyle(AppTheme.cream)
                             .tint(AppTheme.cafeAccent)
                             .padding(14)
                             .background(AppTheme.cream.opacity(0.06))
-                            .cornerRadius(12)
-                            .overlay(
+                            .clipShape(.rect(cornerRadius: 12))
+                            .overlay {
                                 RoundedRectangle(cornerRadius: 12)
                                     .stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
-                            )
+                            }
                     }
 
                     // MARK: Error
                     if let msg = errorMessage {
                         Text(msg)
-                            .font(.system(size: 12))
-                            .foregroundColor(AppTheme.errorRed)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.errorRed)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 8)
                     }
@@ -167,8 +167,8 @@ struct EditProfileView: View {
                 endPoint: .bottomTrailing
             )
             Text(initials)
-                .font(.system(size: 36, weight: .bold))
-                .foregroundColor(AppTheme.cream)
+                .font(.largeTitle).bold()
+                .foregroundStyle(AppTheme.cream)
         }
     }
 
