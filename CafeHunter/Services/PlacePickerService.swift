@@ -1,7 +1,6 @@
 import Foundation
 import CoreLocation
 import GooglePlacesSwift
-import FirebaseAuth
 import FirebaseFirestore
 
 /// Disambiguation: our app's `PlaceType` (Cafe.swift) vs Google's `PlaceType`.
@@ -16,22 +15,37 @@ final class PlacePickerService {
     static let shared = PlacePickerService()
     private init() {}
 
-    /// Default search radius — small because we want the user's *current* place,
-    /// not "anything in the neighborhood." Picker can widen via UI later.
-    static let defaultRadiusMeters: Double = 200
+    /// Default search radius. Wide enough to cover typical mall footprints
+    /// and dense urban blocks where GPS can drift 100–300 m indoors. Earlier
+    /// 200 m default produced 0 results in malls because the user's fix and
+    /// the storefront coordinates were further apart than that.
+    /// `nonisolated` so it can be referenced as a default-argument value
+    /// for `nearby(_:radius:)` — default-arg expressions evaluate outside
+    /// the type's `@MainActor` context.
+    nonisolated static let defaultRadiusMeters: Double = 600
 
-    /// Google categories we surface. Stalls have no Google equivalent — user adds those manually.
+    /// Google categories we surface for the picker. Stalls have no Google
+    /// equivalent — user adds those manually.
+    /// NOTE: `.food` is intentionally excluded. Although the SDK enum
+    /// exposes it, the Places API (New) `searchNearby` endpoint only
+    /// accepts "Table A" primary types and rejects the whole request with
+    /// `400 INVALID_ARGUMENT: Unsupported types: food.` if it's present —
+    /// which silently broke nearby search everywhere. Same applies to any
+    /// other Table-B-only enum case (e.g. point_of_interest).
     private let foodPlaceTypes: Set<GMSType> = [
-        .restaurant, .cafe, .bakery, .bar, .mealTakeaway, .mealDelivery, .food, .nightClub,
+        .restaurant, .cafe, .bakery, .bar, .mealTakeaway, .mealDelivery, .nightClub,
     ]
 
     func nearby(_ coord: CLLocationCoordinate2D,
                 radius: Double = defaultRadiusMeters) async throws -> [PlaceCandidate] {
+        #if DEBUG
+        print("[PlacePicker] nearby query: center=(\(coord.latitude),\(coord.longitude)) radius=\(Int(radius))m")
+        #endif
         // Run both sources in parallel — each may fail/return empty
         // independently. Google failure must NOT erase DB results (and vice
         // versa), so we collect Result values rather than throwing eagerly.
         async let dbResult: Result<[PlaceCandidate], Error> = {
-            do { return .success(try await self.fetchMyNearbyDbPlaces(coord: coord, radius: radius)) }
+            do { return .success(try await self.fetchNearbyDbPlaces(coord: coord, radius: radius)) }
             catch { return .failure(error) }
         }()
         async let googleResult: Result<[PlaceCandidate], Error> = {
@@ -66,8 +80,12 @@ final class PlacePickerService {
             guard let gid = c.googlePlaceId else { return true }
             return !dbGoogleIds.contains(gid)
         }
-        let merged = (db + filteredGoogle).sorted {
-            ($0.distanceMeters ?? .infinity) < ($1.distanceMeters ?? .infinity)
+        // Sort by an "effective distance" that lets trending DB places nudge
+        // ahead of cold ones at similar real distance. Each visit shaves a
+        // few meters off the perceived distance, capped so a wildly popular
+        // place across town doesn't outrank what you're standing next to.
+        let merged = (db + filteredGoogle).sorted { a, b in
+            Self.effectiveDistance(a) < Self.effectiveDistance(b)
         }
         #if DEBUG
         print("[PlacePicker] merged candidates: \(merged.count) (db=\(db.count), google=\(google.count) → kept \(filteredGoogle.count))")
@@ -82,7 +100,7 @@ final class PlacePickerService {
             locationRestriction: restriction,
             placeProperties: [.placeID, .displayName, .formattedAddress, .coordinate, .types],
             includedTypes: foodPlaceTypes,
-            maxResultCount: 15,
+            maxResultCount: 20,
             rankPreference: .distance
         )
         let result = await PlacesClient.shared.searchNearby(with: request)
@@ -94,27 +112,30 @@ final class PlacePickerService {
         }
     }
 
-    /// Fetches places the current user has previously created/tagged, filtered
-    /// by distance from `coord`. Reads dict fields directly (not via Codable)
-    /// because subtle decode failures previously made places silently vanish.
-    /// Other users' places aren't included here — that needs geohash-bound
-    /// queries (deferred to Phase 3 with the trending-nearby work).
-    private func fetchMyNearbyDbPlaces(coord: CLLocationCoordinate2D,
-                                       radius: Double) async throws -> [PlaceCandidate] {
-        guard let uid = Auth.auth().currentUser?.uid else {
-            #if DEBUG
-            print("[PlacePicker] no signed-in user — skipping DB nearby")
-            #endif
-            return []
-        }
+    /// Fetches places near `coord` from the global `places` collection (any
+    /// author — not just the current user). Phase 3 swap: previously this
+    /// was filtered by `createdBy == uid`, which meant other users' tagged
+    /// stalls never surfaced in the picker. Now we use a lat range filter
+    /// (Firestore auto-indexes single-field ranges, no composite needed)
+    /// and finish the precision client-side with longitude + great-circle
+    /// distance. Sorted by distance for the picker's tagging use-case.
+    private func fetchNearbyDbPlaces(coord: CLLocationCoordinate2D,
+                                     radius: Double) async throws -> [PlaceCandidate] {
+        // Lat range expressed as a fraction of the planet's circumference —
+        // 1° latitude ≈ 111 km everywhere on Earth.
+        let degLat = radius / 111_000.0
+        // Per-cosine fudge for longitude: 1° longitude shrinks toward the
+        // poles. Clamped to avoid /0 at the pole.
+        let degLng = radius / (111_000.0 * max(0.001, cos(coord.latitude * .pi / 180)))
+
         let snap = try await Firestore.firestore()
             .collection("places")
-            .whereField("createdBy", isEqualTo: uid)
+            .whereField("lat", isGreaterThanOrEqualTo: coord.latitude - degLat)
+            .whereField("lat", isLessThanOrEqualTo: coord.latitude + degLat)
             .limit(to: 200)
             .getDocuments()
 
         let origin = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-        let allowedRadius = max(radius, 500)
         var matched: [PlaceCandidate] = []
         for doc in snap.documents {
             let d = doc.data()
@@ -123,9 +144,12 @@ final class PlacePickerService {
                   let lng = d["lng"] as? Double else {
                 continue
             }
+            // Bounding-box pre-filter: cheap longitude check before the
+            // more expensive great-circle calculation.
+            if abs(lng - coord.longitude) > degLng { continue }
             let placeLoc = CLLocation(latitude: lat, longitude: lng)
             let distance = placeLoc.distance(from: origin)
-            guard distance <= allowedRadius else { continue }
+            guard distance <= radius else { continue }
             let typeStr = (d["type"] as? String) ?? "restaurant"
             let resolvedType = PlaceType(rawValue: typeStr) ?? .restaurant
             matched.append(PlaceCandidate(
@@ -137,11 +161,12 @@ final class PlacePickerService {
                 lat: lat,
                 lng: lng,
                 distanceMeters: distance,
-                source: .db
+                source: .db,
+                globalVisitCount: d["globalVisitCount"] as? Int
             ))
         }
         #if DEBUG
-        print("[PlacePicker] found \(matched.count) of \(snap.documents.count) of my places within \(Int(allowedRadius))m of (\(coord.latitude), \(coord.longitude))")
+        print("[PlacePicker] DB nearby: \(matched.count) of \(snap.documents.count) within \(Int(radius))m of (\(coord.latitude), \(coord.longitude))")
         #endif
         return matched
     }
@@ -151,11 +176,21 @@ final class PlacePickerService {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return [] }
 
+        // While typing, *don't* restrict to `foodPlaceTypes` — Google's primary
+        // type for many F&B venues isn't in our Table-A subset (e.g. Coffee
+        // Bean is often `cafe`/`coffee_shop` and a number of mall tenants
+        // come back as `establishment` only). Filtering them out at this
+        // stage made search feel broken even when the name was typed
+        // exactly. The user has typed a name → noise risk is low; rely on
+        // our own relevance ranking to keep the list tight.
+        // Bias radius widened from 5 km → 25 km so out-of-immediate-area
+        // names (the place they're walking to, the spot in the next mall)
+        // still surface near the top.
         let bias: (any CoordinateRegionBias)? = coord.map {
-            CircularCoordinateRegion(center: $0, radius: 5_000)
+            CircularCoordinateRegion(center: $0, radius: 25_000)
         }
         let filter = AutocompleteFilter(
-            types: foodPlaceTypes,
+            types: [],
             coordinateRegionBias: bias
         )
         let request = AutocompleteRequest(query: trimmed, filter: filter)
@@ -182,6 +217,16 @@ final class PlacePickerService {
         case .failure(let err):
             throw err
         }
+    }
+
+    /// Distance with a popularity discount for trending places.
+    /// Each visit subtracts ~3 m of perceived distance, capped at 90 m so
+    /// the popularity bias never overrides true proximity. Tunable.
+    private static func effectiveDistance(_ c: PlaceCandidate) -> Double {
+        let base = c.distanceMeters ?? .infinity
+        guard let visits = c.globalVisitCount, visits > 0 else { return base }
+        let discount = min(Double(visits) * 3.0, 90.0)
+        return base - discount
     }
 
     private static func candidate(from place: GMSPlace,
@@ -242,7 +287,11 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        // Tightest practical accuracy — hundred-meter accuracy was producing
+        // bad fixes inside malls/buildings where Wi-Fi triangulation already
+        // had the user at the wrong storefront. Battery cost is negligible
+        // because we only stream while the app is foregrounded.
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         // Kick off authorization + a continuous stream so we have a warm
         // location when the picker is later opened.
         switch manager.authorizationStatus {

@@ -286,6 +286,7 @@ struct AdminAddView: View {
                 }
             }
         .background(AppTheme.espresso)
+        .keyboardDismissToolbar()
         // Map picker presented full-screen (no NavigationStack needed)
         .fullScreenCover(isPresented: $showMapPicker) {
             MapPickerView { coord in

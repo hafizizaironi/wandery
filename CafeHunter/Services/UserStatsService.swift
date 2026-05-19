@@ -13,6 +13,23 @@ struct UserStats {
     var nightCheckIns:       Int = 0
     var favoritePlaceVisits: Int = 0
 
+    // Phase 5 — discovery achievement counters. All bumped server-side.
+    /// Number of brand-new places this user was the first to create
+    /// (drives Pioneer).
+    var pioneerCount:         Int = 0
+    /// Distinct places the user has tagged at least once
+    /// (drives Wanderer).
+    var uniquePlacesVisited:  Int = 0
+    /// Highest number of distinct places ever tagged in any single
+    /// geohash5 cell (≈5 km area). Drives Local Guide.
+    var topAreaPlaceCount:    Int = 0
+    /// Total reactions other users have left on this user's posts
+    /// (drives Tastemaker).
+    var reactionsReceived:    Int = 0
+    /// Highest per-place visit-session count on this user's record
+    /// (drives Loyal — same place 3+ separate trips).
+    var topPlaceVisitCount:   Int = 0
+
     /// achievementID → date it was first unlocked (persisted in Firestore)
     var unlockedAchievements: [String: Date] = [:]
 }
@@ -41,6 +58,11 @@ class UserStatsService: ObservableObject {
                     s.friendsHunted       = data["friendsHunted"]       as? Int ?? 0
                     s.nightCheckIns       = data["nightCheckIns"]       as? Int ?? 0
                     s.favoritePlaceVisits = data["favoritePlaceVisits"]  as? Int ?? 0
+                    s.pioneerCount        = data["pioneerCount"]        as? Int ?? 0
+                    s.uniquePlacesVisited = data["uniquePlacesVisited"] as? Int ?? 0
+                    s.topAreaPlaceCount   = data["topAreaPlaceCount"]   as? Int ?? 0
+                    s.reactionsReceived   = data["reactionsReceived"]   as? Int ?? 0
+                    s.topPlaceVisitCount  = data["topPlaceVisitCount"]  as? Int ?? 0
                     if let map = data["unlockedAchievements"] as? [String: Timestamp] {
                         s.unlockedAchievements = map.mapValues { $0.dateValue() }
                     }

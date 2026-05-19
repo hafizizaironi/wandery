@@ -71,6 +71,7 @@ struct AddCafeIdentityStep: View {
         // Tap anywhere outside the fields to dismiss the keyboard.
         .contentShape(Rectangle())
         .onTapGesture { focused = nil }
+        .keyboardDismissToolbar()
     }
 
     // MARK: - Header

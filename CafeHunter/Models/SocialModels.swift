@@ -71,6 +71,89 @@ struct FriendPost: Identifiable, Equatable {
     }
 }
 
+/// 1:1 conversation between two users. Doc id is deterministic
+/// (`Conversation.id(for: a, b)`) so we can `findOrCreate` without a query.
+/// `participantIds` is always sorted asc — same convention as the doc id.
+struct Conversation: Identifiable, Equatable {
+    let id: String
+    let participantIds: [String]
+    let lastMessage: String
+    let lastMessageSenderId: String
+    let lastMessageAt: Date?
+    let createdAt: Date?
+
+    static func id(for a: String, _ b: String) -> String {
+        [a, b].sorted().joined(separator: "_")
+    }
+
+    /// The participant that is *not* `me`. Returns nil for malformed docs.
+    func otherParticipant(of me: String) -> String? {
+        participantIds.first(where: { $0 != me })
+    }
+
+    init?(document: DocumentSnapshot) {
+        guard let d = document.data() else { return nil }
+        guard let ids = d["participantIds"] as? [String], ids.count == 2 else { return nil }
+        id = document.documentID
+        participantIds = ids
+        lastMessage = d["lastMessage"] as? String ?? ""
+        lastMessageSenderId = d["lastMessageSenderId"] as? String ?? ""
+        lastMessageAt = (d["lastMessageAt"] as? Timestamp)?.dateValue()
+        createdAt = (d["createdAt"] as? Timestamp)?.dateValue()
+    }
+}
+
+/// Single message inside a conversation. Server-stamped `createdAt` so
+/// reordering is deterministic across clients.
+///
+/// `kind` distinguishes plain chat messages from messages that are mirrors
+/// of feed-post interactions:
+///   - `text`     — direct chat text (default).
+///   - `reaction` — reactor emoji-tapped a post; `emoji` + `postId` set.
+///   - `reply`    — reactor wrote a comment on a post; `text` + `postId` set.
+/// `postPreview` is a short caption snapshot we stamp at write time so the
+/// chat bubble can show the post context without a second fetch.
+struct ChatMessage: Identifiable, Equatable {
+    let id: String
+    let senderId: String
+    let text: String
+    let kind: String
+    let postId: String?
+    let postPreview: String?
+    let emoji: String?
+    /// Snapshot of the referenced post's media URL at write time (the
+    /// thumbnail URL for videos, the full image URL for photos). Stamped
+    /// here so the chat thumbnail can render without an extra fetch.
+    let postMediaURL: String?
+    let postIsVideo: Bool
+    let createdAt: Date
+
+    var isPostReaction: Bool { kind == "reaction" }
+    var isPostReply: Bool { kind == "reply" }
+    var referencesPost: Bool { postId != nil && (isPostReaction || isPostReply) }
+
+    init?(document: QueryDocumentSnapshot) {
+        let d = document.data()
+        guard let senderId = d["senderId"] as? String,
+              let text = d["text"] as? String else { return nil }
+        id = document.documentID
+        self.senderId = senderId
+        self.text = text
+        kind = d["kind"] as? String ?? "text"
+        postId = d["postId"] as? String
+        postPreview = d["postPreview"] as? String
+        emoji = d["emoji"] as? String
+        postMediaURL = d["postMediaURL"] as? String
+        postIsVideo = d["postIsVideo"] as? Bool ?? false
+        if let ts = d["createdAt"] as? Timestamp {
+            createdAt = ts.dateValue()
+        } else {
+            // Doc just written, server stamp not yet acked — sort to bottom.
+            createdAt = Date()
+        }
+    }
+}
+
 struct FriendRequestModel: Identifiable, Equatable {
     let id: String
     let fromUid: String

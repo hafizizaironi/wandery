@@ -138,6 +138,7 @@ struct LoginView: View {
                 Spacer()
             }
         }
+        .keyboardDismissToolbar()
     }
 
     // MARK: - Actions

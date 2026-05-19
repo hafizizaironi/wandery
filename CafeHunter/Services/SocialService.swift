@@ -77,13 +77,20 @@ final class SocialService: ObservableObject {
     private func ensureUserDocument(user: FirebaseAuth.User) {
         let uid = user.uid
         let displayName = user.displayName ?? ""
+        let photoURL = user.photoURL?.absoluteString
         let ref = db.collection("users").document(uid)
         ref.getDocument { snap, _ in
-            guard let snap, !snap.exists else { return }
-            ref.setData([
-                "displayName": displayName,
-                "createdAt": FieldValue.serverTimestamp(),
-            ], merge: true)
+            // Always merge the latest `displayName` / `photoURL` from Auth
+            // back into the public user doc. Friends' UIs (map pin avatars,
+            // friend list, chat header) read from the doc, not Auth, so
+            // any drift between the two means other users see stale data
+            // (or no avatar at all). Cheap idempotent write.
+            var update: [String: Any] = ["displayName": displayName]
+            if let photoURL { update["photoURL"] = photoURL }
+            if snap?.exists != true {
+                update["createdAt"] = FieldValue.serverTimestamp()
+            }
+            ref.setData(update, merge: true)
         }
     }
 
@@ -134,14 +141,15 @@ final class SocialService: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     if let err {
+                        // Transient network errors used to wipe feedPosts
+                        // here, which cascaded into the map showing no
+                        // pins until the listener reconnected. Keep the
+                        // last-known feed in place; the listener will
+                        // emit a fresh snapshot once Firestore reconnects.
                         self.errorMessage = err.localizedDescription
-                        self.feedPosts = []
                         return
                     }
-                    guard let docs = snap?.documents else {
-                        self.feedPosts = []
-                        return
-                    }
+                    guard let docs = snap?.documents else { return }
                     self.feedPosts = docs.compactMap { FriendPost(document: $0) }
                         .filter { !$0.mediaURL.isEmpty }
                 }
@@ -224,17 +232,39 @@ final class SocialService: ObservableObject {
     func acceptRequest(_ request: FriendRequestModel) async throws {
         guard let myUid = uid else { throw SocialError.notSignedIn }
         guard request.toUid == myUid else { return }
-        let reqRef = db.collection("friendRequests").document(request.id)
-        let other = request.fromUid
-        let batch = db.batch()
-        batch.updateData(["status": "accepted"], forDocument: reqRef)
-        batch.setData([
-            "createdAt": FieldValue.serverTimestamp(),
-        ], forDocument: db.collection("users").document(myUid).collection("friends").document(other))
-        batch.setData([
-            "createdAt": FieldValue.serverTimestamp(),
-        ], forDocument: db.collection("users").document(other).collection("friends").document(myUid))
-        try await batch.commit()
+        // Phase 4: server-side enforcement. The callable runs in a
+        // transaction, checks each side against the 20-friend cap, and
+        // writes both friend docs atomically. Direct client writes here
+        // would now be denied by the rules anyway.
+        let callable = Functions.functions().httpsCallable("acceptFriendRequest")
+        do {
+            _ = try await callable.call(["requestId": request.id])
+        } catch {
+            // Surface the cap error specifically — the UI can show it
+            // inline. Other errors propagate as-is.
+            let ns = error as NSError
+            if ns.domain == "com.firebase.functions" {
+                let code = ns.userInfo["FIRFunctionsErrorDetailsKey"] as? String
+                    ?? ns.localizedDescription
+                if ns.localizedDescription.lowercased().contains("limit")
+                    || code.lowercased().contains("limit") {
+                    throw SocialError.friendsCapReached
+                }
+            }
+            throw error
+        }
+    }
+
+    /// Symmetric unfriend. Routed through the `removeFriend` callable so
+    /// both sides of the friendship are deleted server-side using the
+    /// admin SDK — the Phase 4 rules deny direct client writes, so this
+    /// is the only path that works. The friend listener fires the local
+    /// `friendIds` update on commit, so the UI refreshes automatically.
+    func removeFriend(uid otherUid: String) async throws {
+        guard let myUid = uid else { throw SocialError.notSignedIn }
+        guard otherUid != myUid else { return }
+        let callable = Functions.functions().httpsCallable("removeFriend")
+        _ = try await callable.call(["uid": otherUid])
     }
 
     func rejectRequest(_ request: FriendRequestModel) async throws {
@@ -437,6 +467,7 @@ enum SocialError: LocalizedError {
     case uploadFailed
     case needsUsername
     case notAuthorized
+    case friendsCapReached
 
     var errorDescription: String? {
         switch self {
@@ -448,6 +479,7 @@ enum SocialError: LocalizedError {
         case .uploadFailed: return "Could not upload media."
         case .needsUsername: return "Choose a username first."
         case .notAuthorized: return "Not allowed."
+        case .friendsCapReached: return "20-friend limit reached. Remove someone first."
         }
     }
 }

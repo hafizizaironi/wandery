@@ -68,6 +68,7 @@ struct AddCafeVibeStep: View {
             player.stop()
         }
         .animation(.spring(response: 0.55, dampingFraction: 0.82), value: track)
+        .keyboardDismissToolbar()
     }
 
     // MARK: - Header

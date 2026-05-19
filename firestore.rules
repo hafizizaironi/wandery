@@ -14,16 +14,34 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/posts/$(postId)).data.authorId;
     }
 
+    function isFriend(otherUid) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(otherUid));
+    }
+
+    /// In a sorted 2-element participant array, the "other" user is whichever
+    /// entry isn't the caller. Used to enforce friend-only conversation
+    /// creation without indexing tricks rules don't support.
+    function otherParticipant(participants) {
+      return participants[0] == request.auth.uid ? participants[1] : participants[0];
+    }
+
     function canReadPost(postId) {
       let author = postAuthorId(postId);
       return isSelf(author) ||
         exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(author));
     }
 
-    // Existing places (café directory)
+    // Places — read by any signed-in user (the picker, the map, Discover
+    // all need this). All mutations are server-owned: creation flows
+    // through the `findOrCreatePlace` callable; counters
+    // (`globalVisitCount`, `globalEngagementCount`) are bumped by
+    // Firestore triggers that use the admin SDK. Direct client writes are
+    // denied so a malicious client can't fabricate a popular spot or
+    // tamper with engagement.
     match /places/{placeId} {
       allow read: if signedIn();
-      allow create, update, delete: if signedIn();
+      allow write: if false;
     }
 
     match /users/{uid} {
@@ -32,13 +50,27 @@ service cloud.firestore {
       allow delete: if false;
 
       match /friends/{friendUid} {
+        // Read for self + that specific friend (so a friend can verify
+        // the relationship exists when reading posts/conversations).
         allow read: if signedIn() && (isSelf(uid) || request.auth.uid == friendUid);
-        allow create, delete: if isSelf(uid);
-        allow update: if false;
+        // Phase 4: friend graph mutations are server-owned. Acceptance
+        // and removal both run through callables (`acceptFriendRequest`,
+        // `removeFriend`) that enforce the 20-friend cap and write both
+        // sides atomically. Direct client writes are denied so the cap
+        // can't be bypassed.
+        allow write: if false;
       }
 
       match /fcmTokens/{tokenId} {
         allow read, write, delete: if isSelf(uid);
+      }
+
+      // Per-user, per-place "visit session" docs. The Cloud Function
+      // creates/refreshes them on post-tag (admin SDK, bypasses these
+      // rules); the client only needs to flip `closed: true` when the
+      // user moves out of the place's vicinity. Owner-only.
+      match /visits/{placeId} {
+        allow read, write: if isSelf(uid);
       }
     }
 
@@ -58,6 +90,33 @@ service cloud.firestore {
       allow update: if signedIn() &&
         resource.data.toUid == request.auth.uid;
       allow delete: if false;
+    }
+
+    // 1:1 conversations between friends. Document id is the deterministic
+    // sorted-uid pair joined by underscore. Participants arrays are
+    // immutable; only `lastMessage*` fields update on send.
+    match /conversations/{convId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if signedIn()
+        && request.resource.data.participantIds is list
+        && request.resource.data.participantIds.size() == 2
+        && request.auth.uid in request.resource.data.participantIds
+        && isFriend(otherParticipant(request.resource.data.participantIds));
+      // Updates can't mutate participants. Only the recency/preview fields
+      // change, and the writer must already be one of the participants.
+      allow update: if signedIn()
+        && request.auth.uid in resource.data.participantIds
+        && request.resource.data.participantIds == resource.data.participantIds;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds;
+        allow create: if signedIn()
+          && request.resource.data.senderId == request.auth.uid
+          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds;
+        allow update, delete: if false;
+      }
     }
 
     match /posts/{postId} {

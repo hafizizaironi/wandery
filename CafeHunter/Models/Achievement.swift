@@ -87,5 +87,52 @@ extension Achievement {
             flavourText: "A whole year of good food",
             condition: { _ in false } // evaluated separately using account creation date
         ),
+
+        // Phase 5 — Discovery achievements. All driven by server-side
+        // counters (see functions/index.js):
+        //   findOrCreatePlace          → pioneerCount
+        //   onPostCreatePlaceVisit     → uniquePlacesVisited / topAreaPlaceCount
+        //   onReactionEngagement       → reactionsReceived
+        //   onVisitClose               → topPlaceVisitCount
+        Achievement(
+            id: "pioneer",
+            icon: "🧭",
+            title: "Pioneer",
+            subtitle: "Be the first to put a place on the map",
+            flavourText: "You found it first",
+            condition: { $0.pioneerCount >= 1 }
+        ),
+        Achievement(
+            id: "wanderer",
+            icon: "🌍",
+            title: "Wanderer",
+            subtitle: "Tag 10 different places",
+            flavourText: "Always somewhere new",
+            condition: { $0.uniquePlacesVisited >= 10 }
+        ),
+        Achievement(
+            id: "local_guide",
+            icon: "🗺️",
+            title: "Local Guide",
+            subtitle: "Tag 5 places in one neighbourhood",
+            flavourText: "You know this corner of the map",
+            condition: { $0.topAreaPlaceCount >= 5 }
+        ),
+        Achievement(
+            id: "tastemaker",
+            icon: "🌟",
+            title: "Tastemaker",
+            subtitle: "Earn 50 reactions on your posts",
+            flavourText: "People follow your taste",
+            condition: { $0.reactionsReceived >= 50 }
+        ),
+        Achievement(
+            id: "loyal",
+            icon: "💛",
+            title: "Loyal",
+            subtitle: "Visit the same spot 3 separate times",
+            flavourText: "It's not a phase, it's a regular",
+            condition: { $0.topPlaceVisitCount >= 3 }
+        ),
     ]
 }

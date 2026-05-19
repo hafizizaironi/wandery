@@ -9,10 +9,11 @@ enum ShellPage: Int, CaseIterable {
 }
 
 struct MainShellView: View {
-    @ObservedObject var authService:      AuthService
-    @ObservedObject var firestoreService: FirestoreService
-    @ObservedObject var statsService:     UserStatsService
-    @ObservedObject var socialService:    SocialService
+    @ObservedObject var authService:         AuthService
+    @ObservedObject var firestoreService:    FirestoreService
+    @ObservedObject var statsService:        UserStatsService
+    @ObservedObject var socialService:       SocialService
+    @ObservedObject var conversationService: ConversationService
 
     // Start on the Hero (feed) page — centre of the arc.
     @State private var selectedPage: ShellPage = .hero
@@ -21,6 +22,13 @@ struct MainShellView: View {
     /// Set when the user taps a place pill in the feed; consumed by MainMapView
     /// which centers the map and opens the place-detail sheet.
     @State private var pendingMapJumpPlaceId: String?
+    /// Flipped on by HeroPageView whenever the inbox or a chat thread is
+    /// presented. We use it to spring the arc navbar away (so the chat
+    /// surface gets the full screen) and spring it back on dismiss.
+    @State private var isChatActive: Bool = false
+    /// Set when a chat thumbnail tapped on the Profile page wants to land
+    /// the user on a specific Hero feed post. HeroPageView consumes it.
+    @State private var pendingHeroJumpPostId: String?
 
     // Add-cafe entry points are hidden for now while the flow is still in progress.
     // Flip to `true` to bring back the arc "+" button + portal flow.
@@ -47,6 +55,9 @@ struct MainShellView: View {
                     HeroPageView(
                         isActive: selectedPage == .hero,
                         socialService: socialService,
+                        conversationService: conversationService,
+                        isChatActive: $isChatActive,
+                        pendingHeroJumpPostId: $pendingHeroJumpPostId,
                         onJumpToPlace: { placeId in jumpToMap(placeId: placeId) }
                     )
                         .frame(width: geo.size.width, height: geo.size.height)
@@ -54,10 +65,12 @@ struct MainShellView: View {
                         .allowsHitTesting(abs(pageProgress - 1) < 0.5)
 
                     ProfileHomeView(
-                        authService:   authService,
-                        statsService:  statsService,
-                        socialService: socialService,
-                        isTabActive:   abs(pageProgress - 2) < 0.5
+                        authService:         authService,
+                        statsService:        statsService,
+                        socialService:       socialService,
+                        conversationService: conversationService,
+                        isTabActive:         abs(pageProgress - 2) < 0.5,
+                        onJumpToHeroPost:    { postId in jumpToHero(postId: postId) }
                     )
                     .frame(width: geo.size.width, height: geo.size.height)
                     .offset(x: (2 - pageProgress) * geo.size.width)
@@ -69,6 +82,12 @@ struct MainShellView: View {
 
                 // ── Arc navbar ──
                 // Height = arc region + bottom safe area (home indicator).
+                // Springs off-screen (and fades) whenever a chat surface is
+                // active so the conversation gets the full view. The same
+                // spring drives the rise on dismiss → the navbar reads as
+                // a single liquid surface re-emerging from the bottom.
+                let navbarHidden = isChatActive
+                let navbarHeight = ArcNavBar.frameContentHeight + geo.safeAreaInsets.bottom
                 ArcNavBar(
                     selectedPage: $selectedPage,
                     pageProgress: $pageProgress,
@@ -80,7 +99,13 @@ struct MainShellView: View {
                         }
                     }
                 )
-                .frame(height: ArcNavBar.frameContentHeight + geo.safeAreaInsets.bottom)
+                .frame(height: navbarHeight)
+                .offset(y: navbarHidden ? navbarHeight + 24 : 0)
+                .opacity(navbarHidden ? 0 : 1)
+                .scaleEffect(navbarHidden ? 0.92 : 1.0, anchor: .bottom)
+                .blur(radius: navbarHidden ? 6 : 0)
+                .allowsHitTesting(!navbarHidden)
+                .animation(.spring(response: 0.5, dampingFraction: 0.78), value: navbarHidden)
                 .zIndex(10)
 
                 // ── Portal flow — overlaid above everything, transitions from "+" center.
@@ -113,6 +138,16 @@ struct MainShellView: View {
         withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
             selectedPage = .map
             pageProgress = 0
+        }
+    }
+
+    /// Mirror of jumpToMap, but for a chat-thumbnail tap on the Profile page
+    /// that wants to land on a specific post in the Hero feed.
+    private func jumpToHero(postId: String) {
+        pendingHeroJumpPostId = postId
+        withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+            selectedPage = .hero
+            pageProgress = 1
         }
     }
 }

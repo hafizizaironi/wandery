@@ -83,6 +83,241 @@ exports.onNewPost = functions.firestore
     }
   });
 
+// Phase 3 — Session-aware visit counting. Every tagged post might be a
+// fresh visit OR a continuation of one already in progress (5 photos at
+// the same cafe in one sitting = 1 visit, not 5). We track per-user-per-
+// place "visit sessions" at users/{uid}/visits/{placeId}:
+//   - openedAt        : when the session started (server stamp)
+//   - firstPostLat/Lng: place coords at session-open time, used by the
+//                       client tracker to decide when the user has
+//                       physically moved far enough to "close" the
+//                       session.
+//   - closed          : false while still on-site, true after the client
+//                       observes the user > ~3 km away.
+//   - visitCount      : per-user count of *closed* sessions (i.e. real
+//                       returns), excluding the still-open one.
+//
+// We only bump the place's `globalVisitCount` when this post opens a NEW
+// session. Same-session subsequent posts just refresh `openedAt`.
+exports.onPostCreatePlaceVisit = functions.firestore
+  .document("posts/{postId}")
+  .onCreate(async (snap, context) => {
+    const postId = context.params.postId;
+    const d = snap.data();
+    logger.info("[VISIT] trigger fired", {
+      postId,
+      hasData: !!d,
+      placeId: d && d.placeId,
+      authorId: d && d.authorId,
+    });
+    if (!d || !d.placeId || !d.authorId) {
+      logger.warn("[VISIT] aborted — missing placeId or authorId", { postId });
+      return;
+    }
+    const placeId = d.placeId;
+    const uid = d.authorId;
+    const db = admin.firestore();
+    const placeRef = db.collection("places").doc(placeId);
+    const visitRef = db.collection("users").doc(uid)
+      .collection("visits").doc(placeId);
+
+    try {
+      // Wrap in a transaction so two posts firing back-to-back can't both
+      // observe "no visit doc yet" and double-bump the global counter.
+      // Firestore retries the txn on conflict, so the second invocation
+      // re-reads the visit doc the first one just wrote.
+      const userRef = db.collection("users").doc(uid);
+      let txnAttempt = 0;
+      const result = await db.runTransaction(async (tx) => {
+        txnAttempt += 1;
+        const [placeSnap, visitSnap, userSnap] = await Promise.all([
+          tx.get(placeRef),
+          tx.get(visitRef),
+          tx.get(userRef),
+        ]);
+        if (!placeSnap.exists) {
+          logger.warn("[VISIT] place doc missing", { placeId, postId });
+          return { skipped: "no-place" };
+        }
+        const place = placeSnap.data() || {};
+        const visit = visitSnap.exists ? (visitSnap.data() || {}) : null;
+        const user = userSnap.exists ? (userSnap.data() || {}) : {};
+
+        const isNewSession = !visit || visit.closed === true;
+        // "Truly new" = the user has never had a visit doc for this place.
+        // Used to bump unique-place counters that drive Wanderer / Local
+        // Guide achievements.
+        const isFirstEverVisit = !visit;
+        logger.info("[VISIT] decision", {
+          postId,
+          placeId,
+          uid,
+          attempt: txnAttempt,
+          visitExists: visitSnap.exists,
+          visitClosed: visit ? visit.closed : null,
+          visitOpenedAt: visit && visit.openedAt
+            ? visit.openedAt.toDate().toISOString() : null,
+          currentGlobalVisitCount: place.globalVisitCount || 0,
+          isNewSession,
+          isFirstEverVisit,
+        });
+
+        if (isNewSession) {
+          tx.update(placeRef, {
+            globalVisitCount: admin.firestore.FieldValue.increment(1),
+            lastVisitedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          tx.set(visitRef, {
+            openedAt: admin.firestore.FieldValue.serverTimestamp(),
+            firstPostLat: place.lat,
+            firstPostLng: place.lng,
+            closed: false,
+            // Per-user count of completed (closed) sessions. Bumped by the
+            // client tracker when it flips `closed: true`, not here.
+            visitCount: visit ? (visit.visitCount || 0) : 0,
+          }, { merge: true });
+
+          // Phase 5 — Wanderer + Local Guide stats fire on first-ever
+          // visit only. Subsequent re-opens (after a >3 km decay) shouldn't
+          // re-count the same place toward "unique places visited".
+          if (isFirstEverVisit) {
+            const updates = {
+              uniquePlacesVisited: admin.firestore.FieldValue.increment(1),
+            };
+            if (typeof place.lat === "number" && typeof place.lng === "number") {
+              const area = geofire.geohashForLocation([place.lat, place.lng], 5);
+              const counts = (user.areaPlaceCounts && typeof user.areaPlaceCounts === "object")
+                ? { ...user.areaPlaceCounts } : {};
+              counts[area] = (counts[area] || 0) + 1;
+              updates.areaPlaceCounts = counts;
+              const newTop = Math.max(...Object.values(counts), 0);
+              if (newTop > (user.topAreaPlaceCount || 0)) {
+                updates.topAreaPlaceCount = newTop;
+              }
+            }
+            tx.set(userRef, updates, { merge: true });
+          }
+          return { action: "opened-new-session", isFirstEverVisit };
+        }
+        // Same-session repost — refresh openedAt only. Place counter
+        // stays put.
+        tx.set(visitRef, {
+          openedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        return { action: "refreshed-session" };
+      });
+      logger.info("[VISIT] committed", {
+        postId,
+        placeId,
+        uid,
+        attempts: txnAttempt,
+        result,
+      });
+    } catch (err) {
+      logger.error("[VISIT] failed", {
+        postId,
+        placeId,
+        uid,
+        message: err && err.message,
+        stack: err && err.stack,
+      });
+    }
+  });
+
+// Phase 3 — Engagement counter for the upcoming Discover surface.
+// Reactions and replies on a tagged post count as "engagement" for the
+// underlying place. We aggregate to `places/{placeId}.globalEngagementCount`
+// so the recommender can rank by place-level activity without scanning
+// every post / message at query time.
+exports.onReactionEngagement = functions.firestore
+  .document("posts/{postId}/reactions/{reactorUid}")
+  .onCreate(async (_snap, context) => {
+    const postSnap = await admin.firestore()
+      .doc(`posts/${context.params.postId}`).get();
+    const post = postSnap.data();
+    if (!post) return;
+    const updates = [];
+    // Place-level engagement counter (Discover ranking input).
+    if (post.placeId) {
+      updates.push(
+        admin.firestore().collection("places").doc(post.placeId).update({
+          globalEngagementCount: admin.firestore.FieldValue.increment(1),
+        }).catch((err) => {
+          logger.warn("onReactionEngagement place update failed", {
+            placeId: post.placeId, message: err && err.message,
+          });
+        }),
+      );
+    }
+    // Phase 5 — Tastemaker counter on the post author. Track total
+    // reactions received so the achievement can fire at 50.
+    if (post.authorId && post.authorId !== context.params.reactorUid) {
+      updates.push(
+        admin.firestore().collection("users").doc(post.authorId).set(
+          { reactionsReceived: admin.firestore.FieldValue.increment(1) },
+          { merge: true },
+        ).catch((err) => {
+          logger.warn("onReactionEngagement reactionsReceived update failed", {
+            uid: post.authorId, message: err && err.message,
+          });
+        }),
+      );
+    }
+    await Promise.all(updates);
+  });
+
+// Phase 5 — Loyal achievement counter. Watches per-user-per-place visit
+// docs; when one transitions from open → closed (the client tracker writes
+// `closed: true` and increments `visitCount` once the user has moved >3 km
+// away), update the user's `topPlaceVisitCount` if this place's running
+// total is now their highest.
+exports.onVisitClose = functions.firestore
+  .document("users/{uid}/visits/{placeId}")
+  .onUpdate(async (change, context) => {
+    const before = change.before.data();
+    const after = change.after.data();
+    if (!before || !after) return;
+    if (before.closed === true || after.closed !== true) return;
+    const visitCount = after.visitCount || 0;
+    const userRef = admin.firestore().collection("users").doc(context.params.uid);
+    try {
+      const snap = await userRef.get();
+      const top = snap.data()?.topPlaceVisitCount || 0;
+      if (visitCount > top) {
+        await userRef.set(
+          { topPlaceVisitCount: visitCount },
+          { merge: true },
+        );
+      }
+    } catch (err) {
+      logger.warn("onVisitClose failed", {
+        uid: context.params.uid,
+        placeId: context.params.placeId,
+        message: err && err.message,
+      });
+    }
+  });
+
+exports.onReplyEngagement = functions.firestore
+  .document("conversations/{convId}/messages/{msgId}")
+  .onCreate(async (snap, _context) => {
+    const m = snap.data();
+    if (!m || m.kind !== "reply" || !m.postId) return;
+    const postSnap = await admin.firestore().doc(`posts/${m.postId}`).get();
+    const post = postSnap.data();
+    if (!post || !post.placeId) return;
+    try {
+      await admin.firestore().collection("places").doc(post.placeId).update({
+        globalEngagementCount: admin.firestore.FieldValue.increment(1),
+      });
+    } catch (err) {
+      logger.warn("onReplyEngagement failed", {
+        placeId: post.placeId,
+        message: err && err.message,
+      });
+    }
+  });
+
 exports.onReaction = functions.firestore
   .document("posts/{postId}/reactions/{reactorUid}")
   .onCreate(async (snap, context) => {
@@ -212,6 +447,208 @@ exports.generateCharacter = onCall(
   },
 );
 
+// ─── Stats backfill (Phase 5 retroactive) ────────────────────────────────
+// One-shot callable that recomputes the Phase 5 counters from existing
+// data, so users who had history before the triggers were deployed don't
+// stare at 0 unlocked achievements forever. Self-service: each user
+// backfills their own stats — no admin needed.
+//
+// Recomputes:
+//   pioneerCount         ← places where createdBy == uid
+//   uniquePlacesVisited  ← count of users/{uid}/visits/{placeId} docs
+//   topPlaceVisitCount   ← max(visitCount) across those visit docs
+//   topAreaPlaceCount    ← max count of distinct places per geohash5 cell
+//   areaPlaceCounts      ← { geohash5 → count } map
+//   reactionsReceived    ← total reactions across this user's posts
+exports.backfillMyStats = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const db = admin.firestore();
+
+    // Run the four queries in parallel — they're independent.
+    const [pioneerSnap, visitsSnap, postsSnap] = await Promise.all([
+      db.collection("places").where("createdBy", "==", uid).get(),
+      db.collection("users").doc(uid).collection("visits").get(),
+      db.collection("posts").where("authorId", "==", uid).get(),
+    ]);
+
+    const pioneerCount = pioneerSnap.size;
+    const uniquePlacesVisited = visitsSnap.size;
+
+    // topPlaceVisitCount and area buckets need a per-place lookup —
+    // each visit doc carries firstPostLat/Lng, but if we want geohash5
+    // accuracy from the canonical place we should fetch the place too.
+    // Cheaper: fetch every referenced place doc concurrently, build the
+    // geohash map from those.
+    const visitDocs = visitsSnap.docs;
+    let topPlaceVisitCount = 0;
+    for (const v of visitDocs) {
+      const c = (v.data() && v.data().visitCount) || 0;
+      if (c > topPlaceVisitCount) topPlaceVisitCount = c;
+    }
+
+    // Build areaPlaceCounts. Use the visit doc's stored lat/lng so we
+    // don't need a place fetch — first-post coords are always set on
+    // the visit doc by `onPostCreatePlaceVisit`.
+    const areaPlaceCounts = {};
+    for (const v of visitDocs) {
+      const d = v.data() || {};
+      if (typeof d.firstPostLat !== "number" || typeof d.firstPostLng !== "number") continue;
+      const area = geofire.geohashForLocation([d.firstPostLat, d.firstPostLng], 5);
+      areaPlaceCounts[area] = (areaPlaceCounts[area] || 0) + 1;
+    }
+    const topAreaPlaceCount = Object.values(areaPlaceCounts).reduce(
+      (m, n) => Math.max(m, n), 0,
+    );
+
+    // reactionsReceived — sum the size of each post's reactions
+    // subcollection. Cap to first 200 posts to keep this bounded; for
+    // anyone past that this becomes a paid problem and a stretch goal.
+    let reactionsReceived = 0;
+    const postRefs = postsSnap.docs.slice(0, 200);
+    if (postRefs.length > 0) {
+      const counts = await Promise.all(postRefs.map(async (p) => {
+        try {
+          const rxn = await p.ref.collection("reactions").get();
+          // Self-reactions are excluded by `onReactionEngagement`, so
+          // mirror that here for parity.
+          return rxn.docs.filter((r) => r.id !== uid).length;
+        } catch (_e) {
+          return 0;
+        }
+      }));
+      reactionsReceived = counts.reduce((a, b) => a + b, 0);
+    }
+
+    await db.collection("users").doc(uid).set({
+      pioneerCount,
+      uniquePlacesVisited,
+      topPlaceVisitCount,
+      topAreaPlaceCount,
+      areaPlaceCounts,
+      reactionsReceived,
+    }, { merge: true });
+
+    logger.info("backfillMyStats committed", {
+      uid,
+      pioneerCount,
+      uniquePlacesVisited,
+      topPlaceVisitCount,
+      topAreaPlaceCount,
+      areaCount: Object.keys(areaPlaceCounts).length,
+      reactionsReceived,
+    });
+    return {
+      pioneerCount,
+      uniquePlacesVisited,
+      topPlaceVisitCount,
+      topAreaPlaceCount,
+      reactionsReceived,
+    };
+  },
+);
+
+// ─── Friend graph (Phase 4) ──────────────────────────────────────────────
+// Server-owned friend acceptance + removal. The corresponding rules deny
+// direct client writes to `users/{uid}/friends/{friendUid}`, so all
+// friendship mutations must come through these callables. Two reasons:
+//   1. The "20 friends max" cap is enforced consistently — every side of
+//      a friendship runs through the same gatekeeper.
+//   2. Both sides of the relationship are written atomically inside a
+//      transaction; a partial commit can't leave one user thinking they
+//      have a friend the other doesn't.
+
+const FRIENDS_MAX = 20;
+
+exports.acceptFriendRequest = onCall(
+  { timeoutSeconds: 15, memory: "256MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in to accept.");
+    const requestId = request.data?.requestId;
+    if (typeof requestId !== "string" || requestId.length === 0) {
+      throw new HttpsError("invalid-argument", "Missing requestId.");
+    }
+
+    const db = admin.firestore();
+    const reqRef = db.collection("friendRequests").doc(requestId);
+    const meRef = db.collection("users").doc(uid);
+
+    return await db.runTransaction(async (tx) => {
+      const reqSnap = await tx.get(reqRef);
+      if (!reqSnap.exists) {
+        throw new HttpsError("not-found", "Request no longer exists.");
+      }
+      const r = reqSnap.data();
+      if (r.toUid !== uid) {
+        throw new HttpsError("permission-denied", "Not your request to accept.");
+      }
+      if (r.status !== "pending") {
+        throw new HttpsError("failed-precondition", "Already handled.");
+      }
+
+      const otherRef = db.collection("users").doc(r.fromUid);
+
+      // Run the cap checks inside the same transaction — if a concurrent
+      // accept happens while this one is in flight, the second commit
+      // fails and Firestore retries with the new size.
+      const [mySize, otherSize] = await Promise.all([
+        tx.get(meRef.collection("friends")).then((s) => s.size),
+        tx.get(otherRef.collection("friends")).then((s) => s.size),
+      ]);
+      if (mySize >= FRIENDS_MAX) {
+        throw new HttpsError(
+          "resource-exhausted",
+          `You're at the ${FRIENDS_MAX}-friend limit.`,
+        );
+      }
+      if (otherSize >= FRIENDS_MAX) {
+        throw new HttpsError(
+          "resource-exhausted",
+          `${r.fromUsername || "They"} hit the ${FRIENDS_MAX}-friend limit first.`,
+        );
+      }
+
+      tx.update(reqRef, { status: "accepted" });
+      tx.set(meRef.collection("friends").doc(r.fromUid), {
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      tx.set(otherRef.collection("friends").doc(uid), {
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return { ok: true };
+    });
+  },
+);
+
+exports.removeFriend = onCall(
+  { timeoutSeconds: 10, memory: "256MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const otherUid = request.data?.uid;
+    if (typeof otherUid !== "string" || otherUid.length === 0) {
+      throw new HttpsError("invalid-argument", "Missing uid.");
+    }
+    if (otherUid === uid) {
+      throw new HttpsError("invalid-argument", "Cannot remove yourself.");
+    }
+
+    const db = admin.firestore();
+    const batch = db.batch();
+    batch.delete(
+      db.collection("users").doc(uid).collection("friends").doc(otherUid),
+    );
+    batch.delete(
+      db.collection("users").doc(otherUid).collection("friends").doc(uid),
+    );
+    await batch.commit();
+    return { ok: true };
+  },
+);
+
 // ─── Place dedup / create ────────────────────────────────────────────────
 // Single source-of-truth for inserting into the `places` collection.
 // Dedup priority:
@@ -317,8 +754,16 @@ exports.findOrCreatePlace = onCall(
           createdBy: uid,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           globalVisitCount: 0,
+          globalEngagementCount: 0,
           lastVisitedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
+        // Phase 5 — Pioneer achievement counter. The user that creates a
+        // brand-new place gets credit for "found it first".
+        tx.set(
+          db.collection("users").doc(uid),
+          { pioneerCount: admin.firestore.FieldValue.increment(1) },
+          { merge: true },
+        );
       });
     } catch (err) {
       if (err && err.message === RACE_LOST) {

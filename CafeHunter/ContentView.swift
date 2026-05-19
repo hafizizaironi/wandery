@@ -2,10 +2,13 @@ import FirebaseAuth
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var authService      = AuthService()
-    @StateObject private var firestoreService = FirestoreService()
-    @StateObject private var statsService     = UserStatsService()
-    @StateObject private var socialService    = SocialService()
+    @StateObject private var authService          = AuthService()
+    @StateObject private var firestoreService     = FirestoreService()
+    @StateObject private var statsService         = UserStatsService()
+    @StateObject private var socialService        = SocialService()
+    @StateObject private var conversationService  = ConversationService()
+    @StateObject private var visitTracker         = VisitTrackerService()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -21,10 +24,11 @@ struct ContentView: View {
                 UsernameOnboardingView(socialService: socialService, authService: authService)
             } else {
                 MainShellView(
-                    authService:      authService,
-                    firestoreService: firestoreService,
-                    statsService:     statsService,
-                    socialService:    socialService
+                    authService:         authService,
+                    firestoreService:    firestoreService,
+                    statsService:        statsService,
+                    socialService:       socialService,
+                    conversationService: conversationService
                 )
                 .onAppear  { firestoreService.subscribe() }
                 .onDisappear { firestoreService.unsubscribe() }
@@ -47,6 +51,19 @@ struct ContentView: View {
         }
         .task(id: authService.user?.uid) {
             socialService.start(for: authService.user)
+            conversationService.start(for: authService.user)
+            // Catch up on any visit sessions that need to close after a
+            // cold start. Cheap no-op when nothing's open.
+            if authService.user != nil {
+                await visitTracker.sweepIfNeeded(force: true)
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Re-check when the user comes back to the app — if they've
+            // walked or driven > 3 km from where they last posted, the
+            // session closes so the next post counts as a fresh visit.
+            guard phase == .active, authService.user != nil else { return }
+            Task { await visitTracker.sweepIfNeeded() }
         }
     }
 }

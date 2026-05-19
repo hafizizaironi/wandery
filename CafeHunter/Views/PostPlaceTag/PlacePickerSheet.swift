@@ -28,6 +28,11 @@ struct PlaceCandidate: Identifiable, Equatable {
     var lng: Double
     var distanceMeters: Double?
     var source: Source
+    /// Total number of post-tags against this place across all users.
+    /// Stamped by the `onPostCreatePlaceVisit` Cloud Function. Only set
+    /// for `.db` candidates; nil for fresh Google rows we haven't ingested
+    /// yet.
+    var globalVisitCount: Int?
 }
 
 @MainActor
@@ -39,6 +44,13 @@ final class PlacePickerViewModel {
     var errorMessage: String?
 
     var lastKnownCoord: CLLocationCoordinate2D?
+
+    /// Unfiltered nearby results, kept so we can re-rank instantly on every
+    /// keystroke without hitting the network. Network autocomplete is layered
+    /// on top after a debounce to enrich with names that are out of the
+    /// nearby radius.
+    private var nearbyCache: [PlaceCandidate] = []
+    private var searchTask: Task<Void, Never>?
 
     func loadNearby(around coord: CLLocationCoordinate2D?) async {
         isLoading = true
@@ -53,15 +65,99 @@ final class PlacePickerViewModel {
         guard let center else {
             errorMessage = "Couldn't get your location."
             candidates = []
+            nearbyCache = []
             return
         }
         lastKnownCoord = center
         do {
-            candidates = try await PlacePickerService.shared.nearby(center)
+            let result = try await PlacePickerService.shared.nearby(center)
+            nearbyCache = result
+            candidates = result
         } catch {
             errorMessage = error.localizedDescription
             candidates = []
+            nearbyCache = []
         }
+    }
+
+    /// Called on every keystroke. Re-ranks the cached nearby list immediately
+    /// (zero latency) and schedules a debounced remote autocomplete to fold in
+    /// non-nearby matches.
+    func queryChanged(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        searchTask?.cancel()
+        if trimmed.isEmpty {
+            candidates = nearbyCache
+            errorMessage = nil
+            return
+        }
+        candidates = Self.rank(nearbyCache, by: trimmed)
+        searchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+            await self?.runAutocomplete(trimmed)
+        }
+    }
+
+    private func runAutocomplete(_ text: String) async {
+        do {
+            let remote = try await PlacePickerService.shared.autocomplete(text, around: lastKnownCoord)
+            // Merge by id; prefer the nearby-cached version since it carries
+            // coords + distance that autocomplete results don't.
+            var byId: [String: PlaceCandidate] = [:]
+            for c in nearbyCache { byId[c.id] = c }
+            for c in remote where byId[c.id] == nil {
+                byId[c.id] = c
+            }
+            candidates = Self.rank(Array(byId.values), by: text)
+            errorMessage = nil
+        } catch is CancellationError {
+            // Superseded by a newer keystroke — leave the local rank in place.
+        } catch {
+            // Network failure shouldn't wipe the local re-rank we already showed.
+        }
+    }
+
+    /// Score-then-filter relevance ranking. Anything scoring 0 is dropped so
+    /// the list reflects only items related to what's typed.
+    /// - Exact name match: 1000
+    /// - Name starts with query: 500
+    /// - Any word in the name starts with query: 300
+    /// - Name contains query substring: 150
+    /// - Each multi-word query token found in name: +60 each
+    /// - Address contains query: 50
+    /// - Distance penalty: −d/50000 (5 km ≈ −0.1, just a tiebreak)
+    private static func rank(_ items: [PlaceCandidate], by query: String) -> [PlaceCandidate] {
+        let q = query.lowercased()
+        let qWords = q.split(separator: " ").map(String.init)
+
+        func score(_ c: PlaceCandidate) -> Double {
+            let name = c.name.lowercased()
+            let addr = (c.address ?? "").lowercased()
+            var s: Double = 0
+            if name == q { s += 1000 }
+            if name.hasPrefix(q) { s += 500 }
+            for w in name.split(separator: " ") where w.hasPrefix(q) {
+                s += 300
+                break
+            }
+            if name.contains(q) { s += 150 }
+            if qWords.count > 1 {
+                for w in qWords where name.contains(w) {
+                    s += 60
+                }
+            }
+            if addr.contains(q) { s += 50 }
+            if let d = c.distanceMeters {
+                s -= d / 50_000
+            }
+            return s
+        }
+        return items
+            .map { ($0, score($0)) }
+            .filter { $0.1 > 0 }
+            .sorted { $0.1 > $1.1 }
+            .map(\.0)
     }
 
     func search(_ text: String) async {
@@ -69,15 +165,7 @@ final class PlacePickerViewModel {
             await loadNearby(around: lastKnownCoord)
             return
         }
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-        do {
-            candidates = try await PlacePickerService.shared.autocomplete(text, around: lastKnownCoord)
-        } catch {
-            errorMessage = error.localizedDescription
-            candidates = []
-        }
+        await runAutocomplete(text)
     }
 }
 
@@ -109,6 +197,7 @@ struct PlacePickerSheet: View {
                 }
             }
             .task { await vm.loadNearby(around: nil) }
+            .keyboardDismissToolbar()
         }
     }
 
@@ -134,6 +223,9 @@ struct PlacePickerSheet: View {
                 .textInputAutocapitalization(.words)
                 .submitLabel(.search)
                 .onSubmit { Task { await vm.search(vm.query) } }
+                .onChange(of: vm.query) { _, newValue in
+                    vm.queryChanged(newValue)
+                }
         }
         .padding(.vertical, 10).padding(.horizontal, 14)
         .background(AppTheme.surfacePrimary, in: RoundedRectangle(cornerRadius: 12))
@@ -222,8 +314,25 @@ struct PlacePickerSheet: View {
             HStack(spacing: 12) {
                 Text(c.suggestedType.emoji).font(.title3)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(c.name).font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.textPrimary)
+                    HStack(spacing: 6) {
+                        Text(c.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.textPrimary)
+                            .lineLimit(1)
+                        if let visits = c.globalVisitCount, visits >= 3 {
+                            // Trending pill — only shown for places that
+                            // have meaningfully accumulated activity.
+                            // Threshold (3) keeps brand-new popular places
+                            // from getting an under-earned badge.
+                            Text("🔥 \(visits)")
+                                .font(.caption2.weight(.bold))
+                                .foregroundColor(AppTheme.accentAction)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(AppTheme.accentAction.opacity(0.12)))
+                                .overlay(Capsule().stroke(AppTheme.accentAction.opacity(0.30), lineWidth: 0.7))
+                        }
+                    }
                     if let addr = c.address {
                         Text(addr).font(.caption).foregroundStyle(AppTheme.textSecondary)
                     }

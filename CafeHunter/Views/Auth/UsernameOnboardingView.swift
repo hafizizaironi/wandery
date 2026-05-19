@@ -65,6 +65,7 @@ struct UsernameOnboardingView: View {
             }
             .padding(.top, 48)
         }
+        .keyboardDismissToolbar()
     }
 
     private func save() async {

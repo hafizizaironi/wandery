@@ -137,6 +137,7 @@ struct EditProfileView: View {
             }
         }
         .background(AppTheme.espresso)
+        .keyboardDismissToolbar()
     }
 
     // MARK: - Avatar preview

@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import FirebaseAuth
+import FirebaseFirestore
 import FirebaseStorage
 import GoogleSignIn
 import UIKit
@@ -83,10 +84,16 @@ class AuthService: ObservableObject {
 
     func updateDisplayName(_ name: String) async throws {
         guard let user else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
         let request = user.createProfileChangeRequest()
-        request.displayName = name.trimmingCharacters(in: .whitespaces)
+        request.displayName = trimmed
         try await request.commitChanges()
         try await user.reload()
+        // Firebase Auth's `displayName` is private to the owner; mirror it to
+        // the public `users/{uid}` doc so friends' UIs can read it.
+        try? await Firestore.firestore()
+            .collection("users").document(user.uid)
+            .setData(["displayName": trimmed], merge: true)
         await MainActor.run { self.user = Auth.auth().currentUser }
     }
 
@@ -102,6 +109,12 @@ class AuthService: ObservableObject {
         request.photoURL = url
         try await request.commitChanges()
         try await user.reload()
+        // Mirror the new photoURL onto the public user doc so friends' UIs
+        // (map pin avatars, friend list, chat header) can render it.
+        // Firebase Auth's `photoURL` is only readable by the owner.
+        try? await Firestore.firestore()
+            .collection("users").document(user.uid)
+            .setData(["photoURL": url.absoluteString], merge: true)
         await MainActor.run { self.user = Auth.auth().currentUser }
     }
 

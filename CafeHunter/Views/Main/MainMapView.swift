@@ -118,13 +118,23 @@ extension View {
 // MARK: - Filter type
 
 enum FilterType: String, CaseIterable {
-    case all, cafe, stall
+    case all, cafe, restaurant, stall
 
     var label: String {
-        switch self { case .all: "All"; case .cafe: "Cafés"; case .stall: "Stalls" }
+        switch self {
+        case .all: "All"
+        case .cafe: "Cafés"
+        case .restaurant: "Restaurants"
+        case .stall: "Stalls"
+        }
     }
     var emoji: String {
-        switch self { case .all: "📍"; case .cafe: "☕"; case .stall: "🍜" }
+        switch self {
+        case .all: "📍"
+        case .cafe: "☕"
+        case .restaurant: "🍽️"
+        case .stall: "🍜"
+        }
     }
 }
 
@@ -140,17 +150,19 @@ struct MainMapView: View {
 
     @State private var friendPlacesService = FriendPlacesService()
     @State private var activeFriendPlace: FriendPlace?
-    @State private var activeCafeId: String?
-    @State private var sheetView: SheetViewMode = .list
+    /// Set when the user taps a multi-place cluster pin (e.g. a mall). Drives
+    /// a small picker sheet that lets them pick which of the bundled places
+    /// to actually open.
+    @State private var clusterSelection: ClusterSelection?
     @State private var filter: FilterType = .all
     @State private var sheetHeight: CGFloat = 210
     @State private var listScrollOffset: CGFloat = 0
     @State private var showListOverlay = false
-    @State private var showAdmin = false
-    @State private var editCafe: Cafe?
     @State private var centerOnUser = false
     @State private var targetCoordinate: CLLocationCoordinate2D?
     @State private var locationManager = LocationManager()
+    /// Drives the Discover overlay sheet.
+    @State private var showDiscover = false
 
     // Show List pill idle animation — periodic "happy jump".
     @State private var showListJumpOffset: CGFloat = 0
@@ -164,17 +176,20 @@ struct MainMapView: View {
     private var expandedHeight: CGFloat { screenHeight * 0.75 }
     private var isListAtTop: Bool { listScrollOffset >= -1 }
 
-    private var filteredCafes: [Cafe] {
-        switch filter {
-        case .all:   return firestoreService.cafes
-        case .cafe:  return firestoreService.cafes.filter { $0.type == .cafe }
-        case .stall: return firestoreService.cafes.filter { $0.type == .stall }
-        }
-    }
+    /// Map pins still draw the legacy curated cafes for now (Phase 2 decision),
+    /// but the sheet list no longer reflects them — it lists places shared via
+    /// post tagging only.
+    private var mapCafes: [Cafe] { firestoreService.cafes }
 
-    private var activeCafe: Cafe? {
-        guard let id = activeCafeId else { return nil }
-        return firestoreService.cafes.first { $0.id == id }
+    /// The sheet list is now driven by FriendPlace (places that the user or
+    /// their friends have tagged in a post). No more curated-cafe details.
+    private var filteredPlaces: [FriendPlace] {
+        switch filter {
+        case .all:        return friendPlacesService.places
+        case .cafe:       return friendPlacesService.places.filter { $0.type == .cafe }
+        case .restaurant: return friendPlacesService.places.filter { $0.type == .restaurant }
+        case .stall:      return friendPlacesService.places.filter { $0.type == .stall }
+        }
     }
 
     var body: some View {
@@ -182,11 +197,12 @@ struct MainMapView: View {
         ZStack(alignment: .bottom) {
             // Map
             CafeMapView(
-                cafes: filteredCafes,
+                cafes: mapCafes,
                 friendPlaces: friendPlacesService.places,
-                activeCafeId: activeCafeId,
-                onPinClick: { id in selectCafe(id) },
+                activeCafeId: nil,
+                onPinClick: { id in centerOnLegacyCafe(id: id) },
                 onFriendPinClick: { place in activeFriendPlace = place },
+                onClusterTap: { places in clusterSelection = ClusterSelection(places: places) },
                 centerOnUser: $centerOnUser,
                 targetCoordinate: $targetCoordinate,
                 locationManager: locationManager
@@ -200,6 +216,43 @@ struct MainMapView: View {
                 }
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.hidden)
+            }
+            .sheet(isPresented: $showDiscover) {
+                DiscoverView(
+                    locationManager: locationManager,
+                    onSelect: { place in
+                        showDiscover = false
+                        // Centre the map on the picked place using the
+                        // same upper-quarter bias we use elsewhere so the
+                        // pin sits where the eye lands, not buried under
+                        // a UI panel.
+                        targetCoordinate = CLLocationCoordinate2D(
+                            latitude: place.lat - 0.00375,
+                            longitude: place.lng
+                        )
+                    },
+                    onClose: { showDiscover = false }
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
+            }
+            .sheet(item: $clusterSelection) { selection in
+                ClusterPickerSheet(
+                    places: selection.places,
+                    onPick: { picked in
+                        clusterSelection = nil
+                        // Slight delay so the picker sheet finishes dismissing
+                        // before the detail sheet starts presenting — avoids
+                        // SwiftUI's "two sheets at once" warning.
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 250_000_000)
+                            selectFriendPlace(picked)
+                        }
+                    },
+                    onCancel: { clusterSelection = nil }
+                )
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
             }
             .onChange(of: pendingPlaceJumpId) { _, newId in
                 guard let placeId = newId else { return }
@@ -221,10 +274,9 @@ struct MainMapView: View {
                     height: $sheetHeight,
                     peekHeight: peekHeight,
                     expandedHeight: expandedHeight,
-                    canDragDownFromContent: sheetView != .list || isListAtTop,
+                    canDragDownFromContent: isListAtTop,
                     onHide: hideListSheet,
-                    // Only surface the back-arrow in detail mode.
-                    onBack: sheetView == .detail ? { goBackToList() } : nil
+                    onBack: nil
                 ) {
                     sheetContent
                 }
@@ -237,43 +289,18 @@ struct MainMapView: View {
         .onChange(of: geo.size.height) { _, newValue in screenHeight = newValue }
         } // GeometryReader
         .ignoresSafeArea()
-        .floatingPanel(isPresented: $showAdmin) {
-            AdminAddView(
-                firestoreService: firestoreService,
-                editCafe: editCafe,
-                onClose: {
-                    showAdmin = false
-                    editCafe  = nil
-                }
-            )
-        }
     }
 
     // MARK: - Top buttons
 
-    /// Admin "+" entry point is hidden for now — the new conversational
-    /// AddCafe flow (and this legacy admin sheet) are both gated off until
-    /// the flow is fully wired up. Flip to `true` to bring it back.
-    private let showAdminAddButton = false
-
+    /// The legacy admin "+" form (manually adding cafés/stalls/restaurants)
+    /// is gone — all places are now created server-side via the post-tagging
+    /// flow (`findOrCreatePlace`). HUD now hosts:
+    ///   - "center on me" — recenters the map.
+    ///   - Discover (✨)   — opens the trending-spots feed for places
+    ///                       you haven't visited yet.
     private var topButtons: some View {
         VStack(spacing: 10) {
-            if showAdminAddButton {
-                Button {
-                    editCafe = nil
-                    showAdmin = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(AppTheme.textPrimary)
-                        .frame(width: 44, height: 44)
-                        .liquidGlassHUD()
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Add café or stall")
-            }
-
             Button {
                 let gen = UIImpactFeedbackGenerator(style: .medium)
                 gen.impactOccurred()
@@ -288,6 +315,19 @@ struct MainMapView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Center on my location")
+
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                showDiscover = true
+            } label: {
+                Text("✨")
+                    .font(.system(size: 19))
+                    .frame(width: 44, height: 44)
+                    .liquidGlassHUD()
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Discover places worth exploring")
         }
         .padding(.trailing, 16)
         .padding(.top, 60)
@@ -434,7 +474,6 @@ struct MainMapView: View {
     private func hideListSheet() {
         withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
             showListOverlay = false
-            goBackToList()
             sheetHeight = peekHeight
         }
     }
@@ -443,69 +482,102 @@ struct MainMapView: View {
 
     @ViewBuilder
     private var sheetContent: some View {
-        if sheetView == .list {
-            FilterTabBar(active: $filter, counts: filterCounts) { f in
-                filter = f
-                activeCafeId = nil
-                sheetView = .list
-            }
-            .padding(.top, 4)
+        FilterTabBar(active: $filter, counts: filterCounts) { f in
+            filter = f
+        }
+        .padding(.top, 4)
 
-            ScrollView {
-                GeometryReader { proxy in
-                    Color.clear
-                        .preference(key: SheetListOffsetPreferenceKey.self,
-                                    value: proxy.frame(in: .named("CafeListScroll")).minY)
-                }
-                .frame(height: 0)
+        ScrollView {
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: SheetListOffsetPreferenceKey.self,
+                                value: proxy.frame(in: .named("CafeListScroll")).minY)
+            }
+            .frame(height: 0)
 
-                LazyVStack(spacing: 10) {
-                    ForEach(filteredCafes) { cafe in
-                        CafeCardView(cafe: cafe, isActive: cafe.id == activeCafeId) {
-                            selectCafe(cafe.id ?? "")
-                        }
-                    }
-                    if filteredCafes.isEmpty {
-                        Text("Nothing here yet.")
-                            .font(.system(size: 14))
-                            .foregroundColor(AppTheme.textSecondary)
-                            .padding(.top, 32)
-                    }
-                    // Reserve room so the last card sits comfortably above
-                    // the arc navbar at max scroll-down.
-                    Color.clear.frame(height: 170)
+            LazyVStack(spacing: 8) {
+                ForEach(filteredPlaces) { place in
+                    placeRow(place)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-            }
-            .coordinateSpace(name: "CafeListScroll")
-            .onPreferenceChange(SheetListOffsetPreferenceKey.self) { value in
-                listScrollOffset = value
-            }
-        } else if let cafe = activeCafe {
-            CafeDetailSheetContent(
-                cafe: cafe,
-                onEdit: {
-                    editCafe = cafe
-                    showAdmin = true
-                },
-                onDelete: {
-                    Task {
-                        if let id = cafe.id {
-                            try? await firestoreService.deletePlace(id: id)
-                        }
-                        goBackToList()
-                    }
+                if filteredPlaces.isEmpty {
+                    Text(filter == .all
+                         ? "No places shared yet — tag a place when you post."
+                         : "No \(filter.label.lowercased()) shared yet.")
+                        .font(.system(size: 13))
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(AppTheme.textSecondary)
+                        .padding(.top, 32)
+                        .padding(.horizontal, 24)
                 }
-            )
+                // Reserve room so the last row sits comfortably above the
+                // arc navbar at max scroll-down.
+                Color.clear.frame(height: 170)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .coordinateSpace(name: "CafeListScroll")
+        .onPreferenceChange(SheetListOffsetPreferenceKey.self) { value in
+            listScrollOffset = value
         }
     }
 
-    private var filterCounts: (all: Int, cafe: Int, stall: Int) {
-        (
-            all:   firestoreService.cafes.count,
-            cafe:  firestoreService.cafes.filter { $0.type == .cafe }.count,
-            stall: firestoreService.cafes.filter { $0.type == .stall }.count
+    /// Plain row — emoji, name, visit count. Tap centers the map on the
+    /// place and opens the friend-posts card stack.
+    private func placeRow(_ place: FriendPlace) -> some View {
+        Button {
+            selectFriendPlace(place)
+        } label: {
+            HStack(spacing: 12) {
+                Text(place.type.emoji).font(.system(size: 18))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(place.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(AppTheme.textPrimary)
+                        .lineLimit(1)
+                    Text(visitsLabel(place))
+                        .font(.system(size: 11))
+                        .foregroundColor(AppTheme.textSecondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(AppTheme.textSecondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(AppTheme.surfacePrimary)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func visitsLabel(_ place: FriendPlace) -> String {
+        // `globalVisitCount` is the real visit metric (one visit per
+        // session, not one per post). Falls back to post count for places
+        // whose counter hasn't been hydrated yet — better than showing 0.
+        let visits = max(place.globalVisitCount, 0)
+        let displayed = visits > 0 ? visits : place.posts.count
+        let friendCount = Set(place.posts.map(\.authorId)).count
+        if displayed == 1 { return "1 visit" }
+        if friendCount <= 1 { return "\(displayed) visits" }
+        return "\(displayed) visits · \(friendCount) friends"
+    }
+
+    private var filterCounts: (all: Int, cafe: Int, restaurant: Int, stall: Int) {
+        let p = friendPlacesService.places
+        return (
+            all:        p.count,
+            cafe:       p.filter { $0.type == .cafe }.count,
+            restaurant: p.filter { $0.type == .restaurant }.count,
+            stall:      p.filter { $0.type == .stall }.count
         )
     }
 
@@ -519,7 +591,10 @@ struct MainMapView: View {
 
         // 1. Local cache hit — fast path.
         if let place = friendPlacesService.places.first(where: { $0.id == placeId }) {
-            targetCoordinate = CLLocationCoordinate2D(latitude: place.lat, longitude: place.lng)
+            targetCoordinate = CLLocationCoordinate2D(
+                latitude: place.lat - 0.00375,
+                longitude: place.lng
+            )
             activeFriendPlace = place
             return
         }
@@ -540,7 +615,10 @@ struct MainMapView: View {
                 lng: doc.lng,
                 posts: postsAtPlace.sorted { $0.createdAt > $1.createdAt }
             )
-            targetCoordinate = CLLocationCoordinate2D(latitude: doc.lat, longitude: doc.lng)
+            targetCoordinate = CLLocationCoordinate2D(
+                latitude: doc.lat - 0.00375,
+                longitude: doc.lng
+            )
             activeFriendPlace = synthesized
         } catch {
             // Place was deleted or unreadable — silently no-op so the user
@@ -548,25 +626,30 @@ struct MainMapView: View {
         }
     }
 
-    private func selectCafe(_ id: String) {
-        activeCafeId = id
-        sheetView = .detail
-        showListOverlay = true
-        withAnimation(.spring(response: 0.4)) {
-            sheetHeight = expandedHeight
+    private func selectFriendPlace(_ place: FriendPlace) {
+        // Drop the list sheet so the map is fully visible behind the rising
+        // place-detail sheet.
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
+            showListOverlay = false
+            sheetHeight = peekHeight
         }
-        if let cafe = firestoreService.cafes.first(where: { $0.id == id }) {
-            targetCoordinate = CLLocationCoordinate2D(latitude: cafe.lat, longitude: cafe.lng)
-        }
+        // Bias the center southward by ~25 % of the zoom span so the pin
+        // lands in the upper quarter of the screen — i.e. roughly centered
+        // in the visible top half once the .medium detail sheet is up.
+        targetCoordinate = CLLocationCoordinate2D(
+            latitude: place.lat - 0.00375,
+            longitude: place.lng
+        )
+        activeFriendPlace = place
     }
 
-    private func goBackToList() {
-        activeCafeId = nil
-        sheetView = .list
+    /// Legacy curated cafes still draw on the map but no longer have a
+    /// detail page. Tapping one just centers the map.
+    private func centerOnLegacyCafe(id: String) {
+        guard let cafe = firestoreService.cafes.first(where: { $0.id == id }) else { return }
+        targetCoordinate = CLLocationCoordinate2D(latitude: cafe.lat, longitude: cafe.lng)
     }
 }
-
-enum SheetViewMode { case list, detail }
 
 // MARK: - Bottom sheet container
 
@@ -710,6 +793,98 @@ struct BottomSheetView<Content: View>: View {
     }
 }
 
+// MARK: - Cluster picker
+
+/// Wrapper so an array can drive `.sheet(item:)`. Identity is per-tap, not
+/// per-cluster — every fresh tap presents a new sheet even if the same
+/// cluster is tapped twice in a row.
+struct ClusterSelection: Identifiable {
+    let id = UUID()
+    let places: [FriendPlace]
+}
+
+/// Small picker shown when the user taps a multi-place cluster pin. Lists
+/// the places stacked at that location; tapping one opens the regular
+/// detail sheet for it.
+struct ClusterPickerSheet: View {
+    let places: [FriendPlace]
+    let onPick: (FriendPlace) -> Void
+    let onCancel: () -> Void
+
+    /// Sort by friend-engagement first (most-tagged on top) so the busiest
+    /// spots in a mall surface immediately, then by recency.
+    private var sortedPlaces: [FriendPlace] {
+        places.sorted { a, b in
+            if a.posts.count != b.posts.count { return a.posts.count > b.posts.count }
+            let aDate = a.mostRecent?.createdAt ?? .distantPast
+            let bDate = b.mostRecent?.createdAt ?? .distantPast
+            return aDate > bDate
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AppTheme.surfaceCanvas.ignoresSafeArea()
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(sortedPlaces) { place in
+                            Button {
+                                onPick(place)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Text(place.type.emoji).font(.system(size: 18))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(place.name)
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundColor(AppTheme.textPrimary)
+                                            .lineLimit(1)
+                                        Text(visitsLabel(place))
+                                            .font(.system(size: 11))
+                                            .foregroundColor(AppTheme.textSecondary)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(AppTheme.textSecondary)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(RoundedRectangle(cornerRadius: 12).fill(AppTheme.surfacePrimary))
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.borderSubtle, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
+                }
+            }
+            .navigationTitle("\(places.count) places here")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", action: onCancel)
+                }
+            }
+        }
+    }
+
+    private func visitsLabel(_ place: FriendPlace) -> String {
+        // `globalVisitCount` is the real visit metric (one visit per
+        // session, not one per post). Falls back to post count for places
+        // whose counter hasn't been hydrated yet — better than showing 0.
+        let visits = max(place.globalVisitCount, 0)
+        let displayed = visits > 0 ? visits : place.posts.count
+        let friendCount = Set(place.posts.map(\.authorId)).count
+        if displayed == 1 { return "1 visit" }
+        if friendCount <= 1 { return "\(displayed) visits" }
+        return "\(displayed) visits · \(friendCount) friends"
+    }
+}
+
 private struct SheetListOffsetPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -721,16 +896,33 @@ private struct SheetListOffsetPreferenceKey: PreferenceKey {
 
 struct FilterTabBar: View {
     @Binding var active: FilterType
-    let counts: (all: Int, cafe: Int, stall: Int)
+    let counts: (all: Int, cafe: Int, restaurant: Int, stall: Int)
     let onChange: (FilterType) -> Void
+
+    private func count(for type: FilterType) -> Int {
+        switch type {
+        case .all:        return counts.all
+        case .cafe:       return counts.cafe
+        case .restaurant: return counts.restaurant
+        case .stall:      return counts.stall
+        }
+    }
+
+    private func chipAccent(for type: FilterType) -> Color? {
+        switch type {
+        case .cafe:       return AppTheme.cafeAccent
+        case .stall:      return AppTheme.stallAccent
+        case .restaurant: return AppTheme.accentAction
+        case .all:        return nil
+        }
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             ForEach(FilterType.allCases, id: \.self) { type in
-                let count = type == .all ? counts.all : type == .cafe ? counts.cafe : counts.stall
+                let count = count(for: type)
                 let isActive = active == type
-                let chipAccent: Color? = type == .cafe ? AppTheme.cafeAccent
-                    : type == .stall ? AppTheme.stallAccent : nil
+                let chipAccent = chipAccent(for: type)
 
                 Button { onChange(type) } label: {
                     HStack(spacing: 4) {

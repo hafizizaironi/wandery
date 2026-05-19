@@ -53,6 +53,9 @@ struct Place: Identifiable, Codable {
     /// Google Places place_id, when available — used for dedup.
     var googlePlaceId: String?
     var globalVisitCount: Int = 0
+    /// Total reactions + replies on tagged posts at this place. Aggregated
+    /// server-side by `onReactionEngagement` / `onReplyEngagement`.
+    var globalEngagementCount: Int = 0
     var lastVisitedAt: Date?
     var createdAt: Date?
 }

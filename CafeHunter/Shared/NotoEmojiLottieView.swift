@@ -41,39 +41,17 @@ struct NotoEmojiLottieView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Lottie path is disabled because the prebuilt `lottie-spm` binary is
+    /// crashing inside `LottieAnimation.from(data:strategy:)` for some
+    /// payloads (likely an ABI mismatch with the current Swift toolchain —
+    /// LLDB also warns: "compiled with a different Swift compiler"). The
+    /// crashes are hard faults inside the SDK that `try?` cannot catch, so
+    /// the only safe move is to skip the parser and always render the
+    /// system emoji `Text`. Re-enable once Lottie is upgraded.
     var body: some View {
-        Group {
-            if reduceMotion {
-                Text(fallbackEmoji)
-                    .font(.system(size: size))
-            } else {
-                lottie
-            }
-        }
-        .frame(width: size, height: size)
-        .accessibilityLabel(fallbackEmoji)
-    }
-
-    @ViewBuilder
-    private var lottie: some View {
-        LottieView {
-            // URLSession + explicit decoding strategy: required for lottie-spm binary (avoids default-arg symbols).
-            let url = NotoEmojiLottie.lottieURL(notoCodepointHex: notoSlug)
-            let (data, response) = try await URLSession.shared.data(from: url)
-            if let http = response as? HTTPURLResponse, !(200 ... 299).contains(http.statusCode) {
-                return nil
-            }
-            return try LottieAnimation.from(data: data, strategy: .dictionaryBased)
-        } placeholder: {
-            Text(fallbackEmoji)
-                .font(.system(size: size))
-        }
-        .playbackMode(
-            .playing(
-                .fromProgress(0, toProgress: 1, loopMode: loop ? .loop : .playOnce)
-            )
-        )
-        .resizable()
-        .frame(width: size, height: size)
+        Text(fallbackEmoji)
+            .font(.system(size: size))
+            .frame(width: size, height: size)
+            .accessibilityLabel(fallbackEmoji)
     }
 }

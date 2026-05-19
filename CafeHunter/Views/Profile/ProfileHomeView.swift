@@ -1,14 +1,20 @@
 import SwiftUI
 import FirebaseAuth
+import FirebaseFunctions
 
 // MARK: - Profile home (tab page)
 
 struct ProfileHomeView: View {
-    @ObservedObject var authService:   AuthService
-    @ObservedObject var statsService:  UserStatsService
-    @ObservedObject var socialService: SocialService
+    @ObservedObject var authService:         AuthService
+    @ObservedObject var statsService:        UserStatsService
+    @ObservedObject var socialService:       SocialService
+    @ObservedObject var conversationService: ConversationService
     /// True while this shell page is the visible tab (Map / Hero / Profile pager).
     var isTabActive: Bool
+    /// Set by MainShellView. Called when a chat thumbnail tapped here
+    /// wants to land on a post in the Hero feed; the shell switches to
+    /// the Hero tab and HeroPageView scrolls to the post.
+    var onJumpToHeroPost: (String) -> Void = { _ in }
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -17,6 +23,10 @@ struct ProfileHomeView: View {
     @State private var addFriendQuery      = ""
     @State private var friendBusy          = false
     @State private var friendMessage       = ""
+    @State private var showFriendList      = false
+    @State private var pendingChat: PendingChat?
+    @State private var isBackfilling       = false
+    @State private var backfillMessage     = ""
 
     // MARK: - Computed helpers
 
@@ -108,6 +118,7 @@ struct ProfileHomeView: View {
                 .padding(.bottom, ArcNavBar.frameContentHeight + 24)
             }
         }
+        .keyboardDismissToolbar()
         .floatingPanel(isPresented: $showEditProfile) {
             if let u = user {
                 EditProfileView(user: u, authService: authService) {
@@ -122,6 +133,39 @@ struct ProfileHomeView: View {
                 unlockedDate: unlockDate(for: achievement)
             )
         }
+        .floatingPanel(isPresented: $showFriendList) {
+            FriendListView(
+                socialService: socialService,
+                onMessage: { row in openChat(otherUid: row.id, title: row.titleText) },
+                onClose: { showFriendList = false }
+            )
+        }
+        // Full-screen chat — slides in from the trailing edge. Same pattern
+        // as the Hero feed's chat presentation so the surface is consistent.
+        .overlay {
+            if let chat = pendingChat {
+                ChatView(
+                    conversationService: conversationService,
+                    convId: chat.convId,
+                    otherUid: chat.otherUid,
+                    otherTitle: chat.title,
+                    onClose: {
+                        conversationService.openThread(nil)
+                        pendingChat = nil
+                    },
+                    onJumpToPost: { postId in
+                        conversationService.openThread(nil)
+                        pendingChat = nil
+                        onJumpToHeroPost(postId)
+                    }
+                )
+                .background(AppTheme.espresso.ignoresSafeArea())
+                .ignoresSafeArea()
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .zIndex(40)
+            }
+        }
+        .animation(.spring(response: 0.45, dampingFraction: 0.86), value: pendingChat?.id)
         .onChange(of: isTabActive) { _, active in
             guard active else { return }
             Task { await authService.refreshCurrentUser() }
@@ -274,7 +318,13 @@ struct ProfileHomeView: View {
             ProfileStatCell(value: "\(statsService.stats.cafesVisited)",  label: "Cafés",   icon: "☕")
             ProfileStatCell(value: "\(statsService.stats.stallsVisited)", label: "Stalls",  icon: "🍜")
             ProfileStatCell(value: "\(daysActive)",                       label: "Days",    icon: "📅")
-            ProfileStatCell(value: "\(statsService.stats.friendsHunted)", label: "Friends", icon: "👥")
+            // `friendsHunted` is a denormalized stat that wasn't being kept
+            // in sync on accept/remove. The friends listener already gives us
+            // a live count, so trust that directly. Tap → friend list.
+            Button { showFriendList = true } label: {
+                ProfileStatCell(value: "\(socialService.friendIds.count)", label: "Friends", icon: "👥")
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.top, 20)
@@ -462,6 +512,12 @@ struct ProfileHomeView: View {
                 )
             }
 
+            // Anyone can recompute their own Phase 5 counters. Useful for
+            // bringing legacy activity (posts/visits/places from before
+            // the achievement triggers shipped) into the achievement
+            // grid without waiting for new history to accumulate.
+            backfillStatsButton
+
             Button {
                 try? authService.signOut()
             } label: {
@@ -500,6 +556,81 @@ struct ProfileHomeView: View {
         }
     }
 
+    // MARK: - Backfill stats
+
+    private var backfillStatsButton: some View {
+        VStack(spacing: 6) {
+            Button { Task { await runBackfill() } } label: {
+                HStack(spacing: 8) {
+                    if isBackfilling {
+                        ProgressView().scaleEffect(0.7)
+                    } else {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    Text(isBackfilling ? "Recomputing…" : "Recompute achievements")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundColor(AppTheme.cream.opacity(0.55))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(AppTheme.cream.opacity(0.04))
+                .cornerRadius(20)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(AppTheme.cream.opacity(0.10), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isBackfilling)
+
+            if !backfillMessage.isEmpty {
+                Text(backfillMessage)
+                    .font(.system(size: 10))
+                    .foregroundColor(AppTheme.cream.opacity(0.5))
+            }
+        }
+    }
+
+    private func runBackfill() async {
+        isBackfilling = true
+        backfillMessage = ""
+        defer { isBackfilling = false }
+        do {
+            let callable = Functions.functions().httpsCallable("backfillMyStats")
+            let result = try await callable.call([:])
+            if let dict = result.data as? [String: Any] {
+                let unique = dict["uniquePlacesVisited"] as? Int ?? 0
+                let pioneer = dict["pioneerCount"] as? Int ?? 0
+                let reactions = dict["reactionsReceived"] as? Int ?? 0
+                backfillMessage = "Found \(unique) places, \(pioneer) pioneered, \(reactions) reactions."
+            } else {
+                backfillMessage = "Done."
+            }
+        } catch {
+            backfillMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Chat entry
+
+    /// Resolves the conversation id with `otherUid` (creating the doc on
+    /// first contact) and presents the chat sheet. Called from
+    /// FriendListView's per-row Message button.
+    private func openChat(otherUid: String, title: String) {
+        Task {
+            do {
+                let convId = try await conversationService.findOrCreateConversation(with: otherUid)
+                conversationService.openThread(convId)
+                showFriendList = false
+                pendingChat = PendingChat(convId: convId, otherUid: otherUid, title: title)
+            } catch {
+                // Surface inline only on the inbox/list — silent failure is
+                // OK for v1; realistic causes are network or rule denial.
+            }
+        }
+    }
+
     // MARK: - Send friend request
 
     private func sendFriendRequest() async {
@@ -516,6 +647,18 @@ struct ProfileHomeView: View {
         }
         friendBusy = false
     }
+}
+
+// MARK: - Pending chat (sheet driver)
+
+/// Identity wrapper so `.floatingPanel(item:)` can present a freshly-opened
+/// chat thread. Recreated each time `openChat` runs, even for the same
+/// friend, so the sheet always re-presents.
+struct PendingChat: Identifiable, Equatable {
+    let id = UUID()
+    let convId: String
+    let otherUid: String
+    let title: String
 }
 
 // MARK: - Stat cell
