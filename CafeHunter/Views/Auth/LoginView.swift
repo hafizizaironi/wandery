@@ -21,13 +21,15 @@ struct LoginView: View {
                 VStack(spacing: 0) {
                     // Header
                     VStack(spacing: 8) {
-                        Text("☕").font(.system(size: 42))
+                        Text("☕")
+                            .font(.system(size: 42))
+                            .accessibilityHidden(true)
                         Text("Cafés Around Rawang")
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundColor(AppTheme.cream)
+                            .font(.title3).bold()
+                            .foregroundStyle(AppTheme.cream)
                         Text(mode == .login ? "Welcome back! Sign in to continue." : "Create an account to get started.")
-                            .font(.system(size: 13))
-                            .foregroundColor(AppTheme.cream.opacity(0.45))
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.cream.opacity(0.45))
                             .multilineTextAlignment(.center)
                     }
                     .padding(.top, 32)
@@ -48,15 +50,15 @@ struct LoginView: View {
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "globe")
-                                    .font(.system(size: 16, weight: .medium))
+                                    .font(.callout)
                                 Text("Continue with Google")
-                                    .font(.system(size: 14, weight: .semibold))
+                                    .font(.subheadline).bold()
                             }
-                            .foregroundColor(AppTheme.textPrimary)
+                            .foregroundStyle(AppTheme.textPrimary)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                             .background(Color.white)
-                            .cornerRadius(12)
+                            .clipShape(.rect(cornerRadius: 12))
                         }
                         .disabled(isLoading)
 
@@ -64,8 +66,8 @@ struct LoginView: View {
                         HStack {
                             Rectangle().fill(AppTheme.textPrimary.opacity(0.12)).frame(height: 1)
                             Text("or")
-                                .font(.system(size: 12))
-                                .foregroundColor(AppTheme.textSecondary)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textSecondary)
                                 .padding(.horizontal, 8)
                             Rectangle().fill(AppTheme.textPrimary.opacity(0.12)).frame(height: 1)
                         }
@@ -83,8 +85,8 @@ struct LoginView: View {
 
                             if !errorMessage.isEmpty {
                                 Text(errorMessage)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(AppTheme.errorRed)
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.errorRed)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
 
@@ -96,14 +98,14 @@ struct LoginView: View {
                                         ProgressView().tint(AppTheme.textOnAccent)
                                     } else {
                                         Text(mode == .login ? "Sign in" : "Create account")
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundColor(AppTheme.textOnAccent)
+                                            .font(.subheadline).bold()
+                                            .foregroundStyle(AppTheme.textOnAccent)
                                     }
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
                                 .background(AppTheme.cafeAccent)
-                                .cornerRadius(12)
+                                .clipShape(.rect(cornerRadius: 12))
                             }
                             .disabled(isLoading)
                         }
@@ -111,15 +113,15 @@ struct LoginView: View {
                         // Toggle mode
                         HStack(spacing: 4) {
                             Text(mode == .login ? "Don't have an account?" : "Already have an account?")
-                                .font(.system(size: 12))
-                                .foregroundColor(AppTheme.cream.opacity(0.4))
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.cream.opacity(0.4))
                             Button {
                                 mode = mode == .login ? .signup : .login
                                 errorMessage = ""
                             } label: {
                                 Text(mode == .login ? "Sign up" : "Sign in")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(AppTheme.cafeAccent)
+                                    .font(.caption).bold()
+                                    .foregroundStyle(AppTheme.cafeAccent)
                                     .underline()
                             }
                         }
@@ -127,11 +129,11 @@ struct LoginView: View {
                     .padding(24)
                 }
                 .background(AppTheme.espresso)
-                .cornerRadius(20)
-                .overlay(
+                .clipShape(.rect(cornerRadius: 20))
+                .overlay {
                     RoundedRectangle(cornerRadius: 20)
                         .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                )
+                }
                 .shadow(color: .black.opacity(0.12), radius: 24)
                 .padding(.horizontal, 24)
 
@@ -201,35 +203,6 @@ struct LoginView: View {
 }
 
 enum AuthMode { case login, signup }
-
-struct AuthTextField: View {
-    let placeholder: String
-    @Binding var text: String
-    var isSecure: Bool = false
-    @FocusState private var isFocused: Bool
-
-    var body: some View {
-        Group {
-            if isSecure {
-                SecureField(placeholder, text: $text)
-            } else {
-                TextField(placeholder, text: $text)
-            }
-        }
-        .focused($isFocused)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(AppTheme.surfacePrimary.opacity(0.25))
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(isFocused ? AppTheme.cafeAccent.opacity(0.55) : AppTheme.borderSubtle, lineWidth: 1)
-        )
-        .foregroundColor(AppTheme.textPrimary)
-        .font(.system(size: 14))
-        .tint(AppTheme.cafeAccent)
-    }
-}
 
 #Preview {
     LoginView(authService: AuthService())
