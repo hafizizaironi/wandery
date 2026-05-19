@@ -42,16 +42,17 @@ struct ChatView: View {
         HStack(spacing: 12) {
             Button(action: onClose) {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(AppTheme.cream.opacity(0.7))
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cream.opacity(0.7))
                     .frame(width: 32, height: 32)
                     .background(Circle().fill(AppTheme.cream.opacity(0.08)))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Back")
 
             Text(otherTitle)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(AppTheme.cream)
+                .font(.subheadline).bold()
+                .foregroundStyle(AppTheme.cream)
                 .lineLimit(1)
 
             Spacer()
@@ -132,28 +133,28 @@ struct ChatView: View {
                     img.resizable().scaledToFill()
                 case .failure:
                     Color.black.opacity(0.4)
-                        .overlay(
+                        .overlay {
                             Image(systemName: "photo")
-                                .font(.system(size: 14))
-                                .foregroundColor(AppTheme.cream.opacity(0.5))
-                        )
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.cream.opacity(0.5))
+                        }
                 default:
                     AppTheme.cream.opacity(0.08)
-                        .overlay(ProgressView().scaleEffect(0.6))
+                        .overlay { ProgressView().scaleEffect(0.6) }
                 }
             }
             .frame(width: 225, height: 225)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(
+            .overlay {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(AppTheme.cream.opacity(0.20), lineWidth: 1)
-            )
+            }
 
             // "Tap to jump" affordance — the corner arrow signals that
             // tapping the thumb leaves the chat for the post itself.
             Image(systemName: "arrow.up.right.square.fill")
-                .font(.system(size: 22, weight: .bold))
-                .foregroundColor(.white)
+                .font(.title2).bold()
+                .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.5), radius: 3, x: 0, y: 2)
                 .padding(8)
         }
@@ -184,12 +185,12 @@ struct ChatView: View {
         }()
         return HStack(spacing: 6) {
             Image(systemName: msg.isPostReaction ? "heart.fill" : "arrowshape.turn.up.left.fill")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.caption2).bold()
             Text(label)
-                .font(.system(size: 10, weight: .medium))
+                .font(.caption2)
                 .lineLimit(1)
         }
-        .foregroundColor(AppTheme.cream.opacity(0.55))
+        .foregroundStyle(AppTheme.cream.opacity(0.55))
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(
@@ -205,26 +206,26 @@ struct ChatView: View {
                 // Reactions render as a big emoji on a transparent background
                 // — same vibe as Locket/IG "reaction" surfaces.
                 Text(msg.emoji ?? "•")
-                    .font(.system(size: 32))
+                    .font(.largeTitle)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
             } else {
                 Text(msg.text)
-                    .font(.system(size: 14))
-                    .foregroundColor(mine ? AppTheme.cream : AppTheme.cream.opacity(0.92))
+                    .font(.subheadline)
+                    .foregroundStyle(mine ? AppTheme.cream : AppTheme.cream.opacity(0.92))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .fill(mine ? AppTheme.cafeAccent.opacity(0.85) : AppTheme.cream.opacity(0.08))
                     )
-                    .overlay(
+                    .overlay {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .stroke(
                                 mine ? AppTheme.cafeAccent.opacity(0.35) : AppTheme.cream.opacity(0.08),
                                 lineWidth: 1
                             )
-                    )
+                    }
             }
         }
     }
@@ -233,8 +234,8 @@ struct ChatView: View {
         VStack(spacing: 6) {
             if let err = sendError {
                 Text(err)
-                    .font(.system(size: 11))
-                    .foregroundColor(AppTheme.errorRed)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.errorRed)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
             }
@@ -242,23 +243,25 @@ struct ChatView: View {
                 TextField("Message…", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
                     .textInputAutocapitalization(.sentences)
-                    .font(.system(size: 14))
-                    .foregroundColor(AppTheme.cream)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.cream)
                     .tint(AppTheme.cafeAccent)
                     .focused($inputFocused)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(AppTheme.cream.opacity(0.06))
-                    .cornerRadius(18)
-                    .overlay(RoundedRectangle(cornerRadius: 18)
-                        .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1))
+                    .clipShape(.rect(cornerRadius: 18))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18)
+                            .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1)
+                    }
 
                 Button {
                     Task { await send() }
                 } label: {
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.white)
+                        .font(.subheadline).bold()
+                        .foregroundStyle(.white)
                         .frame(width: 36, height: 36)
                         .background(
                             Circle().fill(canSend ? AppTheme.cafeAccent : AppTheme.cafeAccent.opacity(0.35))
@@ -266,6 +269,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend || isSending)
+                .accessibilityLabel("Send message")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
