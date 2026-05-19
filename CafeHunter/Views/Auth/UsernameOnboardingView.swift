@@ -13,11 +13,11 @@ struct UsernameOnboardingView: View {
             AppTheme.surfaceCanvas.ignoresSafeArea()
             VStack(spacing: 20) {
                 Text("Choose a username")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundColor(AppTheme.textPrimary)
+                    .font(.title2).bold()
+                    .foregroundStyle(AppTheme.textPrimary)
                 Text("Friends add you with this name. Letters, numbers, and underscore only (3–20).")
-                    .font(.system(size: 14))
-                    .foregroundColor(AppTheme.textSecondary)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
 
@@ -26,14 +26,14 @@ struct UsernameOnboardingView: View {
                     .autocorrectionDisabled()
                     .padding(14)
                     .background(AppTheme.surfacePrimary.opacity(0.4))
-                    .cornerRadius(12)
-                    .foregroundColor(AppTheme.textPrimary)
+                    .clipShape(.rect(cornerRadius: 12))
+                    .foregroundStyle(AppTheme.textPrimary)
                     .padding(.horizontal, 24)
 
                 if !errorMessage.isEmpty {
                     Text(errorMessage)
-                        .font(.system(size: 13))
-                        .foregroundColor(AppTheme.errorRed)
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.errorRed)
                 }
 
                 Button {
@@ -44,28 +44,34 @@ struct UsernameOnboardingView: View {
                             ProgressView().tint(AppTheme.textOnAccent)
                         } else {
                             Text("Continue")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(AppTheme.textOnAccent)
+                                .font(.callout).bold()
+                                .foregroundStyle(AppTheme.textOnAccent)
                         }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
                     .background(AppTheme.accentAction)
-                    .cornerRadius(14)
+                    .clipShape(.rect(cornerRadius: 14))
                 }
                 .disabled(isSaving)
                 .padding(.horizontal, 24)
 
-                Button("Sign out") {
-                    try? authService.signOut()
-                }
-                .font(.system(size: 14))
-                .foregroundColor(AppTheme.textSecondary)
-                .padding(.top, 8)
+                Button("Sign out", action: signOut)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .padding(.top, 8)
             }
             .padding(.top, 48)
         }
         .keyboardDismissToolbar()
+    }
+
+    private func signOut() {
+        do {
+            try authService.signOut()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func save() async {
