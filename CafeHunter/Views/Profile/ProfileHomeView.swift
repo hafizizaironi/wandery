@@ -587,6 +587,12 @@ struct ProfileHomeView: View {
             // grid without waiting for new history to accumulate.
             backfillStatsButton
 
+            // Reviewer-required legal + support surfaces. App Store
+            // Guideline 1.2 expects users to reach the developer from
+            // inside the app, and 5.1.1 expects the Privacy Policy +
+            // Terms of Use to be linkable post-onboarding.
+            legalLinks
+
             Button(action: signOut) {
                 Text("Sign out")
                     .font(.subheadline).bold()
@@ -662,6 +668,48 @@ struct ProfileHomeView: View {
             try authService.signOut()
         } catch {
             signOutError = error.localizedDescription
+        }
+    }
+
+    @ViewBuilder
+    private var legalLinks: some View {
+        VStack(spacing: 8) {
+            legalRow(label: "Contact support",
+                     systemImage: "envelope",
+                     url: LegalURLs.supportMailto)
+            legalRow(label: "Terms of Use",
+                     systemImage: "doc.text",
+                     url: LegalURLs.termsOfUse)
+            legalRow(label: "Privacy Policy",
+                     systemImage: "lock.shield",
+                     url: LegalURLs.privacyPolicy)
+        }
+    }
+
+    private func legalRow(label: String, systemImage: String, url: URL) -> some View {
+        Link(destination: url) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.caption).bold()
+                    .frame(width: 18)
+                Text(label)
+                    .font(.footnote)
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.cream.opacity(0.35))
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(AppTheme.cream.opacity(0.65))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.cream.opacity(0.04))
+            .clipShape(.rect(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(AppTheme.cream.opacity(0.08), lineWidth: 1)
+            }
         }
     }
 

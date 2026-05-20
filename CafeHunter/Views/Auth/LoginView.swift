@@ -140,16 +140,26 @@ struct LoginView: View {
                             Text(mode == .login ? "Don't have an account?" : "Already have an account?")
                                 .font(.caption)
                                 .foregroundStyle(AppTheme.cream.opacity(0.4))
-                            Button {
-                                mode = mode == .login ? .signup : .login
-                                errorMessage = ""
-                            } label: {
-                                Text(mode == .login ? "Sign up" : "Sign in")
-                                    .font(.caption).bold()
-                                    .foregroundStyle(AppTheme.cafeAccent)
-                                    .underline()
-                            }
+                                Button {
+                                    mode = mode == .login ? .signup : .login
+                                    errorMessage = ""
+                                } label: {
+                                    Text(mode == .login ? "Sign up" : "Sign in")
+                                        .font(.caption).bold()
+                                        .foregroundStyle(AppTheme.cafeAccent)
+                                        .underline()
+                                }
                         }
+
+                        // App Store Guideline 1.2: EULA + Privacy Policy
+                        // must be reachable from the sign-in surface so the
+                        // user agrees before creating an account.
+                        Text("By continuing, you accept our [Terms of Use](\(LegalURLs.termsOfUse.absoluteString)) and [Privacy Policy](\(LegalURLs.privacyPolicy.absoluteString)).")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cream.opacity(0.5))
+                            .tint(AppTheme.cafeAccent)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 4)
                     }
                     .padding(24)
                 }
