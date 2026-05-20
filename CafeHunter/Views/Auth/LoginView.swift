@@ -1,3 +1,4 @@
+import AuthenticationServices
 import SwiftUI
 import FirebaseAuth
 
@@ -10,6 +11,9 @@ struct LoginView: View {
     @State private var name = ""
     @State private var errorMessage = ""
     @State private var isLoading = false
+    /// Captured per-attempt; the SHA-256 of this goes to Apple, the raw
+    /// value goes to Firebase. Regenerated for each authorization request.
+    @State private var appleNonce: String = ""
     @AccessibilityFocusState private var errorFocused: Bool
 
     var body: some View {
@@ -45,6 +49,25 @@ struct LoginView: View {
 
                     // Body
                     VStack(spacing: 16) {
+                        // Sign in with Apple — kept first so it's at least
+                        // as prominent as Google (Apple Guideline 4.8).
+                        SignInWithAppleButton(
+                            .continue,
+                            onRequest: { request in
+                                appleNonce = AppleSignInNonce.random()
+                                request.requestedScopes = [.fullName, .email]
+                                request.nonce = AppleSignInNonce.sha256(appleNonce)
+                            },
+                            onCompletion: { result in
+                                Task { await handleAppleAuth(result) }
+                            }
+                        )
+                        .signInWithAppleButtonStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .clipShape(.rect(cornerRadius: 12))
+                        .disabled(isLoading)
+
                         // Google button
                         Button {
                             Task { await signInWithGoogle() }
@@ -152,6 +175,24 @@ struct LoginView: View {
         errorMessage = ""
         do {
             try await authService.signInWithGoogle()
+        } catch {
+            errorMessage = error.localizedDescription
+            errorFocused = true
+        }
+        isLoading = false
+    }
+
+    private func handleAppleAuth(_ result: Result<ASAuthorization, Error>) async {
+        isLoading = true
+        errorMessage = ""
+        do {
+            let authorization = try result.get()
+            try await authService.signInWithApple(
+                authorization: authorization,
+                rawNonce: appleNonce
+            )
+        } catch let authError as ASAuthorizationError where authError.code == .canceled {
+            // User cancelled — silent, leave isLoading off and no error.
         } catch {
             errorMessage = error.localizedDescription
             errorFocused = true

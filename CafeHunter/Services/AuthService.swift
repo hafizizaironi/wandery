@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Combine
 import Foundation
 @preconcurrency import FirebaseAuth
@@ -50,6 +51,55 @@ class AuthService: ObservableObject {
             accessToken: result.user.accessToken.tokenString
         )
         try await Auth.auth().signIn(with: credential)
+    }
+
+    // MARK: - Sign in with Apple
+
+    /// Completes Firebase sign-in after `SignInWithAppleButton` returns an
+    /// `ASAuthorization`. The caller is responsible for generating + storing
+    /// the raw nonce, passing the SHA-256 of it to Apple's request, and
+    /// then handing the raw nonce here.
+    ///
+    /// On first sign-in Apple delivers `fullName`; mirror it onto Firebase's
+    /// displayName so friends see a real name in the friend list / chat.
+    /// Subsequent sign-ins return `nil` for `fullName` (Apple's design),
+    /// which is why we have to capture it on the first try.
+    func signInWithApple(
+        authorization: ASAuthorization,
+        rawNonce: String
+    ) async throws {
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+            throw AuthServiceError.missingToken
+        }
+        guard let identityTokenData = credential.identityToken,
+              let identityToken = String(data: identityTokenData, encoding: .utf8) else {
+            throw AuthServiceError.missingToken
+        }
+        let oauthCredential = OAuthProvider.appleCredential(
+            withIDToken: identityToken,
+            rawNonce: rawNonce,
+            fullName: credential.fullName
+        )
+        let result = try await Auth.auth().signIn(with: oauthCredential)
+
+        // First-time-only fullName mirror.
+        if let fullName = credential.fullName,
+           let display = Self.formatPersonName(fullName),
+           !display.isEmpty,
+           result.user.displayName == nil || result.user.displayName == "" {
+            let request = result.user.createProfileChangeRequest()
+            request.displayName = display
+            try? await request.commitChanges()
+            try? await result.user.reload()
+            self.user = Auth.auth().currentUser
+        }
+    }
+
+    private static func formatPersonName(_ components: PersonNameComponents) -> String? {
+        let formatter = PersonNameComponentsFormatter()
+        formatter.style = .default
+        let formatted = formatter.string(from: components).trimmingCharacters(in: .whitespaces)
+        return formatted.isEmpty ? nil : formatted
     }
 
     // MARK: - Email / Password
