@@ -74,13 +74,17 @@ final class FriendListLoader {
 
 struct FriendListView: View {
     @ObservedObject var socialService: SocialService
+    /// Injected by the host (e.g. ProfileHomeView) so friend profiles can be
+    /// pre-fetched before the panel opens — the panel then appears with rows
+    /// already populated instead of a loading spinner. Host owns the loader
+    /// via @State and is responsible for calling sync() as friend ids change.
+    let loader: FriendListLoader
     /// Called when the user taps "Message" on a row. Host wires this to the
     /// conversation flow. Optional so the list view can still render before
     /// chat is plumbed.
     var onMessage: ((FriendRow) -> Void)?
     var onClose: () -> Void
 
-    @State private var loader = FriendListLoader()
     @State private var pendingRemoval: FriendRow?
     @State private var removingUid: String?
 
@@ -88,9 +92,6 @@ struct FriendListView: View {
         ZStack {
             AppTheme.espresso.ignoresSafeArea()
             content
-        }
-        .task(id: socialService.friendIds) {
-            await loader.sync(with: socialService.friendIds)
         }
         .alert(
             "Remove \(pendingRemoval?.titleText ?? "friend")?",

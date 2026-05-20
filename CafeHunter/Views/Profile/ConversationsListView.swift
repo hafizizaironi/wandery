@@ -76,7 +76,7 @@ struct ConversationsListView: View {
                 .zIndex(1)
             }
         }
-        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: openConvId)
+        .animation(.spring(response: 0.26, dampingFraction: 0.86), value: openConvId)
     }
 
     private var header: some View {

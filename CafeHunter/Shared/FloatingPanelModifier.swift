@@ -106,7 +106,7 @@ private struct FloatingPanelModifier<PanelContent: View>: ViewModifier {
                                      panelContent: panelContent)
             }
         }
-        .animation(.spring(response: 0.38, dampingFraction: 0.88),
+        .animation(.spring(response: 0.26, dampingFraction: 0.88),
                    value: isPresented)
     }
 }

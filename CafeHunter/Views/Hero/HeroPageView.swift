@@ -344,8 +344,8 @@ struct HeroPageView: View {
         .onPreferenceChange(ReplyPillFramesKey.self) { newValue in
             replyPillFrames.merge(newValue) { _, new in new }
         }
-        .animation(.spring(response: 0.55, dampingFraction: 0.78), value: showInbox)
-        .animation(.spring(response: 0.45, dampingFraction: 0.86), value: pendingChat?.id)
+        .animation(.spring(response: 0.32, dampingFraction: 0.78), value: showInbox)
+        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: pendingChat?.id)
         // Spring-driven flag the shell observes to slide the arc navbar away.
         .onChange(of: showInbox) { _, _ in syncChatActiveFlag() }
         .onChange(of: pendingChat?.id) { _, _ in syncChatActiveFlag() }

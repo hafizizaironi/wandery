@@ -28,6 +28,11 @@ struct ProfileHomeView: View {
     @State private var isBackfilling       = false
     @State private var backfillMessage     = ""
     @State private var signOutError       = ""
+    /// Pre-fetches friend profiles so the friend list panel opens with rows
+    /// already cached. Owned here so the cache survives floating-panel
+    /// open/close cycles, and so sync can happen while the user is still
+    /// looking at the profile (not just when they tap the Friends stat).
+    @State private var friendLoader = FriendListLoader()
 
     // MARK: - Computed helpers
 
@@ -136,6 +141,7 @@ struct ProfileHomeView: View {
         .floatingPanel(isPresented: $showFriendList) {
             FriendListView(
                 socialService: socialService,
+                loader: friendLoader,
                 onMessage: { row in openChat(otherUid: row.id, title: row.titleText) },
                 onClose: { showFriendList = false }
             )
@@ -165,7 +171,13 @@ struct ProfileHomeView: View {
                 .zIndex(40)
             }
         }
-        .animation(.spring(response: 0.45, dampingFraction: 0.86), value: pendingChat?.id)
+        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: pendingChat?.id)
+        // Pre-hydrate friend profiles while the user is still on the
+        // profile page, so opening the Friends panel feels instant
+        // instead of "tap → spinner → list".
+        .task(id: socialService.friendIds) {
+            await friendLoader.sync(with: socialService.friendIds)
+        }
         .onChange(of: isTabActive) { _, active in
             guard active else { return }
             Task { await authService.refreshCurrentUser() }
