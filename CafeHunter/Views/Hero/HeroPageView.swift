@@ -407,16 +407,22 @@ struct HeroPageView: View {
         .onChange(of: camera.isProcessingVideo) { _, _ in
             syncCameraSessionForCaptureReview()
         }
-        .onChange(of: socialService.feedPosts.map(\.id)) { _, ids in
+        // Watch `.count` instead of `.map(\.id)` so SwiftUI doesn't have to
+        // allocate + compare a new id-array on every parent re-render. The
+        // realistic invalidation cases here — post deleted, post created,
+        // initial feed load — all change the count. A simultaneous
+        // delete-and-create in one Firestore snapshot wouldn't trigger
+        // this, but the user can scroll/refresh to recover.
+        .onChange(of: socialService.feedPosts.count) { _, _ in
             guard let current = heroCardID else { return }
             switch current {
-            case .post(let id) where !ids.contains(id):
+            case .post(let id) where !socialService.feedPosts.contains(where: { $0.id == id }):
                 withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
                     heroCardID = .camera
                 }
-            case .emptyFeed where !ids.isEmpty:
+            case .emptyFeed where !socialService.feedPosts.isEmpty:
                 withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
-                    heroCardID = .post(ids[0])
+                    heroCardID = .post(socialService.feedPosts[0].id)
                 }
             default:
                 break
@@ -1453,7 +1459,7 @@ private struct FeedPostCard: View {
                 } else if post.isVideo, let u = URL(string: post.mediaURL) {
                     SquareVideoFillView(url: u, isPlaying: isVideoActive)
                 } else if let u = URL(string: post.mediaURL) {
-                    AsyncImage(url: u) { phase in
+                    CachedAsyncImage(url: u) { phase in
                         switch phase {
                         case .success(let img): img.resizable().scaledToFill()
                         case .failure: deletedMediaPlaceholder

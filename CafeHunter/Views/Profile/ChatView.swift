@@ -27,7 +27,11 @@ struct ChatView: View {
     @FocusState private var inputFocused: Bool
     @State private var keyboardHeight: CGFloat = 0
 
-    private var myUid: String { Auth.auth().currentUser?.uid ?? "" }
+    /// Captured at struct init so `messageBubble(_:)` doesn't hit
+    /// Auth.auth().currentUser on every body re-render. The signed-in
+    /// user can't change while this view is alive — if it did, the
+    /// surrounding view tree would unmount.
+    private let myUid: String = Auth.auth().currentUser?.uid ?? ""
 
     var body: some View {
         ZStack {

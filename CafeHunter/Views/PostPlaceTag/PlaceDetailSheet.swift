@@ -347,7 +347,7 @@ private struct PostStackCard: View {
         Group {
             if let urlString = post.thumbnailURL ?? .some(post.mediaURL),
                let url = URL(string: urlString) {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img):
                         img.resizable().scaledToFill()

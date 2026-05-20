@@ -197,6 +197,13 @@ func clusterFriendPlaces(_ places: [FriendPlace],
     return clusters
 }
 
+// Stable cache-key for the friend-place clustering .task(id:) — see the
+// `memoizedFriendClusters` block below.
+private struct ClusterInputs: Hashable {
+    let placeIds: [String]
+    let threshold: Int
+}
+
 // MARK: - Cafe Map View
 
 struct CafeMapView: View {
@@ -226,9 +233,11 @@ struct CafeMapView: View {
         max(2, currentSpan * 1500)
     }
 
-    private var friendClusters: [FriendPlaceCluster] {
-        clusterFriendPlaces(friendPlaces, thresholdMeters: clusterThresholdMeters)
-    }
+    /// Memoized clustering output — see clusterFriendPlaces(). Re-runs only
+    /// when the friendPlaces set or the zoom-derived threshold actually
+    /// changes, not on every map gesture. With 30+ pins clustering on every
+    /// body re-render was a measurable cost on older devices.
+    @State private var memoizedFriendClusters: [FriendPlaceCluster] = []
 
     @State private var position: MapCameraPosition = .region(
         MKCoordinateRegion(
@@ -274,7 +283,7 @@ struct CafeMapView: View {
             // Friend-tagged places — clustered so dense venues (malls,
             // food courts) collapse into a single stacked pin instead of
             // a smudge of overlapping markers.
-            ForEach(friendClusters) { cluster in
+            ForEach(memoizedFriendClusters) { cluster in
                 Annotation(cluster.places.first?.name ?? "",
                            coordinate: cluster.center,
                            anchor: .bottom) {
@@ -306,6 +315,13 @@ struct CafeMapView: View {
         .task(id: allAuthorIds) {
             await avatarStore.hydrate(uids: Set(allAuthorIds))
             avatarURLs = avatarStore.photoURLByUid
+        }
+        // Re-cluster only when the input places change or the zoom-derived
+        // threshold crosses a meaningfully different value. Keying on the
+        // place ids + a quantized threshold (rounded to whole meters) avoids
+        // re-clustering on every micro-pan.
+        .task(id: ClusterInputs(placeIds: friendPlaces.map(\.id), threshold: Int(clusterThresholdMeters))) {
+            memoizedFriendClusters = clusterFriendPlaces(friendPlaces, thresholdMeters: clusterThresholdMeters)
         }
         .onAppear { locationManager.requestPermission() }
         .onChange(of: centerOnUser) { _, shouldCenter in

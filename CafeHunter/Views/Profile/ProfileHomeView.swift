@@ -39,6 +39,12 @@ struct ProfileHomeView: View {
     /// looking at the profile (not just when they tap the Friends stat).
     @State private var friendLoader = FriendListLoader()
 
+    /// Memoized derived state — see computeMilestones() / computeUnlockedCount().
+    /// Recomputed only via the .task(id:) at the bottom of body, not on
+    /// every body re-render.
+    @State private var memoizedMilestones: [MilestoneItem] = []
+    @State private var memoizedUnlockedCount: Int = 0
+
     // MARK: - Computed helpers
 
     private var user: FirebaseAuth.User? { authService.user }
@@ -65,8 +71,13 @@ struct ProfileHomeView: View {
         return "Hunting since \(formatted)"
     }
 
-    // Build chronological milestone cards from unlocked achievements
-    private var milestones: [MilestoneItem] {
+    // Build chronological milestone cards from unlocked achievements.
+    // Cached in `memoizedMilestones`; recomputed only when the achievement
+    // dictionary or the account creation date changes (driven by .task(id:)
+    // on the body below). Avoids running the sort + alloc on every parent
+    // re-render — and there are a lot of those since 4 @ObservedObject
+    // services feed this view.
+    private func computeMilestones() -> [MilestoneItem] {
         var items: [MilestoneItem] = []
         if let created = user?.metadata.creationDate {
             items.append(MilestoneItem(id: "start", icon: "🚀",
@@ -103,7 +114,7 @@ struct ProfileHomeView: View {
         return statsService.stats.unlockedAchievements[achievement.id]
     }
 
-    private var unlockedCount: Int {
+    private func computeUnlockedCount() -> Int {
         Achievement.definitions.filter { isUnlocked($0) }.count
     }
 
@@ -188,6 +199,16 @@ struct ProfileHomeView: View {
         // instead of "tap → spinner → list".
         .task(id: socialService.friendIds) {
             await friendLoader.sync(with: socialService.friendIds)
+        }
+        // Recompute milestone + achievement-unlock derived state only when
+        // the underlying achievement dictionary changes — not on every
+        // parent re-render. The 4-service @ObservedObject pattern means
+        // body invalidates often (Firestore listener fires); without this
+        // memoization we'd re-sort milestones and re-filter unlock count
+        // on every chat message or feed snapshot.
+        .task(id: statsService.stats.unlockedAchievements) {
+            memoizedMilestones = computeMilestones()
+            memoizedUnlockedCount = computeUnlockedCount()
         }
         // Hide the arc navbar while a chat overlay is presented from
         // this page — mirrors HeroPageView's syncChatActiveFlag. Same
@@ -478,7 +499,7 @@ struct ProfileHomeView: View {
             }
             .padding(.horizontal, 16)
 
-            if milestones.isEmpty {
+            if memoizedMilestones.isEmpty {
                 Text("Your story is just beginning —\ngo find your first spot! ☕")
                     .font(.footnote)
                     .contrastAware(AppTheme.cream, opacity: 0.4)
@@ -488,10 +509,10 @@ struct ProfileHomeView: View {
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(milestones) { item in
+                        ForEach(memoizedMilestones) { item in
                             StoryCard(item: item)
                         }
-                        if milestones.count < 4 {
+                        if memoizedMilestones.count < 4 {
                             StoryTeaserCard()
                         }
                     }
@@ -509,7 +530,7 @@ struct ProfileHomeView: View {
         VStack(alignment: .leading, spacing: 16) {
             sectionHeader(
                 "ACHIEVEMENTS",
-                trailing: "\(unlockedCount) / \(Achievement.definitions.count)"
+                trailing: "\(memoizedUnlockedCount) / \(Achievement.definitions.count)"
             )
 
             LazyVGrid(
