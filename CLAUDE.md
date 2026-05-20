@@ -24,7 +24,7 @@ CafeHunter/                    ← Xcode project root + Firebase config
 │   ├── GoogleService-Info.plist
 │   ├── Models/                ← Cafe, Achievement, SocialModels
 │   ├── Services/              ← Auth, Firestore, Social, Camera, Notifications, UserStats, Audio
-│   ├── Views/                 ← Feature-grouped (AddCafe, Auth, Cafes, Camera, Hero, Main, Navigation, Profile, Admin)
+│   ├── Views/                 ← Feature-grouped (Admin, Auth, Cafes, Camera, Hero, Main, Navigation, PostPlaceTag, Profile)
 │   ├── Shared/                ← FlowLayout, FloatingPanel, NotoEmojiLottieView
 │   └── Theme/AppTheme.swift   ← Single source of truth for colours
 ├── functions/                 ← Cloud Functions (Node 22, CommonJS)

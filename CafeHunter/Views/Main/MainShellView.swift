@@ -18,7 +18,6 @@ struct MainShellView: View {
     // Start on the Hero (feed) page — centre of the arc.
     @State private var selectedPage: ShellPage = .hero
     @State private var pageProgress: CGFloat   = 1
-    @State private var showAddCafe = false
     /// Set when the user taps a place pill in the feed; consumed by MainMapView
     /// which centers the map and opens the place-detail sheet.
     @State private var pendingMapJumpPlaceId: String?
@@ -29,10 +28,6 @@ struct MainShellView: View {
     /// Set when a chat thumbnail tapped on the Profile page wants to land
     /// the user on a specific Hero feed post. HeroPageView consumes it.
     @State private var pendingHeroJumpPostId: String?
-
-    // Add-cafe entry points are hidden for now while the flow is still in progress.
-    // Flip to `true` to bring back the arc "+" button + portal flow.
-    private let addCafeEnabled = false
 
     var body: some View {
         GeometryReader { geo in
@@ -91,14 +86,7 @@ struct MainShellView: View {
                 let navbarHeight = ArcNavBar.frameContentHeight + geo.safeAreaInsets.bottom
                 ArcNavBar(
                     selectedPage: $selectedPage,
-                    pageProgress: $pageProgress,
-                    showAddButton: addCafeEnabled,
-                    onAddTap: {
-                        guard addCafeEnabled else { return }
-                        withAnimation(.spring(response: 0.65, dampingFraction: 0.88)) {
-                            showAddCafe = true
-                        }
-                    }
+                    pageProgress: $pageProgress
                 )
                 .frame(height: navbarHeight)
                 .offset(y: navbarHidden ? navbarHeight + 24 : 0)
@@ -108,21 +96,6 @@ struct MainShellView: View {
                 .allowsHitTesting(!navbarHidden)
                 .animation(.spring(response: 0.5, dampingFraction: 0.78), value: navbarHidden)
                 .zIndex(10)
-
-                // ── Portal flow — overlaid above everything, transitions from "+" center.
-                if addCafeEnabled, showAddCafe {
-                    AddCafeFlowView(onDismiss: {
-                        withAnimation(.spring(response: 0.55, dampingFraction: 0.88)) {
-                            showAddCafe = false
-                        }
-                    })
-                    .transition(.portal(origin: CGPoint(
-                        x: geo.size.width / 2,
-                        y: geo.size.height - geo.safeAreaInsets.bottom - ArcNavBar.addButtonAboveSafeArea
-                    )))
-                    .ignoresSafeArea()
-                    .zIndex(20)
-                }
             }
         }
         .ignoresSafeArea()

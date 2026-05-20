@@ -140,16 +140,9 @@ struct ArcNavBar: View {
     /// Distance from the physical screen bottom (excl. safe area) to the home-button peak.
     /// Use this to position content that should sit just above the active tab indicator.
     static let homeButtonFromBottom: CGFloat = 86 + 16  // arcRadius + centerBottomInset
-    /// Y-offset of the "+" button's center above the top of the bottom safe area.
-    /// Matches `centerBottomInset` below — the arc center (and thus the button)
-    /// sits this far above the safe-area bottom edge. Used to align the portal
-    /// transition origin with the actual button.
-    static let addButtonAboveSafeArea: CGFloat = 16
 
     @Binding var selectedPage: ShellPage
     @Binding var pageProgress: CGFloat
-    var showAddButton: Bool = true
-    var onAddTap: () -> Void = {}
 
     private let tabs: [(page: ShellPage, icon: String)] = [
         (.map,     "map.fill"),
@@ -337,13 +330,6 @@ struct ArcNavBar: View {
                     }
                     .buttonStyle(.plain)
                     .position(pos)
-                }
-
-                // ── Add-cafe "+" — sits at the geometric center of the
-                //    arc's imaginary circle (below the arc, cradled by it).
-                if showAddButton {
-                    AddCafeButton(action: onAddTap)
-                        .position(center)
                 }
 
                 // ── Moving active indicator (on top of everything)
