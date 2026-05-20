@@ -4,6 +4,7 @@ import FirebaseFirestore
 import FirebaseStorage
 import UIKit
 
+@MainActor
 class FirestoreService: ObservableObject {
     @Published var cafes: [Cafe] = []
 
@@ -17,6 +18,8 @@ class FirestoreService: ObservableObject {
             .order(by: "createdAt", descending: false)
             .addSnapshotListener { [weak self] snapshot, _ in
                 guard let docs = snapshot?.documents else { return }
+                // Firebase fires this on its own queue; hop to MainActor
+                // before touching @Published state.
                 Task { @MainActor [weak self] in
                     self?.cafes = docs.compactMap { try? $0.data(as: Cafe.self) }
                 }
@@ -75,16 +78,27 @@ class FirestoreService: ObservableObject {
 
     // MARK: - Storage upload
 
+    /// Uploads each image in parallel via a throwing task group and returns
+    /// the resulting download URLs in the same order as the input.
+    /// UUID filenames remove the second-resolution collision risk of the
+    /// previous timestamp-based scheme.
     private func uploadImages(_ images: [UIImage], slug: String) async throws -> [String] {
-        var urls: [String] = []
-        for image in images {
-            guard let data = image.jpegData(compressionQuality: 0.8) else { continue }
-            let filename = "\(Int(Date().timeIntervalSince1970)).jpg"
-            let ref = Storage.storage().reference().child("places/\(slug)/\(filename)")
-            _ = try await ref.putDataAsync(data)
-            let url = try await ref.downloadURL()
-            urls.append(url.absoluteString)
+        try await withThrowingTaskGroup(of: (Int, String)?.self) { group in
+            for (idx, image) in images.enumerated() {
+                guard let data = image.jpegData(compressionQuality: 0.8) else { continue }
+                group.addTask {
+                    let filename = "\(UUID().uuidString).jpg"
+                    let ref = Storage.storage().reference().child("places/\(slug)/\(filename)")
+                    _ = try await ref.putDataAsync(data)
+                    let url = try await ref.downloadURL()
+                    return (idx, url.absoluteString)
+                }
+            }
+            var pairs: [(Int, String)] = []
+            for try await result in group {
+                if let result { pairs.append(result) }
+            }
+            return pairs.sorted { $0.0 < $1.0 }.map(\.1)
         }
-        return urls
     }
 }

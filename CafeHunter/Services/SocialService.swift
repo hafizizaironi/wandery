@@ -79,18 +79,22 @@ final class SocialService: ObservableObject {
         let displayName = user.displayName ?? ""
         let photoURL = user.photoURL?.absoluteString
         let ref = db.collection("users").document(uid)
-        ref.getDocument { snap, _ in
-            // Always merge the latest `displayName` / `photoURL` from Auth
-            // back into the public user doc. Friends' UIs (map pin avatars,
-            // friend list, chat header) read from the doc, not Auth, so
-            // any drift between the two means other users see stale data
-            // (or no avatar at all). Cheap idempotent write.
-            var update: [String: Any] = ["displayName": displayName]
-            if let photoURL { update["photoURL"] = photoURL }
-            if snap?.exists != true {
-                update["createdAt"] = FieldValue.serverTimestamp()
+        // Idempotent mirror of Auth → public user doc, async/await variant.
+        // Friends' UIs (map pin avatars, friend list, chat header) read from
+        // the doc, not Auth, so drift between them means stale data on other
+        // devices. Failures are non-critical — log but don't surface.
+        Task {
+            do {
+                let snap = try await ref.getDocument()
+                var update: [String: Any] = ["displayName": displayName]
+                if let photoURL { update["photoURL"] = photoURL }
+                if !snap.exists {
+                    update["createdAt"] = FieldValue.serverTimestamp()
+                }
+                try await ref.setData(update, merge: true)
+            } catch {
+                print("[SocialService] ensureUserDocument failed: \(error)")
             }
-            ref.setData(update, merge: true)
         }
     }
 
@@ -286,7 +290,7 @@ final class SocialService: ObservableObject {
         let postId = postRef.documentID
         // Client `Timestamp` so `orderBy(createdAt)` queries include the doc immediately. `serverTimestamp()`
         // can leave the field null until the server ack, which excludes the row from ordered queries.
-        let createdAt = Timestamp(date: Date())
+        let createdAt = Timestamp(date: .now)
 
         // Resolve / dedup the place via Cloud Function before stamping the post.
         // Bypassed for placeless posts.
@@ -337,10 +341,11 @@ final class SocialService: ObservableObject {
             } else {
                 squareURL = (try? await CameraCaptureProcessing.exportSquareVideo(from: videoURL)) ?? videoURL
             }
-            let data = try Data(contentsOf: squareURL)
+            // putFileAsync streams from the file URL — avoids loading the
+            // full video (often 30-50 MB) into Data on the main actor.
             let path = "social/\(authorUid)/\(postId).mp4"
             let ref = Storage.storage().reference().child(path)
-            _ = try await ref.putDataAsync(data)
+            _ = try await ref.putFileAsync(from: squareURL)
             let url = try await ref.downloadURL()
             var thumbURL: String?
             if let t = try? await generateVideoThumbnail(videoURL: squareURL, postId: postId, authorUid: authorUid) {

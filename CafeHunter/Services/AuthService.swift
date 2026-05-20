@@ -1,11 +1,12 @@
 import Combine
 import Foundation
-import FirebaseAuth
+@preconcurrency import FirebaseAuth
 import FirebaseFirestore
 import FirebaseStorage
 import GoogleSignIn
 import UIKit
 
+@MainActor
 class AuthService: ObservableObject {
     @Published var user: FirebaseAuth.User?
     @Published var isLoading = true
@@ -74,7 +75,7 @@ class AuthService: ObservableObject {
         guard let user = Auth.auth().currentUser else { return }
         do {
             try await user.reload()
-            await MainActor.run { self.user = Auth.auth().currentUser }
+            self.user = Auth.auth().currentUser
         } catch {
             // Keep existing cached user on failure.
         }
@@ -94,7 +95,7 @@ class AuthService: ObservableObject {
         try? await Firestore.firestore()
             .collection("users").document(user.uid)
             .setData(["displayName": trimmed], merge: true)
-        await MainActor.run { self.user = Auth.auth().currentUser }
+        self.user = Auth.auth().currentUser
     }
 
     func updateProfilePhoto(_ image: UIImage) async throws {
@@ -115,7 +116,7 @@ class AuthService: ObservableObject {
         try? await Firestore.firestore()
             .collection("users").document(user.uid)
             .setData(["photoURL": url.absoluteString], merge: true)
-        await MainActor.run { self.user = Auth.auth().currentUser }
+        self.user = Auth.auth().currentUser
     }
 
     /// Downscales to keep uploads fast; Auth photo URL is app-specific (not Google account).
