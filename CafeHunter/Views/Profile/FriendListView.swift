@@ -23,13 +23,17 @@ struct FriendRow: Identifiable, Equatable {
 @MainActor
 @Observable
 final class FriendListLoader {
+    enum LoadStatus { case idle, loading, loaded }
+
     private(set) var rows: [FriendRow] = []
+    private(set) var status: LoadStatus = .idle
     private var cache: [String: FriendRow] = [:]
     private let db = Firestore.firestore()
 
     /// Hydrate any new uids and prune ones that have been removed. Cheap when
     /// nothing changed (cache hit on every uid).
     func sync(with friendIds: [String]) async {
+        status = .loading
         let missing = friendIds.filter { cache[$0] == nil }
         if !missing.isEmpty {
             await withTaskGroup(of: FriendRow?.self) { group in
@@ -57,6 +61,14 @@ final class FriendListLoader {
             }
         }
         rows = friendIds.compactMap { cache[$0] }
+        status = .loaded
+    }
+
+    /// Force-clear the cache and re-hydrate. Used by the Retry button when
+    /// the initial sync left rows empty despite having friend ids.
+    func retry(with friendIds: [String]) async {
+        cache.removeAll()
+        await sync(with: friendIds)
     }
 }
 
@@ -104,6 +116,14 @@ struct FriendListView: View {
 
             if socialService.friendIds.isEmpty {
                 emptyState
+            } else if loader.status != .loaded {
+                loadingState
+            } else if loader.rows.isEmpty {
+                // friendIds is non-empty but the hydration produced zero rows.
+                // Most likely cause: Firestore rules deny reading the friend's
+                // user doc, or the doc was deleted. Surface a Retry so it's
+                // recoverable rather than silently blank.
+                couldNotLoadState
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -117,6 +137,51 @@ struct FriendListView: View {
                 }
             }
         }
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 12) {
+            Spacer().frame(height: 40)
+            ProgressView()
+                .tint(AppTheme.cafeAccent)
+            Text("Loading friends…")
+                .font(.footnote)
+                .foregroundStyle(AppTheme.cream.opacity(0.5))
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var couldNotLoadState: some View {
+        VStack(spacing: 12) {
+            Spacer().frame(height: 40)
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundStyle(AppTheme.cream.opacity(0.3))
+                .accessibilityHidden(true)
+            Text("Couldn't load your friends")
+                .font(.subheadline).bold()
+                .foregroundStyle(AppTheme.cream.opacity(0.7))
+            Text("\(socialService.friendIds.count) friend id(s) on your account but their profiles didn't load.")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(AppTheme.cream.opacity(0.4))
+                .padding(.horizontal, 32)
+            Button {
+                Task { await loader.retry(with: socialService.friendIds) }
+            } label: {
+                Text("Retry")
+                    .font(.subheadline).bold()
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(AppTheme.cafeAccent)
+                    .clipShape(.rect(cornerRadius: 12))
+            }
+            .padding(.top, 4)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private var header: some View {
