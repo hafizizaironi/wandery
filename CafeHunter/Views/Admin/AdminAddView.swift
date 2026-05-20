@@ -59,21 +59,22 @@ struct AdminAddView: View {
             // ── Inline header (replaces NavigationStack toolbar) ──
             HStack {
                 Button("Cancel", action: onClose)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(AppTheme.cream.opacity(0.55))
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.cream.opacity(0.55))
 
                 Spacer()
 
                 Text(isEdit ? "Edit Place" : "Add New Place")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(AppTheme.cream)
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cream)
 
                 Spacer()
 
                 // Mirror Cancel width so title stays centred
                 Text("Cancel")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.clear)
+                    .font(.subheadline)
+                    .foregroundStyle(.clear)
+                    .accessibilityHidden(true)
             }
             .padding(.horizontal, 20)
             .padding(.top, 4)
@@ -92,19 +93,19 @@ struct AdminAddView: View {
                                     let picked = type == t
                                     Button { type = t } label: {
                                         Text(t == .cafe ? "☕ Café" : "🍜 Street Stall")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundColor(picked ? AppTheme.accent(for: t) : AppTheme.textSecondary)
+                                            .font(.footnote).bold()
+                                            .foregroundStyle(picked ? AppTheme.accent(for: t) : AppTheme.textSecondary)
                                             .frame(maxWidth: .infinity)
                                             .padding(.vertical, 10)
                                             .background(picked ? AppTheme.surfacePrimary : AppTheme.textPrimary.opacity(0.04))
-                                            .cornerRadius(12)
-                                            .overlay(
+                                            .clipShape(.rect(cornerRadius: 12))
+                                            .overlay {
                                                 RoundedRectangle(cornerRadius: 12)
                                                     .stroke(
                                                         picked ? AppTheme.accent(for: t).opacity(0.4) : AppTheme.borderSubtle,
                                                         lineWidth: 1
                                                     )
-                                            )
+                                            }
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -146,15 +147,18 @@ struct AdminAddView: View {
                                                     Text(tag)
                                                     Text("×").opacity(0.6)
                                                 }
-                                                .font(.system(size: 12, weight: .medium))
-                                                .foregroundColor(accent)
+                                                .font(.caption)
+                                                .foregroundStyle(accent)
                                                 .padding(.horizontal, 10)
                                                 .padding(.vertical, 4)
                                                 .background(accent.opacity(0.1))
-                                                .overlay(Capsule().stroke(accent.opacity(0.4), lineWidth: 1))
+                                                .overlay {
+                                                    Capsule().stroke(accent.opacity(0.4), lineWidth: 1)
+                                                }
                                                 .clipShape(Capsule())
                                             }
                                             .buttonStyle(.plain)
+                                            .accessibilityLabel("Remove tag \(tag)")
                                         }
                                     }
                                 }
@@ -178,24 +182,25 @@ struct AdminAddView: View {
                                     showMapPicker = true
                                 } label: {
                                     Label("Pin on map", systemImage: "map")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(AppTheme.cream.opacity(0.6))
+                                        .font(.footnote).bold()
+                                        .foregroundStyle(AppTheme.cream.opacity(0.6))
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 10)
                                         .background(AppTheme.cream.opacity(0.06))
-                                        .cornerRadius(12)
-                                        .overlay(
+                                        .clipShape(.rect(cornerRadius: 12))
+                                        .overlay {
                                             RoundedRectangle(cornerRadius: 12)
                                                 .stroke(AppTheme.cream.opacity(0.12), lineWidth: 1)
-                                        )
+                                        }
                                 }
                                 .buttonStyle(.plain)
 
                                 if !latText.isEmpty, !lngText.isEmpty {
-                                    Text(String(format: "%.5f, %.5f",
-                                                Double(latText) ?? 0, Double(lngText) ?? 0))
-                                        .font(.system(size: 11))
-                                        .foregroundColor(AppTheme.cream.opacity(0.35))
+                                    let lat = Double(latText) ?? 0
+                                    let lng = Double(lngText) ?? 0
+                                    Text("\(lat, format: .number.precision(.fractionLength(5))), \(lng, format: .number.precision(.fractionLength(5)))")
+                                        .font(.caption2)
+                                        .foregroundStyle(AppTheme.cream.opacity(0.35))
                                         .frame(maxWidth: .infinity)
                                 }
                             }
@@ -220,20 +225,20 @@ struct AdminAddView: View {
                                         matching: .images
                                     ) {
                                         VStack(spacing: 4) {
-                                            Text("+").font(.system(size: 24))
-                                            Text("Photo").font(.system(size: 11))
+                                            Text("+").font(.title2)
+                                            Text("Photo").font(.caption2)
                                         }
-                                        .foregroundColor(AppTheme.cream.opacity(0.35))
+                                        .foregroundStyle(AppTheme.cream.opacity(0.35))
                                         .frame(width: 80, height: 80)
                                         .background(AppTheme.cream.opacity(0.03))
-                                        .cornerRadius(12)
-                                        .overlay(
+                                        .clipShape(.rect(cornerRadius: 12))
+                                        .overlay {
                                             RoundedRectangle(cornerRadius: 12)
                                                 .strokeBorder(
                                                     style: StrokeStyle(lineWidth: 2, dash: [4])
                                                 )
-                                                .foregroundColor(accent.opacity(0.4))
-                                        )
+                                                .foregroundStyle(accent.opacity(0.4))
+                                        }
                                     }
                                     .onChange(of: selectedItems) { _, items in
                                         Task {
@@ -253,8 +258,8 @@ struct AdminAddView: View {
                         // Error
                         if !errorMessage.isEmpty {
                             Text(errorMessage)
-                                .font(.system(size: 12))
-                                .foregroundColor(AppTheme.errorRed)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.errorRed)
                         }
 
                         // Submit
@@ -264,18 +269,18 @@ struct AdminAddView: View {
                                     ProgressView().tint(AppTheme.textOnAccent)
                                 } else if isSuccess {
                                     Label("Saved!", systemImage: "checkmark")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(AppTheme.textOnAccent)
+                                        .font(.subheadline).bold()
+                                        .foregroundStyle(AppTheme.textOnAccent)
                                 } else {
                                     Text(isEdit ? "Save Changes" : "Add \(type == .stall ? "Stall" : "Café")")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(AppTheme.textOnAccent)
+                                        .font(.subheadline).bold()
+                                        .foregroundStyle(AppTheme.textOnAccent)
                                 }
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
                             .background(isSuccess ? AppTheme.successGreen : accent)
-                            .cornerRadius(14)
+                            .clipShape(.rect(cornerRadius: 14))
                         }
                         .disabled(isSaving || isSuccess)
                         .buttonStyle(.plain)
@@ -309,7 +314,7 @@ struct AdminAddView: View {
                     }
                 }
                 .frame(width: 80, height: 80)
-                .cornerRadius(12)
+                .clipShape(.rect(cornerRadius: 12))
                 .clipped()
             }
             removeButton(action: onRemove)
@@ -322,7 +327,7 @@ struct AdminAddView: View {
             Image(uiImage: image)
                 .resizable().scaledToFill()
                 .frame(width: 80, height: 80)
-                .cornerRadius(12)
+                .clipShape(.rect(cornerRadius: 12))
                 .clipped()
             removeButton(action: onRemove)
         }
@@ -331,13 +336,14 @@ struct AdminAddView: View {
     private func removeButton(action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundColor(AppTheme.cream)
+                .font(.caption2).bold()
+                .foregroundStyle(AppTheme.cream)
                 .frame(width: 20, height: 20)
                 .background(Color.black.opacity(0.7))
                 .clipShape(Circle())
         }
         .padding(4)
+        .accessibilityLabel("Remove photo")
     }
 
     // MARK: - Submit
@@ -397,9 +403,9 @@ struct AdminField<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.caption2).bold()
                 .tracking(1.5)
-                .foregroundColor(AppTheme.cream.opacity(0.4))
+                .foregroundStyle(AppTheme.cream.opacity(0.4))
             content
         }
     }
@@ -425,16 +431,16 @@ struct AdminTextField: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(AppTheme.cream.opacity(0.05))
-        .cornerRadius(12)
-        .overlay(
+        .clipShape(.rect(cornerRadius: 12))
+        .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
                     isFocused ? AppTheme.cafeAccent.opacity(0.55) : AppTheme.borderSubtle,
                     lineWidth: 1
                 )
-        )
-        .foregroundColor(AppTheme.textPrimary)
-        .font(.system(size: 13))
+        }
+        .foregroundStyle(AppTheme.textPrimary)
+        .font(.footnote)
         .tint(AppTheme.cafeAccent)
     }
 }

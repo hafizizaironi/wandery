@@ -25,10 +25,11 @@ struct MapPickerView: View {
 
             // Crosshair
             Image(systemName: "mappin.circle.fill")
-                .font(.system(size: 34))
+                .font(.largeTitle)
                 .foregroundStyle(AppTheme.cafeAccent, Color.white)
                 .shadow(radius: 6)
                 .offset(y: -17)
+                .accessibilityHidden(true)
 
             // Top-left close button
             VStack {
@@ -37,15 +38,18 @@ struct MapPickerView: View {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(AppTheme.cream)
+                            .font(.footnote).bold()
+                            .foregroundStyle(AppTheme.cream)
                             .frame(width: 36, height: 36)
                             .background(.ultraThinMaterial)
                             .clipShape(Circle())
-                            .overlay(Circle().stroke(AppTheme.glassStroke, lineWidth: 1))
+                            .overlay {
+                                Circle().stroke(AppTheme.glassStroke, lineWidth: 1)
+                            }
                     }
                     .padding(.leading, 16)
                     .padding(.top, 56)
+                    .accessibilityLabel("Close map picker")
 
                     Spacer()
                 }
@@ -56,21 +60,21 @@ struct MapPickerView: View {
             VStack {
                 Spacer()
                 VStack(spacing: 12) {
-                    Text(String(format: "📍 %.5f, %.5f", centerCoord.latitude, centerCoord.longitude))
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.cream.opacity(0.6))
+                    Text("📍 \(centerCoord.latitude, format: .number.precision(.fractionLength(5))), \(centerCoord.longitude, format: .number.precision(.fractionLength(5)))")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.cream.opacity(0.6))
 
                     Button {
                         onPick(centerCoord)
                         dismiss()
                     } label: {
                         Text("Confirm Location")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(AppTheme.textOnAccent)
+                            .font(.subheadline).bold()
+                            .foregroundStyle(AppTheme.textOnAccent)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
                             .background(AppTheme.cafeAccent)
-                            .cornerRadius(14)
+                            .clipShape(.rect(cornerRadius: 14))
                     }
                 }
                 .padding(20)
