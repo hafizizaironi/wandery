@@ -11,10 +11,12 @@ struct ChatView: View {
     /// @ObservedObject so the chat closes itself when `blockedUserIds`
     /// updates to include `otherUid`.
     @ObservedObject var socialService: SocialService
-    /// Optional so the chat can present instantly while the host resolves
-    /// the Firestore conversation doc in the background — see
-    /// ProfileHomeView.openChat. While nil the view shows a "Connecting…"
-    /// state in the message area and the composer disables sending.
+    /// Optional. When nil, this is a fresh chat with a friend the user has
+    /// never messaged. The conversation document is *lazy-created* on the
+    /// first send — the composer stays interactive and `send()` calls
+    /// `findOrCreateConversation` before writing the message. Existing
+    /// conversations (from the inbox or from a Hero reaction reply) pass
+    /// the id in directly and skip the lazy path.
     let convId: String?
     let otherUid: String
     let otherTitle: String
@@ -28,11 +30,21 @@ struct ChatView: View {
     @State private var draft: String = ""
     @State private var isSending = false
     @State private var sendError: String?
+    /// Set on first send for the lazy-create path. Once set, `effectiveConvId`
+    /// returns this instead of the (still-nil) `convId` prop. ChatView's
+    /// @State survives the parent's view-tree re-renders since `PendingChat.id`
+    /// doesn't change when convId resolves.
+    @State private var resolvedConvId: String?
     @FocusState private var inputFocused: Bool
     @State private var keyboardHeight: CGFloat = 0
     @State private var pendingBlock = false
     @State private var reportTarget: ReportTarget?
     @State private var moderationError: String?
+
+    /// Either the convId the host passed (existing conversation) or the one
+    /// we lazy-created on first send. Drives both the messages listener
+    /// gate and the empty-state UI.
+    private var effectiveConvId: String? { resolvedConvId ?? convId }
 
     /// Captured at struct init so `messageBubble(_:)` doesn't hit
     /// Auth.auth().currentUser on every body re-render. The signed-in
@@ -164,16 +176,20 @@ struct ChatView: View {
 
     @ViewBuilder
     private var messagesScroll: some View {
-        if convId == nil {
-            // Host is still resolving the Firestore conversation doc — show
-            // a minimal connecting state instead of an empty message list.
+        if effectiveConvId == nil {
+            // Brand-new conversation — no listener attached yet (we lazy-
+            // create the doc on first send). Show a friendly prompt instead
+            // of an empty scroll view or a spinner that suggests the app is
+            // waiting on something. The composer below is fully interactive.
             VStack(spacing: 10) {
                 Spacer()
-                ProgressView()
-                    .tint(AppTheme.cream.opacity(0.5))
-                Text("Connecting…")
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 32, weight: .light))
+                    .contrastAware(AppTheme.cream, opacity: 0.35)
+                    .accessibilityHidden(true)
+                Text("Say hi to start the conversation")
                     .font(.footnote)
-                    .contrastAware(AppTheme.cream, opacity: 0.4)
+                    .contrastAware(AppTheme.cream, opacity: 0.5)
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -412,19 +428,31 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        // Need a resolved convId before we can write to Firestore.
-        convId != nil
-            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Empty drafts can't send, but a nil convId is fine — we'll
+        // lazy-create the conversation when the user taps Send.
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func send() async {
-        guard let convId, canSend, !isSending else { return }
+        guard canSend, !isSending else { return }
         let text = draft
         isSending = true
         sendError = nil
         defer { isSending = false }
         do {
-            try await conversationService.sendMessage(convId: convId, text: text)
+            // Resolve the convId first if this is a brand-new conversation.
+            // findOrCreateConversation is idempotent — if a doc already
+            // exists for this pair (e.g. the friend messaged us first), it
+            // returns the existing id without creating.
+            let id: String
+            if let existing = effectiveConvId {
+                id = existing
+            } else {
+                id = try await conversationService.findOrCreateConversation(with: otherUid)
+                resolvedConvId = id
+                conversationService.openThread(id)
+            }
+            try await conversationService.sendMessage(convId: id, text: text)
             draft = ""
         } catch {
             sendError = error.localizedDescription

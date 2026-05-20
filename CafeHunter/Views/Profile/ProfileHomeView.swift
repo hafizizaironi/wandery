@@ -30,6 +30,12 @@ struct ProfileHomeView: View {
     @State private var friendMessage       = ""
     @State private var showFriendList      = false
     @State private var pendingChat: PendingChat?
+    /// Tracks which friend request is currently being accepted or declined
+    /// so the row can show a spinner in place of the button label and the
+    /// other action is disabled. Cleared once the await returns. The
+    /// request id (not just a bool) is needed because incoming requests
+    /// render in a ForEach — the busy state has to be per-row.
+    @State private var processingRequestId: String?
     @State private var isBackfilling       = false
     @State private var backfillMessage     = ""
     @State private var signOutError       = ""
@@ -412,21 +418,43 @@ struct ProfileHomeView: View {
                             .contrastAware(AppTheme.cream, opacity: 0.45)
                     }
                     Spacer()
-                    Button("Decline") {
-                        Task { try? await socialService.rejectRequest(req) }
+                    let busy = processingRequestId == req.id
+                    let anyBusy = processingRequestId != nil
+
+                    Button {
+                        Task { await handleRequest(req, accept: false) }
+                    } label: {
+                        if busy {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(AppTheme.cream.opacity(0.6))
+                        } else {
+                            Text("Decline")
+                        }
                     }
                     .font(.caption)
                     .contrastAware(AppTheme.cream, opacity: 0.5)
+                    .disabled(anyBusy)
 
-                    Button("Accept") {
-                        Task { try? await socialService.acceptRequest(req) }
+                    Button {
+                        Task { await handleRequest(req, accept: true) }
+                    } label: {
+                        if busy {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                                .frame(minWidth: 44)
+                        } else {
+                            Text("Accept")
+                        }
                     }
                     .font(.caption).bold()
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
-                    .background(AppTheme.cafeAccent)
+                    .background(AppTheme.cafeAccent.opacity(anyBusy && !busy ? 0.5 : 1.0))
                     .clipShape(.rect(cornerRadius: 10))
+                    .disabled(anyBusy)
                 }
                 .padding(14)
                 .background(AppTheme.cream.opacity(0.05))
@@ -802,33 +830,40 @@ struct ProfileHomeView: View {
 
     // MARK: - Chat entry
 
-    /// Presents the chat sheet immediately with a nil convId, then resolves
-    /// the Firestore conversation doc in the background and patches the id
-    /// in. Called from FriendListView's per-row Message button.
+    /// Presents the chat sheet immediately. The conversation document is
+    /// *lazy-created* by ChatView on first send — see ChatView.send().
     ///
-    /// Previously this awaited findOrCreateConversation *before* dismissing
-    /// the friend list and showing chat, which left a 200-400ms "nothing
-    /// happens" gap between tap and visible transition.
+    /// Previous attempts (a) awaited findOrCreateConversation before
+    /// presenting (200–400ms blank gap) and (b) ran it in the background
+    /// after presenting (silently dismissed the chat if the create failed).
+    /// Both surprised the user. The lazy-on-send pattern matches the
+    /// expected mental model: tap Message → chat opens → type → first
+    /// send creates the thread + delivers the message.
     private func openChat(otherUid: String, title: String) {
         showFriendList = false
         pendingChat = PendingChat(convId: nil, otherUid: otherUid, title: title)
+    }
 
-        Task {
-            do {
-                let convId = try await conversationService.findOrCreateConversation(with: otherUid)
-                // Only patch if the user hasn't closed the chat or opened a
-                // different one in the meantime.
-                guard pendingChat?.otherUid == otherUid else { return }
-                conversationService.openThread(convId)
-                pendingChat?.convId = convId
-            } catch {
-                // findOrCreateConversation failed (network / rules). Close the
-                // chat shell so the user can retry rather than stay stuck on
-                // "Connecting…" forever. Realistic causes for v1 are limited.
-                if pendingChat?.otherUid == otherUid {
-                    pendingChat = nil
-                }
+    // MARK: - Accept / decline friend request
+
+    /// Shared handler so the row shows a spinner while the callable
+    /// runs (acceptFriendRequest takes ~400–800ms with the friend-cap
+    /// transaction). Without this the user saw no feedback between
+    /// tap and the request disappearing from the list.
+    private func handleRequest(_ req: FriendRequestModel, accept: Bool) async {
+        guard processingRequestId == nil else { return }
+        processingRequestId = req.id
+        defer { processingRequestId = nil }
+        do {
+            if accept {
+                try await socialService.acceptRequest(req)
+            } else {
+                try await socialService.rejectRequest(req)
             }
+        } catch {
+            // Surface via the friend-search message slot — same spot the
+            // user already looks for friend-related errors.
+            friendMessage = error.localizedDescription
         }
     }
 

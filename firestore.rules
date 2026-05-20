@@ -72,6 +72,18 @@ service cloud.firestore {
       match /visits/{placeId} {
         allow read, write: if isSelf(uid);
       }
+
+      // Moderation block list. The owner reads this so the client-side
+      // filter can hide blocked authors' posts and conversations the
+      // instant a block is applied. Writes are server-owned — the
+      // `blockUser` / `unblockUser` callables use the admin SDK to write
+      // both the block doc and tear down the friendship in one batch.
+      // Without this rule, the SocialService snapshot listener silently
+      // failed and the in-app filter never updated.
+      match /blockedUsers/{blockedUid} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
     }
 
     match /usernames/{name} {
@@ -135,6 +147,15 @@ service cloud.firestore {
           && canReadPost(postId);
         allow delete: if signedIn() && request.auth.uid == reactorUid;
       }
+    }
+
+    // UGC moderation reports. Writes always go through the `reportContent`
+    // callable (admin SDK) so we can validate `targetType` ∈ {user, post,
+    // message}, sanitize `details`, and stamp `status: "open"`. Direct
+    // client access is denied — reviewers read these via the admin
+    // console only.
+    match /reports/{reportId} {
+      allow read, write: if false;
     }
   }
 }
