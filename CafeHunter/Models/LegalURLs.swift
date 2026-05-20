@@ -18,15 +18,12 @@ import Foundation
 /// 4. Mirror the Terms URL into App Store Connect → EULA (or paste the
 ///    full Terms text into the EULA field if it's short).
 enum LegalURLs {
-    /// Placeholder. Replace with the hosted Terms of Use URL before
-    /// submission. The Terms must include: objectionable content forbidden,
-    /// 24-hour report review commitment, account-deletion policy.
-    static let termsOfUse = URL(string: "https://cafehunter.app/terms")!
+    /// Hosted via GitHub Pages from this repo's /docs directory. If the
+    /// repo is renamed (e.g. wandery → cafehunter) or moved to a custom
+    /// domain, update both URLs here.
+    static let termsOfUse = URL(string: "https://hafizizaironi.github.io/wandery/terms")!
 
-    /// Placeholder. Replace with the hosted Privacy Policy URL before
-    /// submission. Must mirror the data-collection categories declared in
-    /// `PrivacyInfo.xcprivacy`.
-    static let privacyPolicy = URL(string: "https://cafehunter.app/privacy")!
+    static let privacyPolicy = URL(string: "https://hafizizaironi.github.io/wandery/privacy")!
 
     /// Published support contact. Reviewers expect this to be reachable
     /// from inside the app — Profile → Settings → Contact support.
