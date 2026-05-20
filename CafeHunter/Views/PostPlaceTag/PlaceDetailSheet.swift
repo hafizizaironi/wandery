@@ -54,7 +54,9 @@ struct PlaceDetailSheet: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            Text(place.type.emoji).font(.system(size: 28))
+            Text(place.type.emoji)
+                .font(.title)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(place.name)
                     .font(.headline)
@@ -68,10 +70,11 @@ struct PlaceDetailSheet: View {
                 onDismiss()
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 22))
+                    .font(.title2)
                     .foregroundStyle(AppTheme.textSecondary.opacity(0.7))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close")
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
@@ -108,15 +111,17 @@ struct PlaceDetailSheet: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote).bold()
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote).bold()
             }
             .foregroundStyle(AppTheme.textPrimary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .background(AppTheme.surfacePrimary, in: Capsule())
-            .overlay(Capsule().stroke(AppTheme.borderSubtle, lineWidth: 1))
+            .overlay {
+                Capsule().stroke(AppTheme.borderSubtle, lineWidth: 1)
+            }
         }
         .buttonStyle(.plain)
     }
@@ -298,7 +303,7 @@ struct PlaceDetailSheet: View {
             flyingRotation = useHorizontal ? signX * 18 : flyingRotation
         }
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(for: .milliseconds(300))
             flyingPost = nil
             flyingOffset = .zero
             flyingRotation = 0
@@ -310,13 +315,13 @@ struct PlaceDetailSheet: View {
     /// user has already touched the stack.
     private func runHintIfNeeded() async {
         guard !didHint, place.posts.count > 1 else { return }
-        try? await Task.sleep(nanoseconds: 450_000_000)
+        try? await Task.sleep(for: .milliseconds(450))
         guard !didHint else { return }
         withAnimation(.easeInOut(duration: 0.45)) { hintOffset = 14 }
-        try? await Task.sleep(nanoseconds: 480_000_000)
+        try? await Task.sleep(for: .milliseconds(480))
         guard !didHint else { return }
         withAnimation(.spring(response: 0.55, dampingFraction: 0.5)) { hintOffset = 0 }
-        try? await Task.sleep(nanoseconds: 600_000_000)
+        try? await Task.sleep(for: .milliseconds(600))
         didHint = true
     }
 }
@@ -331,10 +336,10 @@ private struct PostStackCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             metaOverlay
         }
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.18), lineWidth: 1)
-        )
+        }
         .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 6)
     }
 
@@ -364,8 +369,9 @@ private struct PostStackCard: View {
         ZStack {
             AppTheme.surfacePrimary
             Image(systemName: "photo")
-                .font(.system(size: 32))
+                .font(.title)
                 .foregroundStyle(AppTheme.textSecondary)
+                .accessibilityHidden(true)
         }
     }
 
@@ -373,17 +379,17 @@ private struct PostStackCard: View {
         VStack(alignment: .leading, spacing: 4) {
             Spacer(minLength: 0)
             Text("@\(post.authorUsername)")
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(.white)
+                .font(.subheadline).bold()
+                .foregroundStyle(.white)
             if !post.caption.isEmpty {
                 Text(post.caption)
                     .font(.caption)
-                    .foregroundColor(.white.opacity(0.92))
+                    .foregroundStyle(.white.opacity(0.92))
                     .lineLimit(2)
             }
             Text(relativeTime)
                 .font(.caption2)
-                .foregroundColor(.white.opacity(0.7))
+                .foregroundStyle(.white.opacity(0.7))
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -400,6 +406,6 @@ private struct PostStackCard: View {
     private var relativeTime: String {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
-        return f.localizedString(for: post.createdAt, relativeTo: Date())
+        return f.localizedString(for: post.createdAt, relativeTo: .now)
     }
 }

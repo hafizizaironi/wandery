@@ -93,7 +93,7 @@ final class PlacePickerViewModel {
         }
         candidates = Self.rank(nearbyCache, by: trimmed)
         searchTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(for: .milliseconds(250))
             if Task.isCancelled { return }
             await self?.runAutocomplete(trimmed)
         }
@@ -219,6 +219,7 @@ struct PlacePickerSheet: View {
         HStack {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(AppTheme.textSecondary)
+                .accessibilityHidden(true)
             TextField("Search places nearby", text: $vm.query)
                 .textInputAutocapitalization(.words)
                 .submitLabel(.search)
@@ -238,7 +239,7 @@ struct PlacePickerSheet: View {
                     typeOverride = (typeOverride == t) ? nil : t
                 } label: {
                     Text("\(t.emoji)  \(t.label)")
-                        .font(.subheadline.weight(.medium))
+                        .font(.subheadline)
                         .padding(.vertical, 6).padding(.horizontal, 12)
                         .background(
                             (typeOverride == t ? AppTheme.accentAction : AppTheme.surfacePrimary),
@@ -290,8 +291,9 @@ struct PlacePickerSheet: View {
             Image(systemName: "mappin.slash")
                 .font(.title3)
                 .foregroundStyle(AppTheme.textSecondary)
+                .accessibilityHidden(true)
             Text("No food places nearby")
-                .font(.subheadline.weight(.semibold))
+                .font(.subheadline).bold()
                 .foregroundStyle(AppTheme.textPrimary)
             Text("Search by name above, or add a new place below.")
                 .font(.caption)
@@ -316,7 +318,7 @@ struct PlacePickerSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(c.name)
-                            .font(.subheadline.weight(.semibold))
+                            .font(.subheadline).bold()
                             .foregroundStyle(AppTheme.textPrimary)
                             .lineLimit(1)
                         if let visits = c.globalVisitCount, visits >= 3 {
@@ -325,12 +327,14 @@ struct PlacePickerSheet: View {
                             // Threshold (3) keeps brand-new popular places
                             // from getting an under-earned badge.
                             Text("🔥 \(visits)")
-                                .font(.caption2.weight(.bold))
-                                .foregroundColor(AppTheme.accentAction)
+                                .font(.caption2).bold()
+                                .foregroundStyle(AppTheme.accentAction)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Capsule().fill(AppTheme.accentAction.opacity(0.12)))
-                                .overlay(Capsule().stroke(AppTheme.accentAction.opacity(0.30), lineWidth: 0.7))
+                                .overlay {
+                                    Capsule().stroke(AppTheme.accentAction.opacity(0.30), lineWidth: 0.7)
+                                }
                         }
                     }
                     if let addr = c.address {
@@ -409,7 +413,11 @@ struct PlacePickerSheet: View {
     }
 
     private func formatDistance(_ m: Double) -> String {
-        m < 1000 ? "\(Int(m)) m" : String(format: "%.1f km", m / 1000)
+        if m < 1000 {
+            "\(Int(m)) m"
+        } else {
+            "\((m / 1000).formatted(.number.precision(.fractionLength(1)))) km"
+        }
     }
 }
 
