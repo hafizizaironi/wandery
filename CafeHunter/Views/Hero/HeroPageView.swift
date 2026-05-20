@@ -284,7 +284,7 @@ struct HeroPageView: View {
                     }
                 )
                 .background(AppTheme.espresso.ignoresSafeArea())
-                .ignoresSafeArea()
+                .ignoresSafeArea(.container)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
                 .zIndex(31)
             }

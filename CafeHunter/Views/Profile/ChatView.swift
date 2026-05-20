@@ -35,7 +35,6 @@ struct ChatView: View {
             }
         }
         .onDisappear { conversationService.openThread(nil) }
-        .keyboardDismissToolbar()
     }
 
     private var header: some View {
