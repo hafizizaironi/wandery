@@ -70,6 +70,7 @@ struct MainShellView: View {
                         socialService:       socialService,
                         conversationService: conversationService,
                         isTabActive:         abs(pageProgress - 2) < 0.5,
+                        isChatActive:        $isChatActive,
                         onJumpToHeroPost:    { postId in jumpToHero(postId: postId) }
                     )
                     .frame(width: geo.size.width, height: geo.size.height)

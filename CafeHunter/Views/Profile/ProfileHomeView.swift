@@ -11,6 +11,10 @@ struct ProfileHomeView: View {
     @ObservedObject var conversationService: ConversationService
     /// True while this shell page is the visible tab (Map / Hero / Profile pager).
     var isTabActive: Bool
+    /// Flipped to true while a chat overlay is presented from this page so
+    /// MainShellView can spring the arc navbar off-screen. Mirrors the
+    /// same binding HeroPageView writes to.
+    @Binding var isChatActive: Bool
     /// Set by MainShellView. Called when a chat thumbnail tapped here
     /// wants to land on a post in the Hero feed; the shell switches to
     /// the Hero tab and HeroPageView scrolls to the post.
@@ -177,6 +181,17 @@ struct ProfileHomeView: View {
         // instead of "tap → spinner → list".
         .task(id: socialService.friendIds) {
             await friendLoader.sync(with: socialService.friendIds)
+        }
+        // Hide the arc navbar while a chat overlay is presented from
+        // this page — mirrors HeroPageView's syncChatActiveFlag. Same
+        // spring as the shell so the navbar slide and the chat slide-in
+        // read as one coupled motion.
+        .onChange(of: pendingChat?.id) { _, _ in
+            let active = pendingChat != nil
+            guard active != isChatActive else { return }
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.78)) {
+                isChatActive = active
+            }
         }
         .onChange(of: isTabActive) { _, active in
             guard active else { return }
