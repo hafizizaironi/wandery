@@ -30,6 +30,14 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 header
                 messagesScroll
+            }
+        }
+        // Composer goes in the bottom safe-area inset so SwiftUI's
+        // keyboard avoidance lifts it above the keyboard automatically
+        // — keeping it inside the VStack would leave it pinned behind
+        // the keyboard when ChatView is presented via .overlay().
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
                 Divider().background(AppTheme.cream.opacity(0.05))
                 composer
             }
