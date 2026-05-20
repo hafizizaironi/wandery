@@ -7,6 +7,10 @@ import FirebaseFirestore
 /// presenting and clears it on dismiss.
 struct ChatView: View {
     @ObservedObject var conversationService: ConversationService
+    /// Required for the Block button to work end-to-end. Tagged as
+    /// @ObservedObject so the chat closes itself when `blockedUserIds`
+    /// updates to include `otherUid`.
+    @ObservedObject var socialService: SocialService
     /// Optional so the chat can present instantly while the host resolves
     /// the Firestore conversation doc in the background — see
     /// ProfileHomeView.openChat. While nil the view shows a "Connecting…"
@@ -26,6 +30,9 @@ struct ChatView: View {
     @State private var sendError: String?
     @FocusState private var inputFocused: Bool
     @State private var keyboardHeight: CGFloat = 0
+    @State private var pendingBlock = false
+    @State private var reportTarget: ReportTarget?
+    @State private var moderationError: String?
 
     /// Captured at struct init so `messageBubble(_:)` doesn't hit
     /// Auth.auth().currentUser on every body re-render. The signed-in
@@ -65,6 +72,39 @@ struct ChatView: View {
             }
         }
         .onDisappear { conversationService.openThread(nil) }
+        .alert(
+            "Block \(otherTitle)?",
+            isPresented: $pendingBlock
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Block", role: .destructive) {
+                Task { await performBlock() }
+            }
+        } message: {
+            Text("They'll be removed from your friends, can't message you, and won't appear in your feed.")
+        }
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                targetType: target.type,
+                targetId: target.targetId,
+                socialService: socialService
+            )
+            .presentationDetents([.medium, .large])
+        }
+        // Auto-close once the block takes effect — the blocked-users
+        // listener flips this set, and the user shouldn't be staring at a
+        // chat with someone they just blocked.
+        .onChange(of: socialService.blockedUserIds.contains(otherUid)) { _, isBlocked in
+            if isBlocked { onClose() }
+        }
+    }
+
+    private func performBlock() async {
+        do {
+            try await socialService.blockUser(uid: otherUid)
+        } catch {
+            moderationError = error.localizedDescription
+        }
     }
 
     private var header: some View {
@@ -87,6 +127,32 @@ struct ChatView: View {
                 .lineLimit(1)
 
             Spacer()
+
+            // Overflow menu — App Store Guideline 1.2 requires both a
+            // block-user and a report-content path. Surface both here
+            // since the chat is the most likely place a user encounters
+            // harassment.
+            Menu {
+                Button {
+                    reportTarget = ReportTarget(type: .user, targetId: otherUid)
+                } label: {
+                    Label("Report user", systemImage: "exclamationmark.triangle")
+                }
+                Button(role: .destructive) {
+                    pendingBlock = true
+                } label: {
+                    Label("Block user", systemImage: "hand.raised")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cream.opacity(0.7))
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(AppTheme.cream.opacity(0.08)))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("More")
         }
         .padding(.horizontal, 14)
         // ChatView is full-screen + ignoresSafeArea, so the back button
@@ -142,6 +208,25 @@ struct ChatView: View {
     @ViewBuilder
     private func messageBubble(_ msg: ChatMessage) -> some View {
         let mine = msg.senderId == myUid
+        let bubbleContent = bubbleContentView(msg: msg, mine: mine)
+        // Only allow reporting messages from the other user (you can't
+        // report your own). Long-press surfaces the Report option.
+        if mine {
+            bubbleContent
+        } else {
+            bubbleContent
+                .contextMenu {
+                    Button {
+                        reportTarget = ReportTarget(type: .message, targetId: msg.id ?? "")
+                    } label: {
+                        Label("Report message", systemImage: "exclamationmark.triangle")
+                    }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func bubbleContentView(msg: ChatMessage, mine: Bool) -> some View {
         VStack(alignment: mine ? .trailing : .leading, spacing: 4) {
             if msg.referencesPost {
                 postReferenceBanner(msg, mine: mine)

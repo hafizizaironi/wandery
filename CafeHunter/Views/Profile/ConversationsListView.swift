@@ -25,7 +25,17 @@ struct ConversationsListView: View {
     /// Other-participant uids referenced by the current inbox — driver for the
     /// profile-hydration pass. Recomputed cheaply when the inbox changes.
     private var otherUids: [String] {
-        conversationService.inbox.compactMap { $0.otherParticipant(of: myUid) }
+        filteredInbox.compactMap { $0.otherParticipant(of: myUid) }
+    }
+
+    /// Inbox minus any conversations whose other participant we've blocked.
+    /// The block listener in SocialService keeps `blockedUserIds` live, so
+    /// this collapses automatically once a block lands.
+    private var filteredInbox: [Conversation] {
+        conversationService.inbox.filter { conv in
+            guard let other = conv.otherParticipant(of: myUid) else { return true }
+            return !socialService.blockedUserIds.contains(other)
+        }
     }
 
     var body: some View {
@@ -34,12 +44,12 @@ struct ConversationsListView: View {
             VStack(spacing: 0) {
                 header
 
-                if conversationService.inbox.isEmpty {
+                if filteredInbox.isEmpty {
                     emptyState
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            ForEach(conversationService.inbox) { conv in
+                            ForEach(filteredInbox) { conv in
                                 conversationRow(conv)
                             }
                         }
@@ -60,6 +70,7 @@ struct ConversationsListView: View {
             if let convId = openConvId, let otherUid = openOtherUid {
                 ChatView(
                     conversationService: conversationService,
+                    socialService: socialService,
                     convId: convId,
                     otherUid: otherUid,
                     otherTitle: openOtherTitle,
@@ -92,7 +103,7 @@ struct ConversationsListView: View {
             Text("Messages")
                 .font(.system(size: 18, weight: .bold))
                 .foregroundColor(AppTheme.cream)
-            Text("\(conversationService.inbox.count)")
+            Text("\(filteredInbox.count)")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(AppTheme.cafeAccent)
                 .padding(.horizontal, 8)

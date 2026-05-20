@@ -171,6 +171,7 @@ struct ProfileHomeView: View {
             if let chat = pendingChat {
                 ChatView(
                     conversationService: conversationService,
+                    socialService: socialService,
                     convId: chat.convId,
                     otherUid: chat.otherUid,
                     otherTitle: chat.title,

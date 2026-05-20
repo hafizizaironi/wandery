@@ -14,8 +14,14 @@ final class SocialService: ObservableObject {
     @Published private(set) var friendIds: [String] = []
     @Published private(set) var incomingRequests: [FriendRequestModel] = []
     @Published private(set) var feedPosts: [FriendPost] = []
+    @Published private(set) var blockedUserIds: Set<String> = []
     @Published private(set) var isLoadingProfile = true
     @Published var errorMessage: String?
+
+    /// Raw posts from Firestore before blocked-user filtering. Kept private
+    /// so callers always see the filtered `feedPosts`. Re-applied through
+    /// `applyBlockedFilter()` whenever either input changes.
+    private var rawFeedPosts: [FriendPost] = []
 
     var needsUsername: Bool {
         guard let p = profile else { return true }
@@ -27,6 +33,7 @@ final class SocialService: ObservableObject {
     private var friendsListener: ListenerRegistration?
     private var requestsListener: ListenerRegistration?
     private var profileListener: ListenerRegistration?
+    private var blockedListener: ListenerRegistration?
 
     private var uid: String? { Auth.auth().currentUser?.uid }
 
@@ -57,6 +64,7 @@ final class SocialService: ObservableObject {
         }
         attachFriendsListener(uid: user.uid)
         attachIncomingRequestsListener(uid: user.uid)
+        attachBlockedUsersListener(uid: user.uid)
     }
 
     func reset() {
@@ -64,14 +72,18 @@ final class SocialService: ObservableObject {
         friendsListener?.remove()
         requestsListener?.remove()
         profileListener?.remove()
+        blockedListener?.remove()
         feedListener = nil
         friendsListener = nil
         requestsListener = nil
         profileListener = nil
+        blockedListener = nil
         profile = nil
         friendIds = []
         incomingRequests = []
         feedPosts = []
+        rawFeedPosts = []
+        blockedUserIds = []
     }
 
     private func ensureUserDocument(user: FirebaseAuth.User) {
@@ -154,10 +166,34 @@ final class SocialService: ObservableObject {
                         return
                     }
                     guard let docs = snap?.documents else { return }
-                    self.feedPosts = docs.compactMap { FriendPost(document: $0) }
+                    self.rawFeedPosts = docs.compactMap { FriendPost(document: $0) }
                         .filter { !$0.mediaURL.isEmpty }
+                    self.applyBlockedFilter()
                 }
             }
+    }
+
+    /// Subscribes to my `blockedUsers` subcollection. The block list is the
+    /// source-of-truth for filtering the feed and the inbox; both surfaces
+    /// hide content from any uid that appears here.
+    private func attachBlockedUsersListener(uid: String) {
+        blockedListener?.remove()
+        blockedListener = db.collection("users").document(uid)
+            .collection("blockedUsers")
+            .addSnapshotListener { [weak self] snap, _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.blockedUserIds = Set(snap?.documents.map(\.documentID) ?? [])
+                    self.applyBlockedFilter()
+                }
+            }
+    }
+
+    /// Recomputes the published `feedPosts` from `rawFeedPosts` minus posts
+    /// authored by anyone in `blockedUserIds`. Called whenever either input
+    /// changes.
+    private func applyBlockedFilter() {
+        feedPosts = rawFeedPosts.filter { !blockedUserIds.contains($0.authorId) }
     }
 
     /// Inserts a row immediately after posting so the feed updates before the next snapshot (and covers listener edge cases).
@@ -269,6 +305,47 @@ final class SocialService: ObservableObject {
         guard otherUid != myUid else { return }
         let callable = Functions.functions().httpsCallable("removeFriend")
         _ = try await callable.call(["uid": otherUid])
+    }
+
+    // MARK: - Moderation (App Store Guideline 1.2)
+
+    /// Blocks a user. Server cascade removes any existing friendship and
+    /// writes the `users/{me}/blockedUsers/{otherUid}` record. The listener
+    /// picks it up and re-filters feedPosts; the views consult
+    /// `blockedUserIds` to suppress chat threads + map pins on top.
+    func blockUser(uid otherUid: String) async throws {
+        guard let myUid = uid else { throw SocialError.notSignedIn }
+        guard otherUid != myUid else { return }
+        let callable = Functions.functions().httpsCallable("blockUser")
+        _ = try await callable.call(["uid": otherUid])
+    }
+
+    /// Removes a block, restoring the user as an ordinary stranger (they
+    /// still aren't a friend unless one of them re-sends a request).
+    func unblockUser(uid otherUid: String) async throws {
+        let callable = Functions.functions().httpsCallable("unblockUser")
+        _ = try await callable.call(["uid": otherUid])
+    }
+
+    /// Writes a moderation flag. Server validates the shape and stamps the
+    /// record into `reports/{auto}`. We commit to reviewing reports within
+    /// 24 hours per our EULA / App Store Connect notes.
+    func reportContent(
+        targetType: ReportTargetType,
+        targetId: String,
+        reason: ReportReason,
+        details: String? = nil
+    ) async throws {
+        var payload: [String: Any] = [
+            "targetType": targetType.rawValue,
+            "targetId": targetId,
+            "reason": reason.rawValue,
+        ]
+        if let details, !details.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["details"] = details
+        }
+        let callable = Functions.functions().httpsCallable("reportContent")
+        _ = try await callable.call(payload)
     }
 
     func rejectRequest(_ request: FriendRequestModel) async throws {

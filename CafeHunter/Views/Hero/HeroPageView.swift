@@ -177,6 +177,11 @@ struct HeroPageView: View {
     // sending doesn't lose what the user typed.
     @State private var replyTargetPost: FriendPost?
     @State private var replyDrafts: [String: String] = [:]
+
+    // Moderation state. Long-press on a feed post surfaces report/block.
+    @State private var reportTarget: ReportTarget?
+    @State private var pendingBlockUid: String?
+    @State private var pendingBlockTitle: String = ""
     /// Live screen-space frame of each post's reply pill — the composer
     /// uses the active post's frame to anchor its idle position so the
     /// pill→focused-input morph feels like a single object.
@@ -274,6 +279,7 @@ struct HeroPageView: View {
             if let chat = pendingChat {
                 ChatView(
                     conversationService: conversationService,
+                    socialService: socialService,
                     convId: chat.convId,
                     otherUid: chat.otherUid,
                     otherTitle: chat.title,
@@ -413,6 +419,15 @@ struct HeroPageView: View {
         // initial feed load — all change the count. A simultaneous
         // delete-and-create in one Firestore snapshot wouldn't trigger
         // this, but the user can scroll/refresh to recover.
+        // Moderation block/report alert + sheet extracted to a modifier so
+        // the body's modifier chain stays under the SwiftUI type-checker's
+        // ceiling. See FeedModerationModifier below.
+        .modifier(FeedModerationModifier(
+            reportTarget: $reportTarget,
+            pendingBlockUid: $pendingBlockUid,
+            pendingBlockTitle: pendingBlockTitle,
+            socialService: socialService
+        ))
         .onChange(of: socialService.feedPosts.count) { _, _ in
             guard let current = heroCardID else { return }
             switch current {
@@ -801,6 +816,29 @@ struct HeroPageView: View {
                 )
                 .frame(width: side, height: side)
                 .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
+                // Long-press surfaces moderation actions — App Store
+                // Guideline 1.2 requires report + block affordances on
+                // user-generated content. Hidden for your own posts.
+                .contextMenu {
+                    if post.authorId != Auth.auth().currentUser?.uid {
+                        Button {
+                            reportTarget = ReportTarget(type: .post, targetId: post.id)
+                        } label: {
+                            Label("Report post", systemImage: "exclamationmark.triangle")
+                        }
+                        Button {
+                            reportTarget = ReportTarget(type: .user, targetId: post.authorId)
+                        } label: {
+                            Label("Report user", systemImage: "person.crop.circle.badge.exclamationmark")
+                        }
+                        Button(role: .destructive) {
+                            pendingBlockUid = post.authorId
+                            pendingBlockTitle = post.authorUsername
+                        } label: {
+                            Label("Block \(post.authorUsername)", systemImage: "hand.raised")
+                        }
+                    }
+                }
             }
 
             // Reactions + comment hug the card; Spacer fills leftover space above navbar.
@@ -1998,6 +2036,50 @@ private struct EmojiPickerSheet: View {
             }
         }
         .background(Color(UIColor.systemBackground))
+    }
+}
+
+// MARK: - Feed moderation modifier
+
+/// Hosts the report-content sheet + block-user confirmation alert for the
+/// Hero feed. Extracted from HeroPageView.body because attaching both
+/// modifiers inline tipped the SwiftUI type-checker over its complexity
+/// limit ("the compiler is unable to type-check this expression in
+/// reasonable time"). Same behaviour, different attachment surface.
+private struct FeedModerationModifier: ViewModifier {
+    @Binding var reportTarget: ReportTarget?
+    @Binding var pendingBlockUid: String?
+    let pendingBlockTitle: String
+    @ObservedObject var socialService: SocialService
+
+    func body(content: Content) -> some View {
+        content
+            .alert(
+                "Block \(pendingBlockTitle)?",
+                isPresented: Binding(
+                    get: { pendingBlockUid != nil },
+                    set: { if !$0 { pendingBlockUid = nil } }
+                ),
+                presenting: pendingBlockUid
+            ) { uid in
+                Button("Cancel", role: .cancel) { pendingBlockUid = nil }
+                Button("Block", role: .destructive) {
+                    Task {
+                        try? await socialService.blockUser(uid: uid)
+                        pendingBlockUid = nil
+                    }
+                }
+            } message: { _ in
+                Text("They'll be removed from your friends, can't message you, and won't appear in your feed.")
+            }
+            .sheet(item: $reportTarget) { target in
+                ReportSheet(
+                    targetType: target.type,
+                    targetId: target.targetId,
+                    socialService: socialService
+                )
+                .presentationDetents([.medium, .large])
+            }
     }
 }
 

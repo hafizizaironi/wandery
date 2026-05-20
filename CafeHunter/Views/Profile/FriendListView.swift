@@ -87,6 +87,10 @@ struct FriendListView: View {
 
     @State private var pendingRemoval: FriendRow?
     @State private var removingUid: String?
+    @State private var pendingBlock: FriendRow?
+    @State private var blockingUid: String?
+    @State private var moderationError = ""
+    @State private var reportTarget: ReportTarget?
 
     var body: some View {
         ZStack {
@@ -107,6 +111,29 @@ struct FriendListView: View {
             }
         } message: { row in
             Text("They'll no longer see your posts and you won't see theirs.")
+        }
+        .alert(
+            "Block \(pendingBlock?.titleText ?? "user")?",
+            isPresented: Binding(
+                get: { pendingBlock != nil },
+                set: { if !$0 { pendingBlock = nil } }
+            ),
+            presenting: pendingBlock
+        ) { row in
+            Button("Cancel", role: .cancel) { pendingBlock = nil }
+            Button("Block", role: .destructive) {
+                Task { await performBlock(row) }
+            }
+        } message: { row in
+            Text("They'll be removed from your friends, can't message you, and won't appear in your feed.")
+        }
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                targetType: target.type,
+                targetId: target.targetId,
+                socialService: socialService
+            )
+            .presentationDetents([.medium, .large])
         }
     }
 
@@ -309,16 +336,46 @@ struct FriendListView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 14).stroke(AppTheme.cafeAccent.opacity(0.16), lineWidth: 1)
         }
+        // Long-press menu surfaces Report + Block alongside Message + Remove.
+        // App Store Guideline 1.2 requires both block + report affordances
+        // for UGC apps; the menu is the most reviewer-discoverable surface.
+        .contextMenu {
+            if onMessage != nil {
+                Button {
+                    onMessage?(row)
+                } label: {
+                    Label("Message", systemImage: "message")
+                }
+            }
+            Button {
+                reportTarget = ReportTarget(type: .user, targetId: row.id)
+            } label: {
+                Label("Report", systemImage: "exclamationmark.triangle")
+            }
+            Button(role: .destructive) {
+                pendingBlock = row
+            } label: {
+                Label("Block", systemImage: "hand.raised")
+            }
+            Button(role: .destructive) {
+                pendingRemoval = row
+            } label: {
+                Label("Remove friend", systemImage: "person.fill.xmark")
+            }
+        }
         // Group the whole row for VoiceOver: one swipe = friend identity,
-        // Actions rotor exposes Message / Remove. Inner Buttons remain
-        // tappable for sighted users and discoverable via Voice Control's
-        // "Show actions" command.
+        // Actions rotor exposes the same destructive + reporting actions
+        // as the long-press menu so screen-reader users have parity.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(rowLabel(for: row))
         .accessibilityActions {
             if onMessage != nil {
                 Button("Message") { onMessage?(row) }
             }
+            Button("Report") {
+                reportTarget = ReportTarget(type: .user, targetId: row.id)
+            }
+            Button("Block") { pendingBlock = row }
             Button("Remove") { pendingRemoval = row }
         }
     }
@@ -378,6 +435,19 @@ struct FriendListView: View {
             // The friend listener won't update on failure, so the row stays
             // in place — the user can retry. Surfacing a toast here would
             // be nice but isn't critical for v1.
+        }
+    }
+
+    private func performBlock(_ row: FriendRow) async {
+        pendingBlock = nil
+        blockingUid = row.id
+        defer { blockingUid = nil }
+        do {
+            try await socialService.blockUser(uid: row.id)
+            // Listener for blockedUsers will refresh blockedUserIds; the
+            // friend listener fires too once the cascade removes the edge.
+        } catch {
+            moderationError = error.localizedDescription
         }
     }
 }

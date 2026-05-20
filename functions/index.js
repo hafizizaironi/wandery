@@ -908,3 +908,105 @@ exports.deleteMyAccount = onCall(
     return { ok: true };
   },
 );
+
+// ─── Block / unblock (App Store Guideline 1.2) ───────────────────────────
+// Writes the block record + tears down any existing friendship in one batch.
+// Rules + client filters use users/{uid}/blockedUsers/{otherUid} to suppress
+// the blocked user's posts in the feed and their messages in the inbox.
+exports.blockUser = onCall(
+  { timeoutSeconds: 10, memory: "256MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const otherUid = request.data?.uid;
+    if (typeof otherUid !== "string" || otherUid.length === 0) {
+      throw new HttpsError("invalid-argument", "Missing uid.");
+    }
+    if (otherUid === uid) {
+      throw new HttpsError("invalid-argument", "Cannot block yourself.");
+    }
+
+    const db = admin.firestore();
+    const batch = db.batch();
+    batch.set(
+      db.collection("users").doc(uid)
+        .collection("blockedUsers").doc(otherUid),
+      { blockedAt: admin.firestore.FieldValue.serverTimestamp() },
+    );
+    // Friendship goes away in both directions.
+    batch.delete(
+      db.collection("users").doc(uid).collection("friends").doc(otherUid),
+    );
+    batch.delete(
+      db.collection("users").doc(otherUid).collection("friends").doc(uid),
+    );
+    await batch.commit();
+    return { ok: true };
+  },
+);
+
+exports.unblockUser = onCall(
+  { timeoutSeconds: 10, memory: "256MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const otherUid = request.data?.uid;
+    if (typeof otherUid !== "string" || otherUid.length === 0) {
+      throw new HttpsError("invalid-argument", "Missing uid.");
+    }
+    await admin.firestore()
+      .collection("users").doc(uid)
+      .collection("blockedUsers").doc(otherUid)
+      .delete();
+    return { ok: true };
+  },
+);
+
+// ─── Report content (App Store Guideline 1.2) ────────────────────────────
+// Writes a flag into `reports/{auto}` for moderation review. Server-side
+// enforces shape so clients can't push arbitrary fields. We commit in our
+// EULA / App Store Connect notes to act on reports within 24 hours.
+const ALLOWED_TARGET_TYPES = new Set(["user", "post", "message"]);
+const ALLOWED_REPORT_REASONS = new Set([
+  "spam",
+  "harassment",
+  "inappropriate",
+  "other",
+]);
+
+exports.reportContent = onCall(
+  { timeoutSeconds: 10, memory: "256MiB" },
+  async (request) => {
+    const reporterUid = request.auth?.uid;
+    if (!reporterUid) throw new HttpsError("unauthenticated", "Sign in.");
+    const data = request.data || {};
+    const targetType = data.targetType;
+    const targetId = data.targetId;
+    const reason = data.reason;
+    const details = typeof data.details === "string" ? data.details : null;
+
+    if (!ALLOWED_TARGET_TYPES.has(targetType)) {
+      throw new HttpsError("invalid-argument", "Invalid targetType.");
+    }
+    if (typeof targetId !== "string" || targetId.length === 0) {
+      throw new HttpsError("invalid-argument", "Missing targetId.");
+    }
+    if (!ALLOWED_REPORT_REASONS.has(reason)) {
+      throw new HttpsError("invalid-argument", "Invalid reason.");
+    }
+
+    const report = {
+      reporterUid,
+      targetType,
+      targetId,
+      reason,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: "open",
+    };
+    if (details && details.trim().length > 0) {
+      report.details = details.slice(0, 500);
+    }
+    await admin.firestore().collection("reports").add(report);
+    return { ok: true };
+  },
+);
