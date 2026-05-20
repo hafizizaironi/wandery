@@ -428,8 +428,8 @@ struct HeroPageView: View {
         } label: {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(AppTheme.textPrimary)
+                    .font(.callout).bold()
+                    .foregroundStyle(AppTheme.textPrimary)
                     .frame(width: 44, height: 44)
                     // Same liquid-glass recipe used on the map's "center on
                     // me" HUD: real iOS 26 Liquid Glass + faint terracotta
@@ -440,7 +440,7 @@ struct HeroPageView: View {
                         in: Circle()
                     )
                     .liquidGlassShine(in: Circle(), strength: 1.0)
-                    .overlay(
+                    .overlay {
                         Circle()
                             .stroke(
                                 LinearGradient(
@@ -454,19 +454,21 @@ struct HeroPageView: View {
                                 ),
                                 lineWidth: 0.8
                             )
-                    )
+                    }
                     .shadow(color: AppTheme.accentAction.opacity(0.14),
                             radius: 8, x: 0, y: 3)
                     .shadow(color: .black.opacity(0.10), radius: 5, x: 0, y: 2)
 
                 if unreadCount > 0 {
                     Text("\(min(unreadCount, 99))")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.white)
+                        .font(.caption2).bold()
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(Capsule().fill(AppTheme.accentAction))
-                        .overlay(Capsule().stroke(Color.white.opacity(0.6), lineWidth: 1))
+                        .overlay {
+                            Capsule().stroke(Color.white.opacity(0.6), lineWidth: 1)
+                        }
                         .offset(x: 4, y: -3)
                 }
             }
@@ -562,11 +564,11 @@ struct HeroPageView: View {
         }
         Task { @MainActor in
             // Hold at center (~1.1 s) while the Lottie plays through, then exit upward.
-            try? await Task.sleep(nanoseconds: 1_100_000_000)
+            try? await Task.sleep(for: .milliseconds(1100))
             withAnimation(.easeIn(duration: 0.36)) {
                 burstOffsetY = -700
             }
-            try? await Task.sleep(nanoseconds: 380_000_000)
+            try? await Task.sleep(for: .milliseconds(380))
             reactionBurstEmoji = nil
         }
     }
@@ -735,18 +737,18 @@ struct HeroPageView: View {
         return VStack(spacing: HeroCameraLayout.viewfinderShutterSpacing) {
             RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                 .fill(AppTheme.surfacePrimary)
-                .overlay(
+                .overlay {
                     RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                         .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                )
+                }
                 .frame(width: side, height: side)
-                .overlay(
+                .overlay {
                     Text("No posts yet.\nShare a moment from the camera.")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(AppTheme.textSecondary)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.textSecondary)
                         .multilineTextAlignment(.center)
                         .padding(24)
-                )
+                }
             Color.clear
                 .frame(height: HeroCameraLayout.shutterAreaHeight)
         }
@@ -767,8 +769,8 @@ struct HeroPageView: View {
         return VStack(spacing: 0) {
             VStack(spacing: 8) {
                 Text("@\(post.authorUsername)")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(AppTheme.cream.opacity(0.85))
+                    .font(.footnote).bold()
+                    .foregroundStyle(AppTheme.cream.opacity(0.85))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
 
@@ -838,16 +840,16 @@ struct HeroPageView: View {
                                   lensSwitchToken: camera.lensSwitchToken)
                     .frame(width: side, height: side)
                     .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
-                    .overlay(
+                    .overlay {
                         RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                             .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                    )
-                    .overlay(
+                    }
+                    .overlay {
                         RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                             .stroke(Color.red.opacity(camera.isRecording ? 0.7 : 0), lineWidth: 2)
                             .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
                                        value: camera.isRecording)
-                    )
+                    }
                     .overlay(alignment: .top) {
                         if camera.hasLensToggleForCurrentCamera {
                             lensToggleButton
@@ -900,10 +902,10 @@ struct HeroPageView: View {
         }
         .frame(width: side, height: side)
         .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
+        }
         .overlay {
             if camera.isProcessingVideo {
                 ProgressView()
@@ -919,12 +921,12 @@ struct HeroPageView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: pendingPlace == nil ? "mappin.and.ellipse" : "mappin.circle.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote).bold()
                 Text(pendingPlace?.name ?? "Tag a place")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote).bold()
                     .lineLimit(1)
             }
-            .foregroundColor(.white)
+            .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(Color.black.opacity(0.45), in: Capsule())
@@ -941,26 +943,26 @@ struct HeroPageView: View {
     private var captionPillBody: some View {
         // Invisible Text drives pill width; overlays render visual + input.
         Text(previewCaption.isEmpty ? "whats on your mind☺️?" : previewCaption)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.clear)
+                    .font(.subheadline).bold()
+                    .foregroundStyle(.clear)
                     .fixedSize()
                     .overlay {
                         if previewCaption.isEmpty {
                             Text("whats on your mind☺️?")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.55))
+                                .font(.subheadline).bold()
+                                .foregroundStyle(.white.opacity(0.55))
                                 .allowsHitTesting(false)
                         } else {
                             AnimatedWaveText(text: previewCaption,
-                                            font: .system(size: 15, weight: .semibold))
+                                            font: .subheadline.bold())
                                 .allowsHitTesting(false)
                         }
                     }
                     .overlay {
                         TextField("", text: $previewCaption)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.subheadline).bold()
                             .tint(.white)
-                            .foregroundColor(.clear)
+                            .foregroundStyle(.clear)
                             .multilineTextAlignment(.center)
                             .textInputAutocapitalization(.sentences)
                             .focused($captionFocused)
@@ -969,7 +971,7 @@ struct HeroPageView: View {
                                     Spacer()
                                     Button("Done") { captionFocused = false }
                                         .fontWeight(.semibold)
-                                        .foregroundColor(AppTheme.cafeAccent)
+                                        .foregroundStyle(AppTheme.cafeAccent)
                                 }
                             }
                             .onChange(of: previewCaption) { _, new in
@@ -989,8 +991,8 @@ struct HeroPageView: View {
             camera.toggleLens()
         } label: {
             Text(lensToggleLabel)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.black)
+                .font(.footnote).bold()
+                .foregroundStyle(.black)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
                 .background(Color.white.opacity(0.92))
@@ -1020,8 +1022,8 @@ struct HeroPageView: View {
                 VStack(spacing: 8) {
                     if !postError.isEmpty {
                         Text(postError)
-                            .font(.system(size: 12))
-                            .foregroundColor(AppTheme.errorRed)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.errorRed)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 16)
                     }
@@ -1122,7 +1124,7 @@ struct HeroPageView: View {
             Text(title)
                 .font(.system(size: emphasized ? 11 : 10, weight: .medium))
         }
-        .foregroundColor(emphasized ? AppTheme.cafeAccent : AppTheme.textPrimary.opacity(0.65))
+        .foregroundStyle(emphasized ? AppTheme.cafeAccent : AppTheme.textPrimary.opacity(0.65))
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(
@@ -1152,8 +1154,8 @@ struct HeroPageView: View {
                     .tint(.white)
             } else {
                 Image(systemName: "paperplane.fill")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(.white)
+                    .font(.title2).bold()
+                    .foregroundStyle(.white)
             }
         }
     }
@@ -1218,11 +1220,11 @@ struct HeroPageView: View {
         let past  = isPastThreshold(dir)
         return VStack(spacing: 3) {
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.subheadline).bold()
             Text(label)
-                .font(.system(size: 10, weight: .medium))
+                .font(.caption2)
         }
-        .foregroundColor(past ? AppTheme.cafeAccent : .white)
+        .foregroundStyle(past ? AppTheme.cafeAccent : .white)
         .opacity(op)
         .animation(.easeOut(duration: 0.1), value: op)
     }
@@ -1255,8 +1257,8 @@ struct HeroPageView: View {
             // Icon overlay
             if camera.isLocked {
                 Image(systemName: "lock.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(.white)
+                    .font(.title3).bold()
+                    .foregroundStyle(.white)
             } else if isHolding || camera.isRecording {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(Color.white)
@@ -1396,13 +1398,14 @@ struct HeroPageView: View {
             Image(systemName: "camera.fill")
                 .symbolVariant(.slash)
                 .font(.system(size: 48, weight: .light))
-                .foregroundColor(AppTheme.cream.opacity(0.5))
+                .foregroundStyle(AppTheme.cream.opacity(0.5))
+                .accessibilityHidden(true)
             Text("Camera Access Needed")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundColor(AppTheme.cream)
+                .font(.title3).bold()
+                .foregroundStyle(AppTheme.cream)
             Text("Allow camera access so you can share cafe moments.")
-                .font(.system(size: 14))
-                .foregroundColor(AppTheme.cream.opacity(0.6))
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.cream.opacity(0.6))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
             Button {
@@ -1411,8 +1414,8 @@ struct HeroPageView: View {
                 }
             } label: {
                 Text("Open Settings")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(AppTheme.textOnAccent)
+                    .font(.callout).bold()
+                    .foregroundStyle(AppTheme.textOnAccent)
                     .padding(.horizontal, 28)
                     .padding(.vertical, 12)
                     .background(AppTheme.cafeAccent)
@@ -1470,21 +1473,21 @@ private struct FeedPostCard: View {
                 .padding(.bottom, 16)
             }
         }
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.15), lineWidth: 1)
-        )
+        }
     }
 
     private func placePill(name: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "mappin.circle.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.caption).bold()
             Text(name)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote).bold()
                 .lineLimit(1)
         }
-        .foregroundColor(.white)
+        .foregroundStyle(.white)
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
         .background(
@@ -1496,8 +1499,8 @@ private struct FeedPostCard: View {
 
     private var captionPill: some View {
         Text(post.caption)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundColor(.white)
+            .font(.subheadline).bold()
+            .foregroundStyle(.white)
             .lineLimit(2)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 18)
@@ -1517,10 +1520,11 @@ private struct FeedPostCard: View {
                 Image(systemName: "photo")
                     .symbolVariant(.slash)
                     .font(.system(size: 28, weight: .light))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .accessibilityHidden(true)
                 Text("Media unavailable")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.5))
             }
         }
     }
@@ -1546,25 +1550,27 @@ private struct FeedPostReactions: View {
                     }
                 } label: {
                     Text(e)
-                        .font(.system(size: 24))
+                        .font(.title2)
                         .padding(6)
                         .background((myEmoji == e) ? AppTheme.cafeAccent.opacity(0.2) : Color.white.opacity(0.08))
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("React with \(e)")
             }
 
             Button {
                 showEmojiPicker = true
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.8))
+                    .font(.callout).bold()
+                    .foregroundStyle(.white.opacity(0.8))
                     .frame(width: 36, height: 36)
                     .background(Color.white.opacity(0.10))
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("More reactions")
         }
         .frame(minHeight: 64)
         .task(id: post.id) {
@@ -1631,8 +1637,8 @@ private struct ReplyTriggerPill: View {
         Button(action: onTap) {
             HStack(spacing: 10) {
                 Text(draftPreview.isEmpty ? "Send a message" : draftPreview)
-                    .font(.system(size: 14))
-                    .foregroundColor(draftPreview.isEmpty
+                    .font(.subheadline)
+                    .foregroundStyle(draftPreview.isEmpty
                                      ? Color.white.opacity(0.7)
                                      : Color.white)
                     .lineLimit(1)
@@ -1640,8 +1646,8 @@ private struct ReplyTriggerPill: View {
                 Spacer(minLength: 0)
 
                 Image(systemName: "paperplane.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Color.white.opacity(0.85))
+                    .font(.footnote).bold()
+                    .foregroundStyle(Color.white.opacity(0.85))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -1650,7 +1656,7 @@ private struct ReplyTriggerPill: View {
                 in: Capsule(style: .continuous)
             )
             .liquidGlassShine(in: Capsule(style: .continuous), strength: 0.85)
-            .overlay(
+            .overlay {
                 Capsule(style: .continuous)
                     .stroke(
                         LinearGradient(
@@ -1664,7 +1670,7 @@ private struct ReplyTriggerPill: View {
                         ),
                         lineWidth: 1
                     )
-            )
+            }
             .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
         }
         .buttonStyle(.plain)
@@ -1728,8 +1734,8 @@ private struct ReplyComposerOverlay: View {
                 VStack(spacing: 6) {
                     if let err = sendError {
                         Text(err)
-                            .font(.system(size: 12))
-                            .foregroundColor(AppTheme.errorRed)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.errorRed)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 8)
                     }
@@ -1753,7 +1759,8 @@ private struct ReplyComposerOverlay: View {
             .ignoresSafeArea(.keyboard, edges: .bottom)
             .onAppear {
                 homeIndicator = geo.safeAreaInsets.bottom
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(50))
                     focused = true
                 }
             }
@@ -1806,7 +1813,8 @@ private struct ReplyComposerOverlay: View {
         guard !dismissingAfterClose else { return }
         dismissingAfterClose = true
         focused = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(320))
             onClose()
         }
     }
@@ -1816,16 +1824,16 @@ private struct ReplyComposerOverlay: View {
             ZStack(alignment: .leading) {
                 if draft.isEmpty {
                     Text("Send a message")
-                        .font(.system(size: 14))
-                        .foregroundColor(Color.white.opacity(0.7))
+                        .font(.subheadline)
+                        .foregroundStyle(Color.white.opacity(0.7))
                         .allowsHitTesting(false)
                 }
                 // Single-line on purpose — Return submits, doesn't add a
                 // newline. Both the keyboard's return key and the
                 // paperplane button hit the same trySend path.
                 TextField("", text: $draft)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
                     .tint(.white)
                     .focused($focused)
                     .submitLabel(.send)
@@ -1838,8 +1846,8 @@ private struct ReplyComposerOverlay: View {
                 Task { await trySend() }
             } label: {
                 Image(systemName: "paperplane.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(canSend
+                    .font(.subheadline).bold()
+                    .foregroundStyle(canSend
                                      ? .white
                                      : Color.white.opacity(0.45))
                     .frame(width: 24, height: 24)
@@ -1847,6 +1855,7 @@ private struct ReplyComposerOverlay: View {
             }
             .buttonStyle(.plain)
             .disabled(!canSend || isSending)
+            .accessibilityLabel("Send reply")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -1855,7 +1864,7 @@ private struct ReplyComposerOverlay: View {
             in: Capsule(style: .continuous)
         )
         .liquidGlassShine(in: Capsule(style: .continuous), strength: 1.0)
-        .overlay(
+        .overlay {
             Capsule(style: .continuous)
                 .stroke(
                     LinearGradient(
@@ -1869,7 +1878,7 @@ private struct ReplyComposerOverlay: View {
                     ),
                     lineWidth: 1
                 )
-        )
+        }
         .shadow(color: .black.opacity(0.30), radius: 18, y: 6)
     }
 
@@ -1887,7 +1896,7 @@ private struct ReplyComposerOverlay: View {
             }
             // Wait for the swoosh to land, then tear the overlay down
             // without a transition (the swoosh did the visual work).
-            try? await Task.sleep(nanoseconds: 430_000_000)
+            try? await Task.sleep(for: .milliseconds(430))
             onSendComplete()
         } catch {
             print("[ReplyComposerOverlay] reply mirror failed: \(error)")
@@ -1913,17 +1922,18 @@ private struct EmojiPickerSheet: View {
             // Handle + title row
             HStack {
                 Text("React")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.headline)
                 Spacer()
                 Button {
                     dismiss()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 22))
+                        .font(.title2)
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close emoji picker")
             }
             .padding(.horizontal, 20)
             .padding(.top, 20)
@@ -1952,7 +1962,7 @@ private struct EmojiPickerSheet: View {
                                     : Color.white.opacity(0.06)
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
+                            .overlay {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .stroke(
                                         myEmoji == item.emoji
@@ -1960,7 +1970,7 @@ private struct EmojiPickerSheet: View {
                                             : Color.clear,
                                         lineWidth: 1.5
                                     )
-                            )
+                            }
                         }
                         .buttonStyle(.plain)
                     }
@@ -1992,7 +2002,7 @@ private struct AnimatedWaveText: View {
                 ForEach(Array(text.enumerated()), id: \.offset) { idx, char in
                     Text(String(char))
                         .font(font)
-                        .foregroundColor(.white)
+                        .foregroundStyle(.white)
                         .offset(y: yOffset(t: t, index: idx))
                 }
             }
