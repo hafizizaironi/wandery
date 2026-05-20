@@ -13,12 +13,12 @@
 			<string>Editor</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.948965115871-n8slnvmmug5q35llr90ds21ijib7k2uv</string>
+				<string>com.googleusercontent.apps.948965115871-q2m7h9odo34k3d8d0uln9j9kvj2qe7g5</string>
 			</array>
 		</dict>
 	</array>
 	<key>GIDClientID</key>
-	<string>948965115871-n8slnvmmug5q35llr90ds21ijib7k2uv.apps.googleusercontent.com</string>
+	<string>948965115871-q2m7h9odo34k3d8d0uln9j9kvj2qe7g5.apps.googleusercontent.com</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Save photos and videos you capture to your library.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
