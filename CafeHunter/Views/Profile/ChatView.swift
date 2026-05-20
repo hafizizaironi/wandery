@@ -7,7 +7,11 @@ import FirebaseFirestore
 /// presenting and clears it on dismiss.
 struct ChatView: View {
     @ObservedObject var conversationService: ConversationService
-    let convId: String
+    /// Optional so the chat can present instantly while the host resolves
+    /// the Firestore conversation doc in the background — see
+    /// ProfileHomeView.openChat. While nil the view shows a "Connecting…"
+    /// state in the message area and the composer disables sending.
+    let convId: String?
     let otherUid: String
     let otherTitle: String
     var onClose: () -> Void
@@ -86,29 +90,45 @@ struct ChatView: View {
         .padding(.bottom, 10)
     }
 
+    @ViewBuilder
     private var messagesScroll: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(conversationService.activeMessages) { msg in
-                        messageBubble(msg)
-                            .id(msg.id)
-                    }
-                    Color.clear.frame(height: 1).id("__bottom")
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+        if convId == nil {
+            // Host is still resolving the Firestore conversation doc — show
+            // a minimal connecting state instead of an empty message list.
+            VStack(spacing: 10) {
+                Spacer()
+                ProgressView()
+                    .tint(AppTheme.cream.opacity(0.5))
+                Text("Connecting…")
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.cream.opacity(0.4))
+                Spacer()
             }
-            .onChange(of: conversationService.activeMessages.count) { _, _ in
-                // Always scroll to the newest message — the user is either
-                // typing in the composer (and expects to see what they
-                // just sent) or watching the thread live.
-                withAnimation(.easeOut(duration: 0.18)) {
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(conversationService.activeMessages) { msg in
+                            messageBubble(msg)
+                                .id(msg.id)
+                        }
+                        Color.clear.frame(height: 1).id("__bottom")
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                }
+                .onChange(of: conversationService.activeMessages.count) { _, _ in
+                    // Always scroll to the newest message — the user is either
+                    // typing in the composer (and expects to see what they
+                    // just sent) or watching the thread live.
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo("__bottom", anchor: .bottom)
+                    }
+                }
+                .onAppear {
                     proxy.scrollTo("__bottom", anchor: .bottom)
                 }
-            }
-            .onAppear {
-                proxy.scrollTo("__bottom", anchor: .bottom)
             }
         }
     }
@@ -299,11 +319,13 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Need a resolved convId before we can write to Firestore.
+        convId != nil
+            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func send() async {
-        guard canSend, !isSending else { return }
+        guard let convId, canSend, !isSending else { return }
         let text = draft
         isSending = true
         sendError = nil

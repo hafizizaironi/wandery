@@ -649,19 +649,32 @@ struct ProfileHomeView: View {
 
     // MARK: - Chat entry
 
-    /// Resolves the conversation id with `otherUid` (creating the doc on
-    /// first contact) and presents the chat sheet. Called from
-    /// FriendListView's per-row Message button.
+    /// Presents the chat sheet immediately with a nil convId, then resolves
+    /// the Firestore conversation doc in the background and patches the id
+    /// in. Called from FriendListView's per-row Message button.
+    ///
+    /// Previously this awaited findOrCreateConversation *before* dismissing
+    /// the friend list and showing chat, which left a 200-400ms "nothing
+    /// happens" gap between tap and visible transition.
     private func openChat(otherUid: String, title: String) {
+        showFriendList = false
+        pendingChat = PendingChat(convId: nil, otherUid: otherUid, title: title)
+
         Task {
             do {
                 let convId = try await conversationService.findOrCreateConversation(with: otherUid)
+                // Only patch if the user hasn't closed the chat or opened a
+                // different one in the meantime.
+                guard pendingChat?.otherUid == otherUid else { return }
                 conversationService.openThread(convId)
-                showFriendList = false
-                pendingChat = PendingChat(convId: convId, otherUid: otherUid, title: title)
+                pendingChat?.convId = convId
             } catch {
-                // Surface inline only on the inbox/list — silent failure is
-                // OK for v1; realistic causes are network or rule denial.
+                // findOrCreateConversation failed (network / rules). Close the
+                // chat shell so the user can retry rather than stay stuck on
+                // "Connecting…" forever. Realistic causes for v1 are limited.
+                if pendingChat?.otherUid == otherUid {
+                    pendingChat = nil
+                }
             }
         }
     }
@@ -689,9 +702,15 @@ struct ProfileHomeView: View {
 /// Identity wrapper so `.floatingPanel(item:)` can present a freshly-opened
 /// chat thread. Recreated each time `openChat` runs, even for the same
 /// friend, so the sheet always re-presents.
+///
+/// `convId` is optional because we present the chat shell *immediately* on
+/// the user's tap (so it slides in without waiting for Firestore) and patch
+/// the convId in once `findOrCreateConversation` resolves. ChatView keeps
+/// its @State across the patch since its position in the view tree doesn't
+/// change.
 struct PendingChat: Identifiable, Equatable {
     let id = UUID()
-    let convId: String
+    var convId: String?
     let otherUid: String
     let title: String
 }
