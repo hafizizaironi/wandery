@@ -3,6 +3,7 @@ import Combine
 import Foundation
 @preconcurrency import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 import FirebaseStorage
 import GoogleSignIn
 import UIKit
@@ -120,6 +121,41 @@ class AuthService: ObservableObject {
         try Auth.auth().signOut()
     }
 
+    /// Permanent in-app account deletion (App Store Guideline 5.1.1(v)).
+    /// Cascades server-side via the `deleteMyAccount` Cloud Function — that
+    /// removes the user doc, username reservation, friend edges, posts +
+    /// reactions, conversations + messages, FCM tokens, and Storage objects
+    /// under `avatars/{uid}/` and `social/{uid}/`. Then deletes the Firebase
+    /// Auth user itself. Auth listener in init() fires once the user is gone
+    /// and ContentView routes back to LoginView.
+    ///
+    /// Firebase Auth requires a recent sign-in for `delete()`. If the session
+    /// is stale this throws `AuthServiceError.recentLoginRequired`; the UI
+    /// surfaces a "sign in again, then try" message.
+    func deleteAccount() async throws {
+        guard let user = Auth.auth().currentUser else {
+            throw AuthServiceError.notSignedIn
+        }
+        // Best-effort token cleanup before the user disappears — the
+        // cascade also deletes the fcmTokens subcollection, but unregistering
+        // the FCM token locally now avoids a stale device receiving
+        // notifications until the next launch.
+        NotificationService.shared.removeAllTokensForCurrentUser()
+
+        let callable = Functions.functions().httpsCallable("deleteMyAccount")
+        _ = try await callable.call([:])
+
+        do {
+            try await user.delete()
+        } catch {
+            let ns = error as NSError
+            if ns.code == AuthErrorCode.requiresRecentLogin.rawValue {
+                throw AuthServiceError.recentLoginRequired
+            }
+            throw error
+        }
+    }
+
     /// Reloads the signed-in user from Firebase (e.g. after avatar/name changed on another device).
     func refreshCurrentUser() async {
         guard let user = Auth.auth().currentUser else { return }
@@ -197,11 +233,16 @@ class AuthService: ObservableObject {
 enum AuthServiceError: LocalizedError {
     case noViewController
     case missingToken
+    case notSignedIn
+    case recentLoginRequired
 
     var errorDescription: String? {
         switch self {
         case .noViewController: return "Unable to present sign-in screen."
         case .missingToken: return "Google sign-in failed. Please try again."
+        case .notSignedIn: return "No user is signed in."
+        case .recentLoginRequired:
+            return "For security, please sign out and sign back in before deleting your account."
         }
     }
 }

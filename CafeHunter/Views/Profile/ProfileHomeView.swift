@@ -33,6 +33,9 @@ struct ProfileHomeView: View {
     @State private var isBackfilling       = false
     @State private var backfillMessage     = ""
     @State private var signOutError       = ""
+    @State private var showDeleteConfirm   = false
+    @State private var isDeleting          = false
+    @State private var deleteError         = ""
     /// Pre-fetches friend profiles so the friend list panel opens with rows
     /// already cached. Owned here so the cache survives floating-panel
     /// open/close cycles, and so sync can happen while the user is still
@@ -603,6 +606,50 @@ struct ProfileHomeView: View {
                     .foregroundStyle(AppTheme.errorRed)
                     .multilineTextAlignment(.center)
             }
+
+            // Permanent in-app account deletion — required by App Store
+            // Guideline 5.1.1(v) for any app with account creation.
+            Button {
+                showDeleteConfirm = true
+            } label: {
+                Group {
+                    if isDeleting {
+                        ProgressView()
+                            .tint(AppTheme.errorRed)
+                    } else {
+                        Text("Delete Account")
+                            .font(.subheadline).bold()
+                            .foregroundStyle(AppTheme.errorRed)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(AppTheme.errorRed.opacity(0.08))
+                .clipShape(.rect(cornerRadius: 14))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(AppTheme.errorRed.opacity(0.3), lineWidth: 1)
+                }
+            }
+            .disabled(isDeleting)
+            .alert(
+                "Delete your account?",
+                isPresented: $showDeleteConfirm
+            ) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) {
+                    Task { await deleteAccount() }
+                }
+            } message: {
+                Text("This permanently removes your profile, posts, friends, and chats. This can't be undone.")
+            }
+
+            if !deleteError.isEmpty {
+                Text(deleteError)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.errorRed)
+                    .multilineTextAlignment(.center)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -614,6 +661,19 @@ struct ProfileHomeView: View {
             try authService.signOut()
         } catch {
             signOutError = error.localizedDescription
+        }
+    }
+
+    private func deleteAccount() async {
+        deleteError = ""
+        isDeleting = true
+        defer { isDeleting = false }
+        do {
+            try await authService.deleteAccount()
+            // Success — auth listener flips currentUser to nil and
+            // ContentView routes back to LoginView automatically.
+        } catch {
+            deleteError = error.localizedDescription
         }
     }
 

@@ -782,3 +782,129 @@ exports.findOrCreatePlace = onCall(
     return { placeId: newRef.id, placeName: cleanName, created: true };
   },
 );
+
+// ─── Account deletion cascade ────────────────────────────────────────────
+// Required by App Store Guideline 5.1.1(v): apps that create accounts must
+// offer an in-app delete that *actually* removes data. The iOS client calls
+// this callable, then `Auth.auth().currentUser.delete()` to nuke the Firebase
+// Auth user itself. This function must complete before the auth user is
+// deleted because admin SDK calls outlive the user's auth state but the
+// client doesn't.
+//
+// Cascade order (each step idempotent so partial failures are safe to retry):
+//   1. Free the username reservation (so it can be re-claimed).
+//   2. Delete posts authored by uid + their reactions subcollections.
+//   3. Delete conversations the user participated in + every message.
+//   4. Delete both sides of every friendship edge.
+//   5. Delete FCM tokens subcollection.
+//   6. Delete the user doc itself.
+//   7. Delete Storage objects under avatars/{uid}/ and social/{uid}/.
+//
+// Timeout bumped to 540s (max for callable v2) — a heavy user could have
+// thousands of messages + posts. The function streams batches of 400 to
+// stay under Firestore's 500-op batch limit.
+exports.deleteMyAccount = onCall(
+  { timeoutSeconds: 540, memory: "512MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+
+    const db = admin.firestore();
+    const storage = admin.storage();
+
+    // 1. Free the username reservation. Reading the user doc first so
+    //    we know which `usernames/{lower}` doc to free.
+    const userRef = db.collection("users").doc(uid);
+    const userSnap = await userRef.get();
+    const usernameLower = userSnap.data()?.usernameLower;
+
+    // Helper: chunk delete a list of doc refs using batched commits.
+    async function deleteAll(refs) {
+      let batch = db.batch();
+      let n = 0;
+      for (const ref of refs) {
+        batch.delete(ref);
+        n++;
+        if (n >= 400) {
+          await batch.commit();
+          batch = db.batch();
+          n = 0;
+        }
+      }
+      if (n > 0) await batch.commit();
+    }
+
+    // 2. Delete posts authored by uid + reactions subcollections.
+    const postsSnap = await db.collection("posts")
+      .where("authorId", "==", uid)
+      .get();
+    for (const postDoc of postsSnap.docs) {
+      const reactionsSnap = await postDoc.ref.collection("reactions").get();
+      await deleteAll(reactionsSnap.docs.map((d) => d.ref));
+      await postDoc.ref.delete();
+    }
+    logger.info(`[deleteMyAccount] ${uid}: deleted ${postsSnap.size} posts`);
+
+    // 3. Conversations + nested messages. participantIds array-contains
+    //    is the canonical "I'm in this conversation" query.
+    const convsSnap = await db.collection("conversations")
+      .where("participantIds", "array-contains", uid)
+      .get();
+    for (const convDoc of convsSnap.docs) {
+      const messagesSnap = await convDoc.ref.collection("messages").get();
+      await deleteAll(messagesSnap.docs.map((d) => d.ref));
+      await convDoc.ref.delete();
+    }
+    logger.info(`[deleteMyAccount] ${uid}: deleted ${convsSnap.size} conversations`);
+
+    // 4. Both sides of every friend edge.
+    const friendsSnap = await userRef.collection("friends").get();
+    const friendUids = friendsSnap.docs.map((d) => d.id);
+    const friendRefs = [
+      ...friendsSnap.docs.map((d) => d.ref),
+      ...friendUids.map((other) =>
+        db.collection("users").doc(other).collection("friends").doc(uid)),
+    ];
+    await deleteAll(friendRefs);
+    logger.info(`[deleteMyAccount] ${uid}: removed ${friendUids.length} friend edges`);
+
+    // 5. FCM tokens — also tidied up locally before the call, but cover
+    //    the case where the client lost connectivity mid-delete.
+    const tokensSnap = await userRef.collection("fcmTokens").get();
+    await deleteAll(tokensSnap.docs.map((d) => d.ref));
+
+    // 6. Pending friend requests (both directions).
+    const inboundRequests = await db.collection("friendRequests")
+      .where("toUid", "==", uid)
+      .get();
+    const outboundRequests = await db.collection("friendRequests")
+      .where("fromUid", "==", uid)
+      .get();
+    await deleteAll([
+      ...inboundRequests.docs.map((d) => d.ref),
+      ...outboundRequests.docs.map((d) => d.ref),
+    ]);
+
+    // 7. Free the username and then delete the user doc itself.
+    if (usernameLower) {
+      await db.collection("usernames").doc(usernameLower).delete();
+    }
+    await userRef.delete();
+
+    // 8. Storage. deleteFiles({ prefix }) handles paginated listing for us.
+    //    Errors from missing folders are non-fatal.
+    try {
+      await storage.bucket().deleteFiles({ prefix: `avatars/${uid}/` });
+    } catch (e) {
+      logger.warn(`[deleteMyAccount] ${uid}: avatars cleanup: ${e.message}`);
+    }
+    try {
+      await storage.bucket().deleteFiles({ prefix: `social/${uid}/` });
+    } catch (e) {
+      logger.warn(`[deleteMyAccount] ${uid}: social cleanup: ${e.message}`);
+    }
+
+    logger.info(`[deleteMyAccount] ${uid}: cascade complete`);
+    return { ok: true };
+  },
+);
