@@ -27,6 +27,7 @@ struct ProfileHomeView: View {
     @State private var pendingChat: PendingChat?
     @State private var isBackfilling       = false
     @State private var backfillMessage     = ""
+    @State private var signOutError       = ""
 
     // MARK: - Computed helpers
 
@@ -45,14 +46,13 @@ struct ProfileHomeView: View {
 
     private var daysActive: Int {
         guard let created = user?.metadata.creationDate else { return 1 }
-        return max(1, Calendar.current.dateComponents([.day], from: created, to: Date()).day ?? 1)
+        return max(1, Calendar.current.dateComponents([.day], from: created, to: Date.now).day ?? 1)
     }
 
     private var huntingSinceText: String {
         guard let created = user?.metadata.creationDate else { return "" }
-        let f = DateFormatter()
-        f.dateFormat = "MMM yyyy"
-        return "Hunting since \(f.string(from: created))"
+        let formatted = created.formatted(.dateTime.month(.abbreviated).year())
+        return "Hunting since \(formatted)"
     }
 
     // Build chronological milestone cards from unlocked achievements
@@ -79,7 +79,7 @@ struct ProfileHomeView: View {
     private func isUnlocked(_ achievement: Achievement) -> Bool {
         if achievement.id == "anniversary" {
             guard let created = user?.metadata.creationDate else { return false }
-            return Date().timeIntervalSince(created) >= 365 * 24 * 3600
+            return Date.now.timeIntervalSince(created) >= 365 * 24 * 3600
         }
         return statsService.stats.unlockedAchievements[achievement.id] != nil
             || achievement.condition(statsService.stats)
@@ -199,7 +199,7 @@ struct ProfileHomeView: View {
                         avatarView
                             .frame(width: 100, height: 100)
                             .clipShape(Circle())
-                            .overlay(
+                            .overlay {
                                 Circle().stroke(
                                     LinearGradient(
                                         colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
@@ -208,64 +208,67 @@ struct ProfileHomeView: View {
                                     ),
                                     lineWidth: 3
                                 )
-                            )
+                            }
                             .shadow(color: AppTheme.cafeAccent.opacity(0.45), radius: 18)
 
                         Circle()
                             .fill(AppTheme.cafeAccent)
                             .frame(width: 28, height: 28)
-                            .overlay(
+                            .overlay {
                                 Image(systemName: "camera.fill")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.white)
-                            )
+                                    .font(.caption).bold()
+                                    .foregroundStyle(.white)
+                            }
                             .shadow(color: AppTheme.cafeAccent.opacity(0.6), radius: 6)
                             .offset(x: 2, y: 2)
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Edit profile photo")
 
                 Text(displayName)
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundColor(AppTheme.cream)
+                    .font(.title2).bold()
+                    .foregroundStyle(AppTheme.cream)
 
                 Text(usernameLine)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(AppTheme.cream.opacity(0.45))
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.cream.opacity(0.45))
 
                 if !huntingSinceText.isEmpty {
                     Text(huntingSinceText)
-                        .font(.system(size: 11))
-                        .foregroundColor(AppTheme.cream.opacity(0.3))
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.cream.opacity(0.3))
                 }
 
                 // Share username if set
                 if let name = socialService.profile?.username, !name.isEmpty {
                     ShareLink(item: "Add me on CafeHunter: @\(name)") {
                         Label("Share", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(AppTheme.cafeAccent)
+                            .font(.caption).bold()
+                            .foregroundStyle(AppTheme.cafeAccent)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 6)
                             .background(AppTheme.cafeAccent.opacity(0.1))
-                            .cornerRadius(20)
-                            .overlay(RoundedRectangle(cornerRadius: 20)
-                                .stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1))
+                            .clipShape(.rect(cornerRadius: 20))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 20)
+                                    .stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
+                            }
                     }
                 }
 
                 Button { showEditProfile = true } label: {
                     Text("Edit Profile")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(AppTheme.cafeAccent)
+                        .font(.footnote).bold()
+                        .foregroundStyle(AppTheme.cafeAccent)
                         .padding(.horizontal, 22)
                         .padding(.vertical, 8)
                         .background(AppTheme.cafeAccent.opacity(0.12))
-                        .cornerRadius(20)
-                        .overlay(
+                        .clipShape(.rect(cornerRadius: 20))
+                        .overlay {
                             RoundedRectangle(cornerRadius: 20)
                                 .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                        )
+                        }
                 }
 
                 Spacer().frame(height: 28)
@@ -300,8 +303,8 @@ struct ProfileHomeView: View {
                 endPoint: .bottomTrailing
             )
             Text(initials)
-                .font(.system(size: 34, weight: .bold))
-                .foregroundColor(AppTheme.cream)
+                .font(.largeTitle).bold()
+                .foregroundStyle(AppTheme.cream)
         }
     }
 
@@ -325,6 +328,7 @@ struct ProfileHomeView: View {
                 ProfileStatCell(value: "\(socialService.friendIds.count)", label: "Friends", icon: "👥")
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Open friend list")
         }
         .padding(.horizontal, 16)
         .padding(.top, 20)
@@ -342,36 +346,36 @@ struct ProfileHomeView: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("@\(req.fromUsername)")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(AppTheme.cream)
+                            .font(.subheadline).bold()
+                            .foregroundStyle(AppTheme.cream)
                         Text("wants to connect")
-                            .font(.system(size: 11))
-                            .foregroundColor(AppTheme.cream.opacity(0.45))
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cream.opacity(0.45))
                     }
                     Spacer()
                     Button("Decline") {
                         Task { try? await socialService.rejectRequest(req) }
                     }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(AppTheme.cream.opacity(0.5))
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.cream.opacity(0.5))
 
                     Button("Accept") {
                         Task { try? await socialService.acceptRequest(req) }
                     }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white)
+                    .font(.caption).bold()
+                    .foregroundStyle(.white)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(AppTheme.cafeAccent)
-                    .cornerRadius(10)
+                    .clipShape(.rect(cornerRadius: 10))
                 }
                 .padding(14)
                 .background(AppTheme.cream.opacity(0.05))
-                .cornerRadius(14)
-                .overlay(
+                .clipShape(.rect(cornerRadius: 14))
+                .overlay {
                     RoundedRectangle(cornerRadius: 14)
                         .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1)
-                )
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -388,35 +392,37 @@ struct ProfileHomeView: View {
                 TextField("username", text: $addFriendQuery)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.system(size: 14))
-                    .foregroundColor(AppTheme.cream)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.cream)
                     .tint(AppTheme.cafeAccent)
                     .padding(12)
                     .background(AppTheme.cream.opacity(0.06))
-                    .cornerRadius(12)
-                    .overlay(RoundedRectangle(cornerRadius: 12)
-                        .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1))
+                    .clipShape(.rect(cornerRadius: 12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1)
+                    }
 
                 Button {
                     Task { await sendFriendRequest() }
                 } label: {
                     Text("Add")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
+                        .font(.footnote).bold()
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
                         .background(friendBusy
                                     ? AppTheme.cafeAccent.opacity(0.4)
                                     : AppTheme.cafeAccent)
-                        .cornerRadius(12)
+                        .clipShape(.rect(cornerRadius: 12))
                 }
                 .disabled(friendBusy || addFriendQuery.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
             if !friendMessage.isEmpty {
                 Text(friendMessage)
-                    .font(.system(size: 12))
-                    .foregroundColor(friendMessage.contains("Sent")
+                    .font(.caption)
+                    .foregroundStyle(friendMessage.contains("Sent")
                                      ? AppTheme.successGreen
                                      : AppTheme.errorRed)
             }
@@ -432,16 +438,16 @@ struct ProfileHomeView: View {
             VStack(alignment: .leading, spacing: 6) {
                 sectionHeader("YOUR STORY SO FAR")
                 Text("Milestones from your hunt and achievements — not your Hero feed posts.")
-                    .font(.system(size: 11))
-                    .foregroundColor(AppTheme.cream.opacity(0.35))
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.cream.opacity(0.35))
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 16)
 
             if milestones.isEmpty {
                 Text("Your story is just beginning —\ngo find your first spot! ☕")
-                    .font(.system(size: 13))
-                    .foregroundColor(AppTheme.cream.opacity(0.4))
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.cream.opacity(0.4))
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
@@ -477,11 +483,15 @@ struct ProfileHomeView: View {
                 spacing: 16
             ) {
                 ForEach(Achievement.definitions) { achievement in
-                    AchievementBadge(
-                        achievement: achievement,
-                        isUnlocked:  isUnlocked(achievement)
-                    )
-                    .onTapGesture { selectedAchievement = achievement }
+                    Button {
+                        selectedAchievement = achievement
+                    } label: {
+                        AchievementBadge(
+                            achievement: achievement,
+                            isUnlocked:  isUnlocked(achievement)
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -496,20 +506,20 @@ struct ProfileHomeView: View {
             if authService.isAdmin {
                 HStack {
                     Image(systemName: "star.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(AppTheme.cafeAccent)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.cafeAccent)
                     Text("Admin Account")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(AppTheme.cafeAccent)
+                        .font(.caption).bold()
+                        .foregroundStyle(AppTheme.cafeAccent)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
                 .background(AppTheme.cafeAccent.opacity(0.1))
-                .cornerRadius(20)
-                .overlay(
+                .clipShape(.rect(cornerRadius: 20))
+                .overlay {
                     RoundedRectangle(cornerRadius: 20)
                         .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                )
+                }
             }
 
             // Anyone can recompute their own Phase 5 counters. Useful for
@@ -518,20 +528,25 @@ struct ProfileHomeView: View {
             // grid without waiting for new history to accumulate.
             backfillStatsButton
 
-            Button {
-                try? authService.signOut()
-            } label: {
+            Button(action: signOut) {
                 Text("Sign out")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(AppTheme.cafeAccent)
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cafeAccent)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
                     .background(AppTheme.cafeAccent.opacity(0.10))
-                    .cornerRadius(14)
-                    .overlay(
+                    .clipShape(.rect(cornerRadius: 14))
+                    .overlay {
                         RoundedRectangle(cornerRadius: 14)
                             .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                    )
+                    }
+            }
+
+            if !signOutError.isEmpty {
+                Text(signOutError)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.errorRed)
+                    .multilineTextAlignment(.center)
             }
         }
         .padding(.horizontal, 16)
@@ -539,19 +554,27 @@ struct ProfileHomeView: View {
         .padding(.bottom, 12)
     }
 
+    private func signOut() {
+        do {
+            try authService.signOut()
+        } catch {
+            signOutError = error.localizedDescription
+        }
+    }
+
     // MARK: - Section header helper
 
     private func sectionHeader(_ title: String, trailing: String? = nil) -> some View {
         HStack {
             Text(title)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2).bold()
                 .tracking(2)
-                .foregroundColor(AppTheme.cream.opacity(0.35))
+                .foregroundStyle(AppTheme.cream.opacity(0.35))
             Spacer()
             if let t = trailing {
                 Text(t)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(AppTheme.cafeAccent)
+                    .font(.caption2).bold()
+                    .foregroundStyle(AppTheme.cafeAccent)
             }
         }
     }
@@ -566,28 +589,28 @@ struct ProfileHomeView: View {
                         ProgressView().scaleEffect(0.7)
                     } else {
                         Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.caption).bold()
                     }
                     Text(isBackfilling ? "Recomputing…" : "Recompute achievements")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.caption).bold()
                 }
-                .foregroundColor(AppTheme.cream.opacity(0.55))
+                .foregroundStyle(AppTheme.cream.opacity(0.55))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
                 .background(AppTheme.cream.opacity(0.04))
-                .cornerRadius(20)
-                .overlay(
+                .clipShape(.rect(cornerRadius: 20))
+                .overlay {
                     RoundedRectangle(cornerRadius: 20)
                         .stroke(AppTheme.cream.opacity(0.10), lineWidth: 1)
-                )
+                }
             }
             .buttonStyle(.plain)
             .disabled(isBackfilling)
 
             if !backfillMessage.isEmpty {
                 Text(backfillMessage)
-                    .font(.system(size: 10))
-                    .foregroundColor(AppTheme.cream.opacity(0.5))
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.cream.opacity(0.5))
             }
         }
     }
@@ -670,22 +693,22 @@ private struct ProfileStatCell: View {
 
     var body: some View {
         VStack(spacing: 5) {
-            Text(icon).font(.system(size: 18))
+            Text(icon).font(.title3)
             Text(value)
-                .font(.system(size: 22, weight: .bold))
-                .foregroundColor(AppTheme.cream)
+                .font(.title2).bold()
+                .foregroundStyle(AppTheme.cream)
             Text(label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(AppTheme.cream.opacity(0.4))
+                .font(.caption2)
+                .foregroundStyle(AppTheme.cream.opacity(0.4))
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
         .background(AppTheme.cream.opacity(0.04))
-        .cornerRadius(14)
-        .overlay(
+        .clipShape(.rect(cornerRadius: 14))
+        .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(AppTheme.cafeAccent.opacity(0.14), lineWidth: 1)
-        )
+        }
     }
 }
 
@@ -704,30 +727,24 @@ struct MilestoneItem: Identifiable {
 private struct StoryCard: View {
     let item: MilestoneItem
 
-    private var dateText: String {
-        let f = DateFormatter()
-        f.dateFormat = "d MMM yyyy"
-        return f.string(from: item.date)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(item.icon)
-                .font(.system(size: 32))
+                .font(.largeTitle)
 
             Spacer()
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(AppTheme.cream)
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cream)
                 Text(item.description)
-                    .font(.system(size: 11))
-                    .foregroundColor(AppTheme.cream.opacity(0.55))
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.cream.opacity(0.55))
                     .lineLimit(2)
-                Text(dateText)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(AppTheme.cafeAccent.opacity(0.8))
+                Text(item.date, format: .dateTime.day().month(.abbreviated).year())
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.cafeAccent.opacity(0.8))
             }
         }
         .padding(16)
@@ -742,11 +759,11 @@ private struct StoryCard: View {
                 endPoint: .bottomTrailing
             )
         )
-        .cornerRadius(16)
-        .overlay(
+        .clipShape(.rect(cornerRadius: 16))
+        .overlay {
             RoundedRectangle(cornerRadius: 16)
                 .stroke(AppTheme.cafeAccent.opacity(0.18), lineWidth: 1)
-        )
+        }
     }
 }
 
@@ -756,21 +773,22 @@ private struct StoryTeaserCard: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "sparkles")
-                .font(.system(size: 26))
-                .foregroundColor(AppTheme.cafeAccent.opacity(0.5))
+                .font(.title2)
+                .foregroundStyle(AppTheme.cafeAccent.opacity(0.5))
+                .accessibilityHidden(true)
             Text("More milestones\nawaiting you ✨")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(AppTheme.cream.opacity(0.35))
+                .font(.caption2)
+                .foregroundStyle(AppTheme.cream.opacity(0.35))
                 .multilineTextAlignment(.center)
         }
         .frame(width: 148, height: 160)
         .background(AppTheme.cream.opacity(0.03))
-        .cornerRadius(16)
-        .overlay(
+        .clipShape(.rect(cornerRadius: 16))
+        .overlay {
             RoundedRectangle(cornerRadius: 16)
                 .stroke(AppTheme.cream.opacity(0.07), lineWidth: 1)
                 .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
-        )
+        }
     }
 }
 
@@ -788,14 +806,14 @@ struct AchievementBadge: View {
                           ? AppTheme.cafeAccent.opacity(0.15)
                           : AppTheme.cream.opacity(0.04))
                     .frame(width: 64, height: 64)
-                    .overlay(
+                    .overlay {
                         Circle().stroke(
                             isUnlocked
                                 ? AppTheme.cafeAccent.opacity(0.55)
                                 : AppTheme.cream.opacity(0.08),
                             lineWidth: isUnlocked ? 2 : 1
                         )
-                    )
+                    }
                     .shadow(
                         color: isUnlocked ? AppTheme.cafeAccent.opacity(0.35) : .clear,
                         radius: 10
@@ -803,17 +821,17 @@ struct AchievementBadge: View {
 
                 if isUnlocked {
                     Text(achievement.icon)
-                        .font(.system(size: 28))
+                        .font(.title)
                 } else {
                     Image(systemName: "lock.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(AppTheme.cream.opacity(0.18))
+                        .font(.title3)
+                        .foregroundStyle(AppTheme.cream.opacity(0.18))
                 }
             }
 
             Text(achievement.title)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(isUnlocked ? AppTheme.cream : AppTheme.cream.opacity(0.28))
+                .font(.caption2)
+                .foregroundStyle(isUnlocked ? AppTheme.cream : AppTheme.cream.opacity(0.28))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -848,65 +866,60 @@ struct AchievementDetailSheet: View {
                               ? AppTheme.cafeAccent.opacity(0.15)
                               : AppTheme.cream.opacity(0.05))
                         .frame(width: 108, height: 108)
-                        .overlay(
+                        .overlay {
                             Circle().stroke(
                                 isUnlocked
                                     ? AppTheme.cafeAccent.opacity(0.55)
                                     : AppTheme.cream.opacity(0.1),
                                 lineWidth: 2
                             )
-                        )
+                        }
                         .shadow(
                             color: isUnlocked ? AppTheme.cafeAccent.opacity(0.45) : .clear,
                             radius: 22
                         )
 
                     if isUnlocked {
-                        Text(achievement.icon).font(.system(size: 48))
+                        Text(achievement.icon).font(.largeTitle)
                     } else {
                         Image(systemName: "lock.fill")
-                            .font(.system(size: 36))
-                            .foregroundColor(AppTheme.cream.opacity(0.2))
+                            .font(.largeTitle)
+                            .foregroundStyle(AppTheme.cream.opacity(0.2))
                     }
                 }
 
                 Spacer().frame(height: 24)
 
                 Text(achievement.title)
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundColor(AppTheme.cream)
+                    .font(.title2).bold()
+                    .foregroundStyle(AppTheme.cream)
 
                 Spacer().frame(height: 8)
 
                 Text(isUnlocked ? achievement.flavourText : achievement.subtitle)
-                    .font(.system(size: 14))
-                    .foregroundColor(AppTheme.cream.opacity(0.55))
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.cream.opacity(0.55))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
 
                 Spacer().frame(height: 20)
 
                 if let date = unlockedDate {
-                    let f: DateFormatter = {
-                        let df = DateFormatter()
-                        df.dateFormat = "d MMM yyyy"
-                        return df
-                    }()
-                    Text("Unlocked \(f.string(from: date))")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(AppTheme.cafeAccent)
+                    Text("Unlocked \(date.formatted(.dateTime.day().month(.abbreviated).year()))")
+                        .font(.caption2).bold()
+                        .foregroundStyle(AppTheme.cafeAccent)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .background(AppTheme.cafeAccent.opacity(0.12))
-                        .cornerRadius(20)
-                        .overlay(
+                        .clipShape(.rect(cornerRadius: 20))
+                        .overlay {
                             RoundedRectangle(cornerRadius: 20)
                                 .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                        )
+                        }
                 } else {
                     Text("How to unlock: \(achievement.subtitle)")
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.cream.opacity(0.35))
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.cream.opacity(0.35))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
                 }
