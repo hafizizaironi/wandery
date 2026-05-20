@@ -13,6 +13,7 @@ struct EditProfileView: View {
     @State private var pendingImage: UIImage?
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @AccessibilityFocusState private var errorFocused: Bool
 
     init(user: FirebaseAuth.User, authService: AuthService, onClose: @escaping () -> Void) {
         self.user        = user
@@ -30,7 +31,7 @@ struct EditProfileView: View {
             HStack {
                 Button("Cancel") { onClose() }
                     .font(.subheadline)
-                    .foregroundStyle(AppTheme.cream.opacity(0.55))
+                    .contrastAware(AppTheme.cream, opacity: 0.55)
 
                 Spacer()
 
@@ -108,7 +109,7 @@ struct EditProfileView: View {
                         Text("DISPLAY NAME")
                             .font(.caption2).bold()
                             .tracking(2)
-                            .foregroundStyle(AppTheme.cream.opacity(0.35))
+                            .contrastAware(AppTheme.cream, opacity: 0.35)
 
                         TextField("Your name", text: $displayName)
                             .font(.callout)
@@ -130,6 +131,7 @@ struct EditProfileView: View {
                             .foregroundStyle(AppTheme.errorRed)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 8)
+                            .accessibilityFocused($errorFocused)
                     }
                 }
                 .padding(.horizontal, 24)
@@ -202,6 +204,7 @@ struct EditProfileView: View {
                 await MainActor.run {
                     errorMessage = error.localizedDescription
                     isSaving     = false
+                    errorFocused = true
                 }
             }
         }

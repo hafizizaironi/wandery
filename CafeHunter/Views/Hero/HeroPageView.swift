@@ -344,8 +344,20 @@ struct HeroPageView: View {
         .onPreferenceChange(ReplyPillFramesKey.self) { newValue in
             replyPillFrames.merge(newValue) { _, new in new }
         }
-        .animation(.spring(response: 0.32, dampingFraction: 0.78), value: showInbox)
-        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: pendingChat?.id)
+        .animation(
+            .motionRespecting(
+                .spring(response: 0.32, dampingFraction: 0.78),
+                reduceMotion: reduceMotion
+            ),
+            value: showInbox
+        )
+        .animation(
+            .motionRespecting(
+                .spring(response: 0.28, dampingFraction: 0.86),
+                reduceMotion: reduceMotion
+            ),
+            value: pendingChat?.id
+        )
         // Spring-driven flag the shell observes to slide the arc navbar away.
         .onChange(of: showInbox) { _, _ in syncChatActiveFlag() }
         .onChange(of: pendingChat?.id) { _, _ in syncChatActiveFlag() }
@@ -770,7 +782,7 @@ struct HeroPageView: View {
             VStack(spacing: 8) {
                 Text("@\(post.authorUsername)")
                     .font(.footnote).bold()
-                    .foregroundStyle(AppTheme.cream.opacity(0.85))
+                    .contrastAware(AppTheme.cream, opacity: 0.85)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
 
@@ -1398,14 +1410,14 @@ struct HeroPageView: View {
             Image(systemName: "camera.fill")
                 .symbolVariant(.slash)
                 .font(.system(size: 48, weight: .light))
-                .foregroundStyle(AppTheme.cream.opacity(0.5))
+                .contrastAware(AppTheme.cream, opacity: 0.5)
                 .accessibilityHidden(true)
             Text("Camera Access Needed")
                 .font(.title3).bold()
                 .foregroundStyle(AppTheme.cream)
             Text("Allow camera access so you can share cafe moments.")
                 .font(.subheadline)
-                .foregroundStyle(AppTheme.cream.opacity(0.6))
+                .contrastAware(AppTheme.cream, opacity: 0.6)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
             Button {

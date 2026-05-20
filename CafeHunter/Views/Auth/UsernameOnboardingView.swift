@@ -7,6 +7,7 @@ struct UsernameOnboardingView: View {
     @State private var username = ""
     @State private var isSaving = false
     @State private var errorMessage = ""
+    @AccessibilityFocusState private var errorFocused: Bool
 
     var body: some View {
         ZStack {
@@ -34,6 +35,7 @@ struct UsernameOnboardingView: View {
                     Text(errorMessage)
                         .font(.footnote)
                         .foregroundStyle(AppTheme.errorRed)
+                        .accessibilityFocused($errorFocused)
                 }
 
                 Button {
@@ -82,8 +84,10 @@ struct UsernameOnboardingView: View {
             try await socialService.reserveUsername(username)
         } catch let e as SocialError {
             errorMessage = e.localizedDescription
+            errorFocused = true
         } catch {
             errorMessage = error.localizedDescription
+            errorFocused = true
         }
     }
 }

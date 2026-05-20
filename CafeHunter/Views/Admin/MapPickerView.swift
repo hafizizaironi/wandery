@@ -46,6 +46,8 @@ struct MapPickerView: View {
                             .overlay {
                                 Circle().stroke(AppTheme.glassStroke, lineWidth: 1)
                             }
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .padding(.leading, 16)
                     .padding(.top, 56)

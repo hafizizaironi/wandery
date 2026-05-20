@@ -29,6 +29,8 @@ struct MainShellView: View {
     /// the user on a specific Hero feed post. HeroPageView consumes it.
     @State private var pendingHeroJumpPostId: String?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottom) {
@@ -94,7 +96,13 @@ struct MainShellView: View {
                 .scaleEffect(navbarHidden ? 0.92 : 1.0, anchor: .bottom)
                 .blur(radius: navbarHidden ? 6 : 0)
                 .allowsHitTesting(!navbarHidden)
-                .animation(.spring(response: 0.5, dampingFraction: 0.78), value: navbarHidden)
+                .animation(
+                    .motionRespecting(
+                        .spring(response: 0.5, dampingFraction: 0.78),
+                        reduceMotion: reduceMotion
+                    ),
+                    value: navbarHidden
+                )
                 .zIndex(10)
             }
         }

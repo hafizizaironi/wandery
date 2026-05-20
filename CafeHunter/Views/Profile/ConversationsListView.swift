@@ -13,6 +13,8 @@ struct ConversationsListView: View {
     /// host scroll the feed to the referenced post.
     var onJumpToPost: ((String) -> Void)?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @State private var profileLoader = FriendListLoader()
     @State private var openConvId: String?
     @State private var openOtherUid: String?
@@ -76,7 +78,13 @@ struct ConversationsListView: View {
                 .zIndex(1)
             }
         }
-        .animation(.spring(response: 0.26, dampingFraction: 0.86), value: openConvId)
+        .animation(
+            .motionRespecting(
+                .spring(response: 0.26, dampingFraction: 0.86),
+                reduceMotion: reduceMotion
+            ),
+            value: openConvId
+        )
     }
 
     private var header: some View {
@@ -93,12 +101,15 @@ struct ConversationsListView: View {
             Spacer()
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(AppTheme.cream.opacity(0.7))
+                    .font(.footnote).bold()
+                    .foregroundStyle(AppTheme.cream.opacity(0.7))
                     .frame(width: 32, height: 32)
                     .background(Circle().fill(AppTheme.cream.opacity(0.08)))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close")
         }
         .padding(.horizontal, 18)
         // The inbox is full-screen + ignoresSafeArea, so this top padding
@@ -144,6 +155,7 @@ struct ConversationsListView: View {
             HStack(spacing: 12) {
                 ConversationAvatar(row: other)
                     .frame(width: 40, height: 40)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {

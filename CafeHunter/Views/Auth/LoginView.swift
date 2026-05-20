@@ -10,6 +10,7 @@ struct LoginView: View {
     @State private var name = ""
     @State private var errorMessage = ""
     @State private var isLoading = false
+    @AccessibilityFocusState private var errorFocused: Bool
 
     var body: some View {
         ZStack {
@@ -88,6 +89,7 @@ struct LoginView: View {
                                     .font(.caption)
                                     .foregroundStyle(AppTheme.errorRed)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityFocused($errorFocused)
                             }
 
                             Button {
@@ -152,6 +154,7 @@ struct LoginView: View {
             try await authService.signInWithGoogle()
         } catch {
             errorMessage = error.localizedDescription
+            errorFocused = true
         }
         isLoading = false
     }
@@ -160,10 +163,12 @@ struct LoginView: View {
         errorMessage = ""
         if mode == .signup, name.trimmingCharacters(in: .whitespaces).count < 2 {
             errorMessage = "Please enter your name."
+            errorFocused = true
             return
         }
         guard password.count >= 6 else {
             errorMessage = "Password must be at least 6 characters."
+            errorFocused = true
             return
         }
         isLoading = true
@@ -175,6 +180,7 @@ struct LoginView: View {
             }
         } catch {
             errorMessage = friendlyFirebaseError(error)
+            errorFocused = true
         }
         isLoading = false
     }

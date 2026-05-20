@@ -21,6 +21,7 @@ struct ProfileHomeView: View {
     var onJumpToHeroPost: (String) -> Void = { _ in }
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var showEditProfile     = false
     @State private var selectedAchievement: Achievement?
@@ -175,7 +176,13 @@ struct ProfileHomeView: View {
                 .zIndex(40)
             }
         }
-        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: pendingChat?.id)
+        .animation(
+            .motionRespecting(
+                .spring(response: 0.28, dampingFraction: 0.86),
+                reduceMotion: reduceMotion
+            ),
+            value: pendingChat?.id
+        )
         // Pre-hydrate friend profiles while the user is still on the
         // profile page, so opening the Friends panel feels instant
         // instead of "tap → spinner → list".
@@ -259,12 +266,12 @@ struct ProfileHomeView: View {
 
                 Text(usernameLine)
                     .font(.footnote)
-                    .foregroundStyle(AppTheme.cream.opacity(0.45))
+                    .contrastAware(AppTheme.cream, opacity: 0.45)
 
                 if !huntingSinceText.isEmpty {
                     Text(huntingSinceText)
                         .font(.caption2)
-                        .foregroundStyle(AppTheme.cream.opacity(0.3))
+                        .contrastAware(AppTheme.cream, opacity: 0.3)
                 }
 
                 // Share username if set
@@ -377,14 +384,14 @@ struct ProfileHomeView: View {
                             .foregroundStyle(AppTheme.cream)
                         Text("wants to connect")
                             .font(.caption2)
-                            .foregroundStyle(AppTheme.cream.opacity(0.45))
+                            .contrastAware(AppTheme.cream, opacity: 0.45)
                     }
                     Spacer()
                     Button("Decline") {
                         Task { try? await socialService.rejectRequest(req) }
                     }
                     .font(.caption)
-                    .foregroundStyle(AppTheme.cream.opacity(0.5))
+                    .contrastAware(AppTheme.cream, opacity: 0.5)
 
                     Button("Accept") {
                         Task { try? await socialService.acceptRequest(req) }
@@ -466,7 +473,7 @@ struct ProfileHomeView: View {
                 sectionHeader("YOUR STORY SO FAR")
                 Text("Milestones from your hunt and achievements — not your Hero feed posts.")
                     .font(.caption2)
-                    .foregroundStyle(AppTheme.cream.opacity(0.35))
+                    .contrastAware(AppTheme.cream, opacity: 0.35)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 16)
@@ -474,7 +481,7 @@ struct ProfileHomeView: View {
             if milestones.isEmpty {
                 Text("Your story is just beginning —\ngo find your first spot! ☕")
                     .font(.footnote)
-                    .foregroundStyle(AppTheme.cream.opacity(0.4))
+                    .contrastAware(AppTheme.cream, opacity: 0.4)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
@@ -596,7 +603,8 @@ struct ProfileHomeView: View {
             Text(title)
                 .font(.caption2).bold()
                 .tracking(2)
-                .foregroundStyle(AppTheme.cream.opacity(0.35))
+                .contrastAware(AppTheme.cream, opacity: 0.35)
+                .accessibilityAddTraits(.isHeader)
             Spacer()
             if let t = trailing {
                 Text(t)
@@ -621,7 +629,7 @@ struct ProfileHomeView: View {
                     Text(isBackfilling ? "Recomputing…" : "Recompute achievements")
                         .font(.caption).bold()
                 }
-                .foregroundStyle(AppTheme.cream.opacity(0.55))
+                .contrastAware(AppTheme.cream, opacity: 0.55)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
                 .background(AppTheme.cream.opacity(0.04))
@@ -637,7 +645,7 @@ struct ProfileHomeView: View {
             if !backfillMessage.isEmpty {
                 Text(backfillMessage)
                     .font(.caption2)
-                    .foregroundStyle(AppTheme.cream.opacity(0.5))
+                    .contrastAware(AppTheme.cream, opacity: 0.5)
             }
         }
     }
@@ -745,7 +753,7 @@ private struct ProfileStatCell: View {
                 .foregroundStyle(AppTheme.cream)
             Text(label)
                 .font(.caption2)
-                .foregroundStyle(AppTheme.cream.opacity(0.4))
+                .contrastAware(AppTheme.cream, opacity: 0.4)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
@@ -786,7 +794,7 @@ private struct StoryCard: View {
                     .foregroundStyle(AppTheme.cream)
                 Text(item.description)
                     .font(.caption2)
-                    .foregroundStyle(AppTheme.cream.opacity(0.55))
+                    .contrastAware(AppTheme.cream, opacity: 0.55)
                     .lineLimit(2)
                 Text(item.date, format: .dateTime.day().month(.abbreviated).year())
                     .font(.caption2)
@@ -824,7 +832,7 @@ private struct StoryTeaserCard: View {
                 .accessibilityHidden(true)
             Text("More milestones\nawaiting you ✨")
                 .font(.caption2)
-                .foregroundStyle(AppTheme.cream.opacity(0.35))
+                .contrastAware(AppTheme.cream, opacity: 0.35)
                 .multilineTextAlignment(.center)
         }
         .frame(width: 148, height: 160)
@@ -871,7 +879,7 @@ struct AchievementBadge: View {
                 } else {
                     Image(systemName: "lock.fill")
                         .font(.title3)
-                        .foregroundStyle(AppTheme.cream.opacity(0.18))
+                        .contrastAware(AppTheme.cream, opacity: 0.18)
                 }
             }
 
@@ -930,7 +938,7 @@ struct AchievementDetailSheet: View {
                     } else {
                         Image(systemName: "lock.fill")
                             .font(.largeTitle)
-                            .foregroundStyle(AppTheme.cream.opacity(0.2))
+                            .contrastAware(AppTheme.cream, opacity: 0.2)
                     }
                 }
 
@@ -944,7 +952,7 @@ struct AchievementDetailSheet: View {
 
                 Text(isUnlocked ? achievement.flavourText : achievement.subtitle)
                     .font(.subheadline)
-                    .foregroundStyle(AppTheme.cream.opacity(0.55))
+                    .contrastAware(AppTheme.cream, opacity: 0.55)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
 
@@ -965,7 +973,7 @@ struct AchievementDetailSheet: View {
                 } else {
                     Text("How to unlock: \(achievement.subtitle)")
                         .font(.caption)
-                        .foregroundStyle(AppTheme.cream.opacity(0.35))
+                        .contrastAware(AppTheme.cream, opacity: 0.35)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
                 }

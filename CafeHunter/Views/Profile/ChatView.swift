@@ -68,9 +68,11 @@ struct ChatView: View {
             Button(action: onClose) {
                 Image(systemName: "chevron.left")
                     .font(.subheadline).bold()
-                    .foregroundStyle(AppTheme.cream.opacity(0.7))
+                    .contrastAware(AppTheme.cream, opacity: 0.7)
                     .frame(width: 32, height: 32)
                     .background(Circle().fill(AppTheme.cream.opacity(0.08)))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Back")
@@ -101,7 +103,7 @@ struct ChatView: View {
                     .tint(AppTheme.cream.opacity(0.5))
                 Text("Connecting…")
                     .font(.footnote)
-                    .foregroundStyle(AppTheme.cream.opacity(0.4))
+                    .contrastAware(AppTheme.cream, opacity: 0.4)
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -177,7 +179,7 @@ struct ChatView: View {
                         .overlay {
                             Image(systemName: "photo")
                                 .font(.subheadline)
-                                .foregroundStyle(AppTheme.cream.opacity(0.5))
+                                .contrastAware(AppTheme.cream, opacity: 0.5)
                         }
                 default:
                     AppTheme.cream.opacity(0.08)
@@ -231,7 +233,7 @@ struct ChatView: View {
                 .font(.caption2)
                 .lineLimit(1)
         }
-        .foregroundStyle(AppTheme.cream.opacity(0.55))
+        .contrastAware(AppTheme.cream, opacity: 0.55)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(
@@ -307,6 +309,8 @@ struct ChatView: View {
                         .background(
                             Circle().fill(canSend ? AppTheme.cafeAccent : AppTheme.cafeAccent.opacity(0.35))
                         )
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend || isSending)

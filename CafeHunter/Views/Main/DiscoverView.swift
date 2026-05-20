@@ -40,15 +40,17 @@ struct DiscoverView: View {
                     .foregroundStyle(AppTheme.cream)
                 Text("Popular spots you haven't been yet")
                     .font(.caption2)
-                    .foregroundStyle(AppTheme.cream.opacity(0.45))
+                    .contrastAware(AppTheme.cream, opacity: 0.45)
             }
             Spacer()
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.footnote).bold()
-                    .foregroundStyle(AppTheme.cream.opacity(0.7))
+                    .contrastAware(AppTheme.cream, opacity: 0.7)
                     .frame(width: 32, height: 32)
                     .background(Circle().fill(AppTheme.cream.opacity(0.08)))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close")
@@ -68,7 +70,7 @@ struct DiscoverView: View {
                 ProgressView().tint(AppTheme.cream)
                 Text("Looking around…")
                     .font(.caption)
-                    .foregroundStyle(AppTheme.cream.opacity(0.5))
+                    .contrastAware(AppTheme.cream, opacity: 0.5)
                     .padding(.top, 8)
                 Spacer()
             }
@@ -95,15 +97,15 @@ struct DiscoverView: View {
             Spacer().frame(height: 40)
             Image(systemName: "sparkle.magnifyingglass")
                 .font(.largeTitle)
-                .foregroundStyle(AppTheme.cream.opacity(0.25))
+                .contrastAware(AppTheme.cream, opacity: 0.25)
                 .accessibilityHidden(true)
             Text("Nothing trending nearby yet")
                 .font(.subheadline).bold()
-                .foregroundStyle(AppTheme.cream.opacity(0.65))
+                .contrastAware(AppTheme.cream, opacity: 0.65)
             Text("Be the first to tag a place — your friends' future visits will start to surface here.")
                 .font(.caption)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(AppTheme.cream.opacity(0.4))
+                .contrastAware(AppTheme.cream, opacity: 0.4)
                 .padding(.horizontal, 32)
             if let err = service.lastError {
                 Text(err)
@@ -144,7 +146,7 @@ struct DiscoverView: View {
                 Spacer(minLength: 6)
                 Image(systemName: "chevron.right")
                     .font(.caption2).bold()
-                    .foregroundStyle(AppTheme.cream.opacity(0.3))
+                    .contrastAware(AppTheme.cream, opacity: 0.3)
                     .accessibilityHidden(true)
             }
             .padding(.horizontal, 12)
@@ -162,7 +164,7 @@ struct DiscoverView: View {
             Text(icon).font(.caption2)
             Text(value)
                 .font(.caption2.monospacedDigit()).bold()
-                .foregroundStyle(AppTheme.cream.opacity(0.7))
+                .contrastAware(AppTheme.cream, opacity: 0.7)
         }
     }
 

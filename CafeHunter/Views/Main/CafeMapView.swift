@@ -265,6 +265,9 @@ struct CafeMapView: View {
                                anchor: .bottom) {
                         CafePinView(cafe: cafe, isActive: id == activeCafeId)
                             .onTapGesture { onPinClick(id) }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel(cafe.name)
+                            .accessibilityHint("Opens place details")
                     }
                 }
             }
@@ -278,9 +281,15 @@ struct CafeMapView: View {
                     if cluster.places.count == 1, let only = cluster.places.first {
                         FriendPlacePinView(place: only, avatarURLs: avatarURLs)
                             .onTapGesture { onFriendPinClick(only) }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel(only.name)
+                            .accessibilityHint("Opens posts from your friends here")
                     } else {
                         FriendPlaceClusterPinView(cluster: cluster, avatarURLs: avatarURLs)
                             .onTapGesture { onClusterTap(cluster.places) }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel("\(cluster.places.count) places nearby")
+                            .accessibilityHint("Opens the cluster to pick a place")
                     }
                 }
             }

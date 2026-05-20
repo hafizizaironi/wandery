@@ -147,7 +147,7 @@ struct FriendListView: View {
                 .tint(AppTheme.cafeAccent)
             Text("Loading friends…")
                 .font(.footnote)
-                .foregroundStyle(AppTheme.cream.opacity(0.5))
+                .contrastAware(AppTheme.cream, opacity: 0.5)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -158,15 +158,15 @@ struct FriendListView: View {
             Spacer().frame(height: 40)
             Image(systemName: "exclamationmark.triangle")
                 .font(.largeTitle)
-                .foregroundStyle(AppTheme.cream.opacity(0.3))
+                .contrastAware(AppTheme.cream, opacity: 0.3)
                 .accessibilityHidden(true)
             Text("Couldn't load your friends")
                 .font(.subheadline).bold()
-                .foregroundStyle(AppTheme.cream.opacity(0.7))
+                .contrastAware(AppTheme.cream, opacity: 0.7)
             Text("\(socialService.friendIds.count) friend id(s) on your account but their profiles didn't load.")
                 .font(.caption)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(AppTheme.cream.opacity(0.4))
+                .contrastAware(AppTheme.cream, opacity: 0.4)
                 .padding(.horizontal, 32)
             Button {
                 Task { await loader.retry(with: socialService.friendIds) }
@@ -200,9 +200,11 @@ struct FriendListView: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.footnote).bold()
-                    .foregroundStyle(AppTheme.cream.opacity(0.7))
+                    .contrastAware(AppTheme.cream, opacity: 0.7)
                     .frame(width: 32, height: 32)
                     .background(Circle().fill(AppTheme.cream.opacity(0.08)))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close")
@@ -217,15 +219,15 @@ struct FriendListView: View {
             Spacer().frame(height: 40)
             Image(systemName: "person.2")
                 .font(.largeTitle)
-                .foregroundStyle(AppTheme.cream.opacity(0.25))
+                .contrastAware(AppTheme.cream, opacity: 0.25)
                 .accessibilityHidden(true)
             Text("No friends yet")
                 .font(.subheadline).bold()
-                .foregroundStyle(AppTheme.cream.opacity(0.65))
+                .contrastAware(AppTheme.cream, opacity: 0.65)
             Text("Add friends from the profile page to see them here.")
                 .font(.caption)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(AppTheme.cream.opacity(0.4))
+                .contrastAware(AppTheme.cream, opacity: 0.4)
                 .padding(.horizontal, 32)
             Spacer()
         }
@@ -240,6 +242,7 @@ struct FriendListView: View {
                 .overlay {
                     Circle().stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
                 }
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.titleText)
@@ -249,7 +252,7 @@ struct FriendListView: View {
                 if let sub = row.subtitleText {
                     Text(sub)
                         .font(.caption2)
-                        .foregroundStyle(AppTheme.cream.opacity(0.4))
+                        .contrastAware(AppTheme.cream, opacity: 0.4)
                         .lineLimit(1)
                 }
             }
@@ -267,6 +270,8 @@ struct FriendListView: View {
                         .overlay {
                             Circle().stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
                         }
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Message \(row.titleText)")
@@ -275,20 +280,24 @@ struct FriendListView: View {
             Button {
                 pendingRemoval = row
             } label: {
-                if removingUid == row.id {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                        .frame(width: 32, height: 32)
-                } else {
-                    Image(systemName: "person.fill.xmark")
-                        .font(.caption).bold()
-                        .foregroundStyle(AppTheme.errorRed.opacity(0.85))
-                        .frame(width: 32, height: 32)
-                        .background(Circle().fill(AppTheme.errorRed.opacity(0.10)))
-                        .overlay {
-                            Circle().stroke(AppTheme.errorRed.opacity(0.3), lineWidth: 1)
-                        }
+                Group {
+                    if removingUid == row.id {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                            .frame(width: 32, height: 32)
+                    } else {
+                        Image(systemName: "person.fill.xmark")
+                            .font(.caption).bold()
+                            .foregroundStyle(AppTheme.errorRed.opacity(0.85))
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(AppTheme.errorRed.opacity(0.10)))
+                            .overlay {
+                                Circle().stroke(AppTheme.errorRed.opacity(0.3), lineWidth: 1)
+                            }
+                    }
                 }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(removingUid != nil)
@@ -300,6 +309,25 @@ struct FriendListView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 14).stroke(AppTheme.cafeAccent.opacity(0.16), lineWidth: 1)
         }
+        // Group the whole row for VoiceOver: one swipe = friend identity,
+        // Actions rotor exposes Message / Remove. Inner Buttons remain
+        // tappable for sighted users and discoverable via Voice Control's
+        // "Show actions" command.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rowLabel(for: row))
+        .accessibilityActions {
+            if onMessage != nil {
+                Button("Message") { onMessage?(row) }
+            }
+            Button("Remove") { pendingRemoval = row }
+        }
+    }
+
+    private func rowLabel(for row: FriendRow) -> String {
+        if let sub = row.subtitleText {
+            return "\(row.titleText), \(sub)"
+        }
+        return row.titleText
     }
 
     @ViewBuilder

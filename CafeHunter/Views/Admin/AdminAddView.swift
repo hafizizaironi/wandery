@@ -29,6 +29,7 @@ struct AdminAddView: View {
     @State private var isSaving = false
     @State private var isSuccess = false
     @State private var showMapPicker = false
+    @AccessibilityFocusState private var errorFocused: Bool
 
     private var isEdit: Bool { editCafe != nil }
     private var accent: Color { AppTheme.accent(for: type) }
@@ -60,7 +61,7 @@ struct AdminAddView: View {
             HStack {
                 Button("Cancel", action: onClose)
                     .font(.subheadline)
-                    .foregroundStyle(AppTheme.cream.opacity(0.55))
+                    .contrastAware(AppTheme.cream, opacity: 0.55)
 
                 Spacer()
 
@@ -183,7 +184,7 @@ struct AdminAddView: View {
                                 } label: {
                                     Label("Pin on map", systemImage: "map")
                                         .font(.footnote).bold()
-                                        .foregroundStyle(AppTheme.cream.opacity(0.6))
+                                        .contrastAware(AppTheme.cream, opacity: 0.6)
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 10)
                                         .background(AppTheme.cream.opacity(0.06))
@@ -200,7 +201,7 @@ struct AdminAddView: View {
                                     let lng = Double(lngText) ?? 0
                                     Text("\(lat, format: .number.precision(.fractionLength(5))), \(lng, format: .number.precision(.fractionLength(5)))")
                                         .font(.caption2)
-                                        .foregroundStyle(AppTheme.cream.opacity(0.35))
+                                        .contrastAware(AppTheme.cream, opacity: 0.35)
                                         .frame(maxWidth: .infinity)
                                 }
                             }
@@ -228,7 +229,7 @@ struct AdminAddView: View {
                                             Text("+").font(.title2)
                                             Text("Photo").font(.caption2)
                                         }
-                                        .foregroundStyle(AppTheme.cream.opacity(0.35))
+                                        .contrastAware(AppTheme.cream, opacity: 0.35)
                                         .frame(width: 80, height: 80)
                                         .background(AppTheme.cream.opacity(0.03))
                                         .clipShape(.rect(cornerRadius: 12))
@@ -260,6 +261,7 @@ struct AdminAddView: View {
                             Text(errorMessage)
                                 .font(.caption)
                                 .foregroundStyle(AppTheme.errorRed)
+                                .accessibilityFocused($errorFocused)
                         }
 
                         // Submit
@@ -341,8 +343,9 @@ struct AdminAddView: View {
                 .frame(width: 20, height: 20)
                 .background(Color.black.opacity(0.7))
                 .clipShape(Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
-        .padding(4)
         .accessibilityLabel("Remove photo")
     }
 
@@ -352,11 +355,13 @@ struct AdminAddView: View {
         errorMessage = ""
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
             errorMessage = "Name is required."
+            errorFocused = true
             return
         }
         guard !latText.isEmpty, !lngText.isEmpty,
               let lat = Double(latText), let lng = Double(lngText) else {
             errorMessage = "Coordinates are required — pin on map or type manually."
+            errorFocused = true
             return
         }
 
@@ -389,6 +394,7 @@ struct AdminAddView: View {
             onClose()
         } catch {
             errorMessage = "Failed to save. Check Firebase rules and try again."
+            errorFocused = true
         }
         isSaving = false
     }
@@ -405,7 +411,7 @@ struct AdminField<Content: View>: View {
             Text(label.uppercased())
                 .font(.caption2).bold()
                 .tracking(1.5)
-                .foregroundStyle(AppTheme.cream.opacity(0.4))
+                .contrastAware(AppTheme.cream, opacity: 0.4)
             content
         }
     }

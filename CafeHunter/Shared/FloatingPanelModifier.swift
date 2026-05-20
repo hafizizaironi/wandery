@@ -98,6 +98,8 @@ private struct FloatingPanelModifier<PanelContent: View>: ViewModifier {
     @Binding var isPresented: Bool
     @ViewBuilder let panelContent: () -> PanelContent
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func body(content: Content) -> some View {
         ZStack {
             content
@@ -106,8 +108,13 @@ private struct FloatingPanelModifier<PanelContent: View>: ViewModifier {
                                      panelContent: panelContent)
             }
         }
-        .animation(.spring(response: 0.26, dampingFraction: 0.88),
-                   value: isPresented)
+        .animation(
+            .motionRespecting(
+                .spring(response: 0.26, dampingFraction: 0.88),
+                reduceMotion: reduceMotion
+            ),
+            value: isPresented
+        )
     }
 }
 
