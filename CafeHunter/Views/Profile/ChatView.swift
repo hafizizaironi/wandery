@@ -21,6 +21,7 @@ struct ChatView: View {
     @State private var isSending = false
     @State private var sendError: String?
     @FocusState private var inputFocused: Bool
+    @State private var keyboardHeight: CGFloat = 0
 
     private var myUid: String { Auth.auth().currentUser?.uid ?? "" }
 
@@ -30,16 +31,29 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 header
                 messagesScroll
-            }
-        }
-        // Composer goes in the bottom safe-area inset so SwiftUI's
-        // keyboard avoidance lifts it above the keyboard automatically
-        // — keeping it inside the VStack would leave it pinned behind
-        // the keyboard when ChatView is presented via .overlay().
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
                 Divider().background(AppTheme.cream.opacity(0.05))
                 composer
+            }
+            .padding(.bottom, keyboardHeight)
+        }
+        // SwiftUI's built-in keyboard avoidance doesn't reliably propagate
+        // into views presented via .overlay { } — both .ignoresSafeArea(.container)
+        // and .safeAreaInset(edge: .bottom) failed to lift the composer in
+        // testing. Observe the keyboard directly and apply the height as
+        // bottom padding ourselves. .ignoresSafeArea(.keyboard) below tells
+        // SwiftUI to stay out of it so we get clean single-source behaviour.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+            let frame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
+            let duration = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+            withAnimation(.easeOut(duration: duration)) {
+                keyboardHeight = frame.height
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
+            let duration = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+            withAnimation(.easeOut(duration: duration)) {
+                keyboardHeight = 0
             }
         }
         .onDisappear { conversationService.openThread(nil) }
