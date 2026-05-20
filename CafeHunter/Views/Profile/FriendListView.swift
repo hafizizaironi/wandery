@@ -122,23 +122,24 @@ struct FriendListView: View {
     private var header: some View {
         HStack {
             Text("Friends")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(AppTheme.cream)
+                .font(.title3).bold()
+                .foregroundStyle(AppTheme.cream)
             Text("\(socialService.friendIds.count)")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(AppTheme.cafeAccent)
+                .font(.caption).bold()
+                .foregroundStyle(AppTheme.cafeAccent)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(Capsule().fill(AppTheme.cafeAccent.opacity(0.15)))
             Spacer()
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(AppTheme.cream.opacity(0.7))
+                    .font(.footnote).bold()
+                    .foregroundStyle(AppTheme.cream.opacity(0.7))
                     .frame(width: 32, height: 32)
                     .background(Circle().fill(AppTheme.cream.opacity(0.08)))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close")
         }
         .padding(.horizontal, 18)
         .padding(.top, 14)
@@ -149,15 +150,16 @@ struct FriendListView: View {
         VStack(spacing: 10) {
             Spacer().frame(height: 40)
             Image(systemName: "person.2")
-                .font(.system(size: 36))
-                .foregroundColor(AppTheme.cream.opacity(0.25))
+                .font(.largeTitle)
+                .foregroundStyle(AppTheme.cream.opacity(0.25))
+                .accessibilityHidden(true)
             Text("No friends yet")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(AppTheme.cream.opacity(0.65))
+                .font(.subheadline).bold()
+                .foregroundStyle(AppTheme.cream.opacity(0.65))
             Text("Add friends from the profile page to see them here.")
-                .font(.system(size: 12))
+                .font(.caption)
                 .multilineTextAlignment(.center)
-                .foregroundColor(AppTheme.cream.opacity(0.4))
+                .foregroundStyle(AppTheme.cream.opacity(0.4))
                 .padding(.horizontal, 32)
             Spacer()
         }
@@ -169,17 +171,19 @@ struct FriendListView: View {
             avatar(for: row)
                 .frame(width: 38, height: 38)
                 .clipShape(Circle())
-                .overlay(Circle().stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1))
+                .overlay {
+                    Circle().stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
+                }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.titleText)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(AppTheme.cream)
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cream)
                     .lineLimit(1)
                 if let sub = row.subtitleText {
                     Text(sub)
-                        .font(.system(size: 11))
-                        .foregroundColor(AppTheme.cream.opacity(0.4))
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.cream.opacity(0.4))
                         .lineLimit(1)
                 }
             }
@@ -190,11 +194,13 @@ struct FriendListView: View {
                     onMessage(row)
                 } label: {
                     Image(systemName: "message.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(AppTheme.cafeAccent)
+                        .font(.caption).bold()
+                        .foregroundStyle(AppTheme.cafeAccent)
                         .frame(width: 32, height: 32)
                         .background(Circle().fill(AppTheme.cafeAccent.opacity(0.14)))
-                        .overlay(Circle().stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1))
+                        .overlay {
+                            Circle().stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                        }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Message \(row.titleText)")
@@ -209,11 +215,13 @@ struct FriendListView: View {
                         .frame(width: 32, height: 32)
                 } else {
                     Image(systemName: "person.fill.xmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(AppTheme.errorRed.opacity(0.85))
+                        .font(.caption).bold()
+                        .foregroundStyle(AppTheme.errorRed.opacity(0.85))
                         .frame(width: 32, height: 32)
                         .background(Circle().fill(AppTheme.errorRed.opacity(0.10)))
-                        .overlay(Circle().stroke(AppTheme.errorRed.opacity(0.3), lineWidth: 1))
+                        .overlay {
+                            Circle().stroke(AppTheme.errorRed.opacity(0.3), lineWidth: 1)
+                        }
                 }
             }
             .buttonStyle(.plain)
@@ -223,7 +231,9 @@ struct FriendListView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(RoundedRectangle(cornerRadius: 14).fill(AppTheme.cream.opacity(0.05)))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppTheme.cafeAccent.opacity(0.16), lineWidth: 1))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14).stroke(AppTheme.cafeAccent.opacity(0.16), lineWidth: 1)
+        }
     }
 
     @ViewBuilder
@@ -248,8 +258,8 @@ struct FriendListView: View {
                 endPoint: .bottomTrailing
             )
             Text(initials(for: row))
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(AppTheme.cream)
+                .font(.footnote).bold()
+                .foregroundStyle(AppTheme.cream)
         }
     }
 
