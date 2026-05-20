@@ -233,7 +233,7 @@ struct ChatView: View {
             bubbleContent
                 .contextMenu {
                     Button {
-                        reportTarget = ReportTarget(type: .message, targetId: msg.id ?? "")
+                        reportTarget = ReportTarget(type: .message, targetId: msg.id)
                     } label: {
                         Label("Report message", systemImage: "exclamationmark.triangle")
                     }

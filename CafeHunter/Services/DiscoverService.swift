@@ -37,7 +37,7 @@ final class DiscoverService {
     static let displayLimit = 20
 
     func load(around coord: CLLocationCoordinate2D,
-              radiusMeters: Double = DiscoverService.defaultRadiusMeters) async {
+              radiusMeters: Double) async {
         guard let uid = Auth.auth().currentUser?.uid else { return }
         isLoading = true
         lastError = nil

@@ -31,6 +31,7 @@ functions/yarn-error.log*
 # Secrets / env
 .env
 .env.*
+Secrets.xcconfig
 
 # Claude Code local state
 .claude/

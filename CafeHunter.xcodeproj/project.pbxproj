@@ -22,6 +22,8 @@
 
 /* Begin PBXFileReference section */
 		C4795F342F8ADCC7002495D1 /* CafeHunter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CafeHunter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
+		D1E2F3A4B5C6D70080000002 /* Secrets.xcconfig.sample */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig.sample; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -78,6 +80,8 @@
 			isa = PBXGroup;
 			children = (
 				C4795F362F8ADCC7002495D1 /* CafeHunter */,
+				D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */,
+				D1E2F3A4B5C6D70080000002 /* Secrets.xcconfig.sample */,
 				C43CAA5A2F9B50EB00ABCA8A /* Frameworks */,
 				C4795F352F8ADCC7002495D1 /* Products */,
 			);
@@ -190,6 +194,7 @@
 /* Begin XCBuildConfiguration section */
 		C4795F3D2F8ADCC8002495D1 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -255,6 +260,7 @@
 		};
 		C4795F3E2F8ADCC8002495D1 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;

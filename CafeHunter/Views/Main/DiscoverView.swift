@@ -182,7 +182,7 @@ struct DiscoverView: View {
         // silently for users who haven't granted location yet.
         let coord = locationManager.userLocation
             ?? CLLocationCoordinate2D(latitude: 3.1390, longitude: 101.6869)
-        await service.load(around: coord)
+        await service.load(around: coord, radiusMeters: DiscoverService.defaultRadiusMeters)
         didLoadOnce = true
     }
 }

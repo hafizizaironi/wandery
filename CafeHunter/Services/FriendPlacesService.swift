@@ -21,6 +21,23 @@ struct FriendPlace: Identifiable, Equatable {
     var mostRecent: FriendPost? { posts.first }
 }
 
+/// Sendable snapshot of the raw fields parsed from a `places/{id}` Firestore
+/// doc. Used to ferry data out of a nonisolated task group back to the
+/// MainActor consumer, which then constructs the MainActor-isolated `Place`.
+private struct FetchedPlaceFields: Sendable {
+    let name: String
+    let type: PlaceType
+    let lat: Double
+    let lng: Double
+    let geohash: String
+    let source: String
+    let googlePlaceId: String?
+    let globalVisitCount: Int
+    let globalEngagementCount: Int
+    let lastVisitedAt: Date?
+    let createdAt: Date?
+}
+
 /// Derives `[FriendPlace]` from a stream of feed posts.
 /// Caches place docs so we don't re-fetch on every feed snapshot. Hydration
 /// errors silently skip the place (the post still exists in the feed).
@@ -66,7 +83,7 @@ final class FriendPlacesService {
         #endif
         if !toFetch.isEmpty {
             for id in toFetch { inflight.insert(id) }
-            await withTaskGroup(of: (String, Place?, Error?).self) { group in
+            await withTaskGroup(of: (String, FetchedPlaceFields?, Error?).self) { group in
                 for id in toFetch {
                     group.addTask { [db] in
                         do {
@@ -90,31 +107,44 @@ final class FriendPlacesService {
                                 ))
                             }
                             let typeStr = (data["type"] as? String) ?? "restaurant"
-                            var place = Place()
-                            // `place.id = ...` is set in the main-actor consumer loop below;
-                            // `@DocumentID`'s setter is MainActor-isolated and can't be touched
-                            // from this nonisolated task.
-                            place.name = name
-                            place.type = PlaceType(rawValue: typeStr) ?? .restaurant
-                            place.lat = lat
-                            place.lng = lng
-                            place.geohash = (data["geohash"] as? String) ?? ""
-                            place.source = (data["source"] as? String) ?? "google"
-                            place.googlePlaceId = data["googlePlaceId"] as? String
-                            place.globalVisitCount = (data["globalVisitCount"] as? Int) ?? 0
-                            place.globalEngagementCount = (data["globalEngagementCount"] as? Int) ?? 0
-                            place.lastVisitedAt = (data["lastVisitedAt"] as? Timestamp)?.dateValue()
-                            place.createdAt = (data["createdAt"] as? Timestamp)?.dateValue()
-                            return (id, place, nil)
+                            let fields = FetchedPlaceFields(
+                                name: name,
+                                type: PlaceType(rawValue: typeStr) ?? .restaurant,
+                                lat: lat,
+                                lng: lng,
+                                geohash: (data["geohash"] as? String) ?? "",
+                                source: (data["source"] as? String) ?? "google",
+                                googlePlaceId: data["googlePlaceId"] as? String,
+                                globalVisitCount: (data["globalVisitCount"] as? Int) ?? 0,
+                                globalEngagementCount: (data["globalEngagementCount"] as? Int) ?? 0,
+                                lastVisitedAt: (data["lastVisitedAt"] as? Timestamp)?.dateValue(),
+                                createdAt: (data["createdAt"] as? Timestamp)?.dateValue()
+                            )
+                            return (id, fields, nil)
                         } catch {
                             return (id, nil, error)
                         }
                     }
                 }
-                for await (id, place, err) in group {
+                // `Place()` and its `@DocumentID`-wrapped `id` setter are
+                // MainActor-isolated, so the struct is constructed here in
+                // the consumer loop rather than inside the nonisolated task.
+                for await (id, fields, err) in group {
                     inflight.remove(id)
-                    if var place {
+                    if let fields {
+                        var place = Place()
                         place.id = id
+                        place.name = fields.name
+                        place.type = fields.type
+                        place.lat = fields.lat
+                        place.lng = fields.lng
+                        place.geohash = fields.geohash
+                        place.source = fields.source
+                        place.googlePlaceId = fields.googlePlaceId
+                        place.globalVisitCount = fields.globalVisitCount
+                        place.globalEngagementCount = fields.globalEngagementCount
+                        place.lastVisitedAt = fields.lastVisitedAt
+                        place.createdAt = fields.createdAt
                         placeCache[id] = place
                     } else {
                         #if DEBUG

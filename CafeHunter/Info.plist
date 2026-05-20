@@ -24,7 +24,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Used to find nearby places to tag your post</string>
 	<key>GMSPlacesAPIKey</key>
-	<string>AIzaSyBuw7GN0DGzKl-qAAXpnQZ_4cyKBXr7yko</string>
+	<string>$(GMS_PLACES_API_KEY)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
