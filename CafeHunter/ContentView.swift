@@ -10,6 +10,10 @@ struct ContentView: View {
     @StateObject private var visitTracker         = VisitTrackerService()
     @Environment(\.scenePhase) private var scenePhase
 
+    /// Persists across launches — set true after a user finishes (or skips)
+    /// the welcome carousel. Returning users skip straight to LoginView.
+    @AppStorage("hasSeenWelcome") private var hasSeenWelcome: Bool = false
+
     var body: some View {
         ZStack {
             AppTheme.espresso.ignoresSafeArea()
@@ -17,7 +21,21 @@ struct ContentView: View {
             if authService.isLoading {
                 SplashView()
             } else if authService.user == nil {
-                LoginView(authService: authService)
+                if hasSeenWelcome {
+                    LoginView(authService: authService)
+                        .transition(.opacity)
+                } else {
+                    WelcomeView(onComplete: {
+                        // The carousel's "Get started" / "Maybe later"
+                        // route here. Fade — not slide — into LoginView
+                        // so the auth surface feels like a continuation
+                        // of the same canvas, not a new screen.
+                        withAnimation(Motion.modal) {
+                            hasSeenWelcome = true
+                        }
+                    })
+                    .transition(.opacity)
+                }
             } else if socialService.isLoadingProfile {
                 SplashView()
             } else if socialService.needsUsername {
@@ -34,8 +52,9 @@ struct ContentView: View {
                 .onDisappear { firestoreService.unsubscribe() }
             }
         }
-        .animation(.easeInOut(duration: 0.35), value: authService.isLoading)
-        .animation(.easeInOut(duration: 0.35), value: authService.user?.uid)
+        .animation(Motion.modal, value: authService.isLoading)
+        .animation(Motion.modal, value: authService.user?.uid)
+        .animation(Motion.modal, value: hasSeenWelcome)
         // Subscribe / unsubscribe stats listener when auth state changes
         .onChange(of: authService.user?.uid) { _, uid in
             if let uid {

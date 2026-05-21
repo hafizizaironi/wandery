@@ -1,5 +1,6 @@
 import SwiftUI
 import FirebaseAuth
+import FirebaseFirestore
 import FirebaseFunctions
 
 // MARK: - Profile home (tab page)
@@ -47,6 +48,11 @@ struct ProfileHomeView: View {
     /// open/close cycles, and so sync can happen while the user is still
     /// looking at the profile (not just when they tap the Friends stat).
     @State private var friendLoader = FriendListLoader()
+
+    /// Debounced username-prefix search driving the autocomplete dropdown
+    /// under the Add Friend input. Owned at the view level so the
+    /// suggestions survive across re-renders triggered by other state.
+    @State private var friendSearch = FriendSearchModel()
 
     /// Memoized derived state — see computeMilestones() / computeUnlockedCount().
     /// Recomputed only via the .task(id:) at the bottom of body, not on
@@ -140,7 +146,7 @@ struct ProfileHomeView: View {
                     if !socialService.incomingRequests.isEmpty {
                         friendRequestsSection
                     }
-                    friendSearchSection
+                    friendsSection
                     storySection
                     achievementsSection
                     settingsSection
@@ -307,7 +313,7 @@ struct ProfileHomeView: View {
 
                 // Share username if set
                 if let name = socialService.profile?.username, !name.isEmpty {
-                    ShareLink(item: "Add me on CafeHunter: @\(name)") {
+                    ShareLink(item: "Add me on Wandery: @\(name)") {
                         Label("Share", systemImage: "square.and.arrow.up")
                             .font(.caption).bold()
                             .foregroundStyle(AppTheme.cafeAccent)
@@ -386,14 +392,6 @@ struct ProfileHomeView: View {
             ProfileStatCell(value: "\(statsService.stats.cafesVisited)",  label: "Cafés",   icon: "☕")
             ProfileStatCell(value: "\(statsService.stats.stallsVisited)", label: "Stalls",  icon: "🍜")
             ProfileStatCell(value: "\(daysActive)",                       label: "Days",    icon: "📅")
-            // `friendsHunted` is a denormalized stat that wasn't being kept
-            // in sync on accept/remove. The friends listener already gives us
-            // a live count, so trust that directly. Tap → friend list.
-            Button { showFriendList = true } label: {
-                ProfileStatCell(value: "\(socialService.friendIds.count)", label: "Friends", icon: "👥")
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open friend list")
         }
         .padding(.horizontal, 16)
         .padding(.top, 20)
@@ -469,14 +467,127 @@ struct ProfileHomeView: View {
         .padding(.top, 20)
     }
 
-    // MARK: - Friend search
+    // MARK: - Friends (combined avatar strip + add-friend input)
 
-    private var friendSearchSection: some View {
+    /// One section that owns everything friend-related on the profile:
+    /// a horizontal scroll of friend avatars with stagger-on-appear, a
+    /// "See all" affordance, the add-friend input + button, and a status
+    /// line that fades in on success/error. Replaces the old standalone
+    /// Friends stat tile + Add Friend form.
+    private var friendsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader(
+                "FRIENDS",
+                trailing: socialService.friendIds.isEmpty
+                    ? nil
+                    : "\(socialService.friendIds.count) total"
+            )
+
+            friendAvatarStrip
+                .animation(Motion.dropdown, value: friendLoader.rows.count)
+
+            addFriendField
+
+            if !friendMessage.isEmpty {
+                Text(friendMessage)
+                    .font(.caption)
+                    .foregroundStyle(friendMessage.contains("Sent")
+                                     ? AppTheme.successGreen
+                                     : AppTheme.errorRed)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+        .animation(Motion.dropdown, value: friendMessage)
+    }
+
+    @ViewBuilder
+    private var friendAvatarStrip: some View {
+        if friendLoader.rows.isEmpty {
+            // Empty state — keeps the same vertical footprint as the strip
+            // so the section doesn't visibly jump when the first friend
+            // lands. Soft dashed circle + a single-line nudge to use the
+            // input below.
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(AppTheme.cream.opacity(0.04))
+                        .frame(width: 60, height: 60)
+                        .overlay {
+                            Circle().stroke(
+                                AppTheme.cream.opacity(0.12),
+                                style: StrokeStyle(lineWidth: 1, dash: [4])
+                            )
+                        }
+                    Text("👋")
+                        .font(.title2)
+                        .accessibilityHidden(true)
+                }
+                Text("No friends yet — add someone with their username below.")
+                    .font(.caption)
+                    .contrastAware(AppTheme.cream, opacity: 0.5)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 92)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    ForEach(Array(friendLoader.rows.enumerated()), id: \.element.id) { index, row in
+                        Button {
+                            openChat(otherUid: row.id, title: row.titleText)
+                        } label: {
+                            FriendAvatarChip(row: row)
+                        }
+                        .buttonStyle(.scalePress)
+                        .transition(Motion.coziedScaleFade)
+                        // 50ms cascade between bubbles — fast enough to
+                        // feel snappy on a short list, slow enough to
+                        // read as motion even with five+ friends.
+                        .animation(
+                            reduceMotion
+                                ? Motion.staggerReveal
+                                : Motion.staggerReveal.delay(Double(index) * 0.05),
+                            value: friendLoader.rows.count
+                        )
+                    }
+
+                    Button { showFriendList = true } label: {
+                        seeAllChip
+                    }
+                    .buttonStyle(.scalePress)
+                    .accessibilityLabel("Open friend list")
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(height: 92)
+        }
+    }
+
+    private var seeAllChip: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.cream.opacity(0.06))
+                    .frame(width: 60, height: 60)
+                    .overlay {
+                        Circle().stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                    }
+                Image(systemName: "ellipsis")
+                    .font(.title3)
+                    .foregroundStyle(AppTheme.cafeAccent)
+            }
+            Text("See all")
+                .font(.caption2).bold()
+                .foregroundStyle(AppTheme.cafeAccent)
+        }
+        .frame(width: 64)
+    }
+
+    private var addFriendField: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("ADD FRIEND")
-
             HStack(spacing: 10) {
-                TextField("username", text: $addFriendQuery)
+                TextField("Add by @username", text: $addFriendQuery)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.subheadline)
@@ -489,33 +600,181 @@ struct ProfileHomeView: View {
                         RoundedRectangle(cornerRadius: 12)
                             .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1)
                     }
+                    .onChange(of: addFriendQuery) { _, newValue in
+                        var excludes: Set<String> = Set(socialService.friendIds)
+                        if let uid = authService.user?.uid { excludes.insert(uid) }
+                        friendSearch.queryChanged(newValue, excludeUids: excludes)
+                    }
 
                 Button {
                     Task { await sendFriendRequest() }
                 } label: {
-                    Text("Add")
-                        .font(.footnote).bold()
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(friendBusy
-                                    ? AppTheme.cafeAccent.opacity(0.4)
-                                    : AppTheme.cafeAccent)
-                        .clipShape(.rect(cornerRadius: 12))
+                    Group {
+                        if friendBusy {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(minWidth: 28)
+                        } else {
+                            Text("Add")
+                                .font(.footnote).bold()
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(friendBusy
+                                ? AppTheme.cafeAccent.opacity(0.4)
+                                : AppTheme.cafeAccent)
+                    .clipShape(.rect(cornerRadius: 12))
                 }
+                .buttonStyle(.scalePress)
                 .disabled(friendBusy || addFriendQuery.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
-            if !friendMessage.isEmpty {
-                Text(friendMessage)
-                    .font(.caption)
-                    .foregroundStyle(friendMessage.contains("Sent")
-                                     ? AppTheme.successGreen
-                                     : AppTheme.errorRed)
+            if shouldShowSuggestions {
+                suggestionsDropdown
+                    .transition(
+                        .opacity.combined(with: .move(edge: .top))
+                    )
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 20)
+        .animation(Motion.dropdown, value: friendSearch.suggestions.map(\.id))
+        .animation(Motion.dropdown, value: friendSearch.isSearching)
+    }
+
+    /// Hide the dropdown once the typed text exactly matches the only
+    /// suggestion — that's the "user just tapped a row" state, so echoing
+    /// the same row back would be visual noise.
+    private var shouldShowSuggestions: Bool {
+        let trimmed = addFriendQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        guard trimmed.count >= 2 else { return false }
+        if friendSearch.suggestions.count == 1,
+           let only = friendSearch.suggestions.first,
+           (only.username ?? "").lowercased() == trimmed {
+            return false
+        }
+        return !friendSearch.suggestions.isEmpty || friendSearch.isSearching
+    }
+
+    @ViewBuilder
+    private var suggestionsDropdown: some View {
+        VStack(spacing: 0) {
+            if friendSearch.suggestions.isEmpty {
+                // Searching with no results yet — show a single-line loader
+                // so the user knows something's happening behind the text
+                // field rather than an empty silence.
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(AppTheme.cafeAccent)
+                    Text("Searching…")
+                        .font(.caption)
+                        .contrastAware(AppTheme.cream, opacity: 0.55)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+            } else {
+                ForEach(Array(friendSearch.suggestions.enumerated()), id: \.element.id) { index, hit in
+                    Button {
+                        // Send immediately — the user explicitly picked this
+                        // row out of the dropdown, that's the confirmation.
+                        // Setting `addFriendQuery` first means sendFriendRequest
+                        // reads the chosen username, and on success the field
+                        // clears itself (plus we clear the dropdown below).
+                        guard let username = hit.username, !username.isEmpty,
+                              !friendBusy else { return }
+                        addFriendQuery = username
+                        friendSearch.clear()
+                        Task { await sendFriendRequest() }
+                    } label: {
+                        suggestionRow(hit: hit)
+                    }
+                    .buttonStyle(.scalePress)
+                    .disabled(friendBusy)
+
+                    if index < friendSearch.suggestions.count - 1 {
+                        Rectangle()
+                            .fill(AppTheme.cream.opacity(0.08))
+                            .frame(height: 0.5)
+                            .padding(.leading, 54)
+                    }
+                }
+            }
+        }
+        .background(AppTheme.cream.opacity(0.05))
+        .clipShape(.rect(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(AppTheme.cafeAccent.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    private func suggestionRow(hit: FriendSearchHit) -> some View {
+        HStack(spacing: 12) {
+            // 32px avatar — small enough to fit several rows, big enough
+            // to be recognisable.
+            Group {
+                if let urlString = hit.photoURL, let url = URL(string: urlString) {
+                    CachedAsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        default: suggestionInitials(for: hit)
+                        }
+                    }
+                } else {
+                    suggestionInitials(for: hit)
+                }
+            }
+            .frame(width: 32, height: 32)
+            .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("@\(hit.username ?? "")")
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cream)
+                    .lineLimit(1)
+                if let n = hit.displayName, !n.isEmpty {
+                    Text(n)
+                        .font(.caption2)
+                        .contrastAware(AppTheme.cream, opacity: 0.5)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            Image(systemName: "person.badge.plus")
+                .font(.footnote).bold()
+                .foregroundStyle(AppTheme.cafeAccent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(AppTheme.cafeAccent.opacity(0.12))
+                .clipShape(Capsule())
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+
+    private func suggestionInitials(for hit: FriendSearchHit) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: [AppTheme.cafeAccent.opacity(0.85), AppTheme.stallAccent.opacity(0.85)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Text(suggestionInitialString(for: hit))
+                .font(.caption).bold()
+                .foregroundStyle(.white)
+        }
+    }
+
+    private func suggestionInitialString(for hit: FriendSearchHit) -> String {
+        let source = hit.displayName ?? hit.username ?? "?"
+        return source.split(separator: " ").prefix(2)
+            .compactMap { $0.first.map(String.init) }
+            .joined().uppercased()
     }
 
     // MARK: - Your story
@@ -878,6 +1137,10 @@ struct ProfileHomeView: View {
             try await socialService.sendFriendRequest(toUsername: query)
             friendMessage    = "Sent! 🎉"
             addFriendQuery   = ""
+            // Dismiss any lingering autocomplete dropdown — the user just
+            // sent to whoever was in the field, so further suggestions
+            // would be noise.
+            friendSearch.clear()
         } catch {
             friendMessage = error.localizedDescription
         }
@@ -928,6 +1191,167 @@ private struct ProfileStatCell: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(AppTheme.cafeAccent.opacity(0.14), lineWidth: 1)
         }
+    }
+}
+
+// MARK: - Friend search (autocomplete dropdown)
+
+/// One row in the username-autocomplete dropdown under the "Add friend"
+/// input. Hydrated from `users/{uid}` after a prefix match on the
+/// lowercased `usernames` collection.
+struct FriendSearchHit: Identifiable, Equatable {
+    let id: String   // = uid
+    let username: String?
+    let displayName: String?
+    let photoURL: String?
+}
+
+@MainActor
+@Observable
+final class FriendSearchModel {
+    private(set) var suggestions: [FriendSearchHit] = []
+    private(set) var isSearching = false
+
+    private var searchTask: Task<Void, Never>?
+    private let db = Firestore.firestore()
+
+    /// Debounce + fan-out search. `usernames/{lowercase}` doc IDs are the
+    /// canonical case-insensitive index — a doc-ID prefix range there
+    /// gives us matching uids in one query, then we fetch each user's
+    /// public profile in parallel. Excludes self + existing friends so
+    /// the dropdown only ever shows actionable add-targets.
+    func queryChanged(_ text: String, excludeUids: Set<String>) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
+        searchTask?.cancel()
+        guard trimmed.count >= 2 else {
+            suggestions = []
+            isSearching = false
+            return
+        }
+        searchTask = Task { [weak self] in
+            // Debounce — keystrokes within 220ms collapse to one query so
+            // typing a 6-char name doesn't trigger six round-trips.
+            try? await Task.sleep(for: .milliseconds(220))
+            if Task.isCancelled { return }
+            await self?.run(trimmed, excludeUids: excludeUids)
+        }
+    }
+
+    func clear() {
+        searchTask?.cancel()
+        suggestions = []
+        isSearching = false
+    }
+
+    private func run(_ q: String, excludeUids: Set<String>) async {
+        isSearching = true
+        defer { isSearching = false }
+        do {
+            let upper = q + "\u{f8ff}"
+            let snap = try await db.collection("usernames")
+                .whereField(FieldPath.documentID(), isGreaterThanOrEqualTo: q)
+                .whereField(FieldPath.documentID(), isLessThan: upper)
+                .limit(to: 10)
+                .getDocuments()
+            if Task.isCancelled { return }
+            let uids = snap.documents.compactMap { ($0.data()["uid"] as? String) }
+                .filter { !excludeUids.contains($0) }
+            let hits = await fetchProfiles(uids: uids)
+            if Task.isCancelled { return }
+            suggestions = hits.sorted { ($0.username ?? "") < ($1.username ?? "") }
+        } catch {
+            #if DEBUG
+            print("[FriendSearch] query '\(q)' failed: \(error.localizedDescription)")
+            #endif
+            suggestions = []
+        }
+    }
+
+    private func fetchProfiles(uids: [String]) async -> [FriendSearchHit] {
+        await withTaskGroup(of: FriendSearchHit?.self) { group in
+            for uid in uids {
+                group.addTask { [db] in
+                    guard let doc = try? await db.collection("users").document(uid).getDocument(),
+                          let data = doc.data() else { return nil }
+                    return FriendSearchHit(
+                        id: uid,
+                        username: data["username"] as? String,
+                        displayName: data["displayName"] as? String,
+                        photoURL: data["photoURL"] as? String
+                    )
+                }
+            }
+            var arr: [FriendSearchHit] = []
+            for await item in group { if let item { arr.append(item) } }
+            return arr
+        }
+    }
+}
+
+// MARK: - Friend avatar chip (horizontal strip on profile)
+
+/// One circle in the profile's friend strip. Renders the friend's photo if
+/// available, falls back to gradient initials. Username text under the
+/// avatar so the user recognises faces *and* handles at a glance.
+private struct FriendAvatarChip: View {
+    let row: FriendRow
+
+    var body: some View {
+        VStack(spacing: 6) {
+            avatar
+                .frame(width: 60, height: 60)
+                .clipShape(Circle())
+                .overlay {
+                    Circle().stroke(AppTheme.cafeAccent.opacity(0.35), lineWidth: 2)
+                }
+
+            Text(labelText)
+                .font(.caption2)
+                .foregroundStyle(AppTheme.cream)
+                .lineLimit(1)
+                .frame(maxWidth: 72)
+        }
+        .frame(width: 72)
+    }
+
+    @ViewBuilder
+    private var avatar: some View {
+        if let urlString = row.photoURL, let url = URL(string: urlString) {
+            CachedAsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img): img.resizable().scaledToFill()
+                default: initialsCircle
+                }
+            }
+        } else {
+            initialsCircle
+        }
+    }
+
+    private var initialsCircle: some View {
+        ZStack {
+            LinearGradient(
+                colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Text(initials)
+                .font(.headline).bold()
+                .foregroundStyle(.white)
+        }
+    }
+
+    private var labelText: String {
+        if let u = row.username, !u.isEmpty { return "@\(u)" }
+        if let n = row.displayName, !n.isEmpty { return n }
+        return "Friend"
+    }
+
+    private var initials: String {
+        let source = row.displayName ?? row.username ?? "?"
+        return source.split(separator: " ").prefix(2)
+            .compactMap { $0.first.map(String.init) }
+            .joined().uppercased()
     }
 }
 

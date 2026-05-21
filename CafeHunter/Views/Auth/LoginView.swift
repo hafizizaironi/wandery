@@ -1,4 +1,6 @@
 import AuthenticationServices
+import CoreLocation
+import MapKit
 import SwiftUI
 import FirebaseAuth
 
@@ -16,6 +18,15 @@ struct LoginView: View {
     @State private var appleNonce: String = ""
     @AccessibilityFocusState private var errorFocused: Bool
 
+    /// Probes the user's current locality so the headline can show their
+    /// actual city instead of a hardcoded "Rawang". We never call
+    /// `requestPermission()` here — that would prompt before sign-in, which
+    /// reviewers and users dislike. If Location was previously authorized
+    /// (returning users), `LocationManager` will start updating on its own
+    /// via the `locationManagerDidChangeAuthorization` callback.
+    @State private var locationManager = LocationManager()
+    @State private var localityName: String?
+
     var body: some View {
         ZStack {
             AppTheme.espresso.ignoresSafeArea()
@@ -29,9 +40,11 @@ struct LoginView: View {
                         Text("☕")
                             .font(.system(size: 42))
                             .accessibilityHidden(true)
-                        Text("Cafés Around Rawang")
+                        Text("Cafés Around \(localityName ?? "You")")
                             .font(.title3).bold()
                             .foregroundStyle(AppTheme.cream)
+                            .contentTransition(.opacity)
+                            .animation(.easeInOut(duration: 0.25), value: localityName)
                         Text(mode == .login ? "Welcome back! Sign in to continue." : "Create an account to get started.")
                             .font(.footnote)
                             .foregroundStyle(AppTheme.cream.opacity(0.45))
@@ -176,9 +189,26 @@ struct LoginView: View {
             }
         }
         .keyboardDismissToolbar()
+        .task { await refreshLocalityHint() }
+        .onChange(of: locationManager.userLocation?.latitude) { _, _ in
+            Task { await refreshLocalityHint() }
+        }
     }
 
     // MARK: - Actions
+
+    /// Reverse-geocodes the current user location into a city/town name.
+    /// Silently no-ops if location isn't available (no permission, or
+    /// updates haven't arrived yet) — the headline keeps its "You" fallback.
+    private func refreshLocalityHint() async {
+        guard let coord = locationManager.userLocation else { return }
+        let location = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        guard let request = MKReverseGeocodingRequest(location: location) else { return }
+        let items = (try? await request.mapItems) ?? []
+        if let resolved = items.first?.addressRepresentations?.cityName, !resolved.isEmpty {
+            localityName = resolved
+        }
+    }
 
     private func signInWithGoogle() async {
         isLoading = true

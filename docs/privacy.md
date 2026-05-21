@@ -2,15 +2,15 @@
 title: Privacy Policy
 ---
 
-# CafeHunter — Privacy Policy
+# Wandery — Privacy Policy
 
 _Last updated: 2026-05-20_
 
-This Privacy Policy explains what data CafeHunter collects, why, who it's shared with, and what choices you have. It mirrors the App Privacy declarations CafeHunter ships in its `PrivacyInfo.xcprivacy` manifest.
+This Privacy Policy explains what data Wandery collects, why, who it's shared with, and what choices you have. It mirrors the App Privacy declarations Wandery ships in its `PrivacyInfo.xcprivacy` manifest.
 
 ## What we collect
 
-When you sign up and use CafeHunter, we collect:
+When you sign up and use Wandery, we collect:
 
 | Category | Examples | Why |
 |---|---|---|
@@ -23,7 +23,7 @@ When you sign up and use CafeHunter, we collect:
 | **Other user content** | Chat messages, captions, friend requests, reactions | To deliver them to the right people |
 | **Device ID** | Apple Push Notification (APNs) / Firebase Cloud Messaging (FCM) token | To send you push notifications |
 
-CafeHunter does **not**:
+Wandery does **not**:
 
 - Use the IDFA or any cross-app tracking identifier.
 - Sell your data.
@@ -44,7 +44,7 @@ If you grant notification permission, we register your device's APNs token with 
 
 ## Camera, photo library, microphone, and location permissions
 
-CafeHunter asks for these permissions only when you use the relevant feature:
+Wandery asks for these permissions only when you use the relevant feature:
 
 - **Camera** + **Microphone** — when you open the Hero camera to capture a photo or video.
 - **Photo library (add)** — when you save a captured photo or video to your library.
@@ -58,8 +58,8 @@ Each permission is optional. Denying one disables only the feature that needs it
 - **Block other users**: from the long-press menu on a friend's row, a post, or a chat header (⋯ → Block user). Blocked users cannot reach you and do not appear in your feed.
 - **Report content**: long-press any post or chat message → Report. We review every report within 24 hours.
 - **Delete your account**: Profile → Delete Account. This permanently removes your profile, posts, friends, conversations, FCM tokens, uploaded photos and videos, and frees your username. It cannot be undone.
-- **Turn off notifications**: iOS Settings → CafeHunter → Notifications.
-- **Turn off location**: iOS Settings → Privacy → Location → CafeHunter.
+- **Turn off notifications**: iOS Settings → Wandery → Notifications.
+- **Turn off location**: iOS Settings → Privacy → Location → Wandery.
 
 ## Data retention
 
@@ -67,7 +67,7 @@ We keep your data while your account is active. When you delete your account, yo
 
 ## Children
 
-CafeHunter is not directed to children under 13. If you believe a child under 13 has provided personal information to us, please contact us at [hafizizaironi@gmail.com](mailto:hafizizaironi@gmail.com) and we will delete the data.
+Wandery is not directed to children under 13. If you believe a child under 13 has provided personal information to us, please contact us at [hafizizaironi@gmail.com](mailto:hafizizaironi@gmail.com) and we will delete the data.
 
 ## Changes to this Policy
 

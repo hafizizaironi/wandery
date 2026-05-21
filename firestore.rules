@@ -132,9 +132,15 @@ service cloud.firestore {
     }
 
     match /posts/{postId} {
+      // Read by author, by friends, OR by anyone when the post has been
+      // marked discoverable (the implicit consent gate set by the on-device
+      // PostClassifier — see CafeHunter/Shared/PostClassifier.swift).
+      // Discoverable posts power the public Discover surface; everything
+      // else stays inside the friend graph.
       allow read: if signedIn() && (
         resource.data.authorId == request.auth.uid ||
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(resource.data.authorId))
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(resource.data.authorId)) ||
+        resource.data.discoverable == true
       );
       allow create: if signedIn()
         && request.resource.data.authorId == request.auth.uid;

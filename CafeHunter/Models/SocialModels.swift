@@ -19,6 +19,19 @@ struct FriendPost: Identifiable, Equatable {
     let createdAt: Date
     let placeId: String?
     let placeName: String?
+    /// Set by `PostClassifier` as a background task after upload, or by
+    /// the author flipping the "Hide from Discover" toggle. When true,
+    /// the post may surface to strangers in Discover; when false, the
+    /// post stays inside the author's friend graph (default for any
+    /// post that pre-dates the classifier). See firestore.rules for the
+    /// matching read-gate.
+    let discoverable: Bool
+    /// Apple Vision aesthetic score 0…1. Used to rank Discover candidates
+    /// when multiple discoverable posts exist for the same place.
+    let aestheticScore: Double?
+    /// Mirror of the classifier's face-gate verdict — kept on the doc
+    /// for analytics + so a manual review surface can sort by it.
+    let containsFaces: Bool?
 
     var isVideo: Bool { mediaType == "video" }
 
@@ -33,7 +46,10 @@ struct FriendPost: Identifiable, Equatable {
         thumbnailURL: String?,
         createdAt: Date,
         placeId: String? = nil,
-        placeName: String? = nil
+        placeName: String? = nil,
+        discoverable: Bool = false,
+        aestheticScore: Double? = nil,
+        containsFaces: Bool? = nil
     ) {
         self.id = id
         self.authorId = authorId
@@ -45,6 +61,9 @@ struct FriendPost: Identifiable, Equatable {
         self.createdAt = createdAt
         self.placeId = placeId
         self.placeName = placeName
+        self.discoverable = discoverable
+        self.aestheticScore = aestheticScore
+        self.containsFaces = containsFaces
     }
 
     init?(document: QueryDocumentSnapshot) {
@@ -63,6 +82,12 @@ struct FriendPost: Identifiable, Equatable {
         thumbnailURL = d["thumbnailURL"] as? String
         placeId = d["placeId"] as? String
         placeName = d["placeName"] as? String
+        // Default to private — posts that pre-date the classifier never
+        // had a `discoverable` field, and we never want a legacy post
+        // surfacing publicly because of a default-true.
+        discoverable = (d["discoverable"] as? Bool) ?? false
+        aestheticScore = d["aestheticScore"] as? Double
+        containsFaces = d["containsFaces"] as? Bool
         if let ts = d["createdAt"] as? Timestamp {
             createdAt = ts.dateValue()
         } else {

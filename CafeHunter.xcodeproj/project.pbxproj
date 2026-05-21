@@ -328,9 +328,9 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CafeHunter/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "CafeHunter uses the camera to share cafe moments with friends.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "CafeHunter needs your location to show nearby cafes and your position on the map.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "CafeHunter uses the microphone to record audio with your cafe videos.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Wandery uses the camera to share cafe moments with friends.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Wandery needs your location to show nearby cafes and your position on the map.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Wandery uses the microphone to record audio with your cafe videos.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -364,9 +364,9 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CafeHunter/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "CafeHunter uses the camera to share cafe moments with friends.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "CafeHunter needs your location to show nearby cafes and your position on the map.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "CafeHunter uses the microphone to record audio with your cafe videos.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Wandery uses the camera to share cafe moments with friends.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Wandery needs your location to show nearby cafes and your position on the map.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Wandery uses the microphone to record audio with your cafe videos.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

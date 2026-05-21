@@ -100,22 +100,37 @@ final class PlacePickerViewModel {
     }
 
     private func runAutocomplete(_ text: String) async {
-        do {
-            let remote = try await PlacePickerService.shared.autocomplete(text, around: lastKnownCoord)
-            // Merge by id; prefer the nearby-cached version since it carries
-            // coords + distance that autocomplete results don't.
-            var byId: [String: PlaceCandidate] = [:]
-            for c in nearbyCache { byId[c.id] = c }
-            for c in remote where byId[c.id] == nil {
-                byId[c.id] = c
-            }
-            candidates = Self.rank(Array(byId.values), by: text)
-            errorMessage = nil
-        } catch is CancellationError {
-            // Superseded by a newer keystroke — leave the local rank in place.
-        } catch {
-            // Network failure shouldn't wipe the local re-rank we already showed.
+        // Two parallel sources — Google's text autocomplete (broad, can find
+        // anything with a Place ID) and a Firestore name-prefix query against
+        // the global `places` collection (catches DB places outside the
+        // nearby radius). Both are best-effort; either failing must not erase
+        // the other or the local nearbyCache re-rank we already showed.
+        async let remoteR: Result<[PlaceCandidate], Error> = {
+            do { return .success(try await PlacePickerService.shared.autocomplete(text, around: self.lastKnownCoord)) }
+            catch { return .failure(error) }
+        }()
+        async let dbR: Result<[PlaceCandidate], Error> = {
+            do { return .success(try await PlacePickerService.shared.searchDbByName(text, around: self.lastKnownCoord)) }
+            catch { return .failure(error) }
+        }()
+
+        let (remoteResult, dbResult) = await (remoteR, dbR)
+        let remote = (try? remoteResult.get()) ?? []
+        let dbHits = (try? dbResult.get()) ?? []
+
+        // Merge order matters — `byId` keeps the FIRST insertion per id, and
+        // nearbyCache rows carry coords + distance the autocomplete results
+        // don't. Order: nearbyCache → DB-name-hits → Google autocomplete.
+        var byId: [String: PlaceCandidate] = [:]
+        for c in nearbyCache { byId[c.id] = c }
+        for c in dbHits where byId[c.id] == nil {
+            byId[c.id] = c
         }
+        for c in remote where byId[c.id] == nil {
+            byId[c.id] = c
+        }
+        candidates = Self.rank(Array(byId.values), by: text)
+        errorMessage = nil
     }
 
     /// Score-then-filter relevance ranking. Anything scoring 0 is dropped so

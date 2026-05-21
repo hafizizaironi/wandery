@@ -837,6 +837,18 @@ struct HeroPageView: View {
                         } label: {
                             Label("Block \(post.authorUsername)", systemImage: "hand.raised")
                         }
+                    } else if post.discoverable {
+                        // Own post that the classifier marked safe — let
+                        // the author retract it from Discover without
+                        // deleting the post. Sets discoverable=false; the
+                        // post stays visible to friends.
+                        Button(role: .destructive) {
+                            Task {
+                                try? await socialService.setDiscoverable(postId: post.id, false)
+                            }
+                        } label: {
+                            Label("Hide from Discover", systemImage: "eye.slash")
+                        }
                     }
                 }
             }

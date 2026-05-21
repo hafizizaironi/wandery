@@ -174,14 +174,25 @@ class AuthService: ObservableObject {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         let request = user.createProfileChangeRequest()
         request.displayName = trimmed
+        // Critical wait — `commitChanges()` is the only step that affects
+        // what the user perceives as "saved". Auth's local cache updates
+        // immediately and the server ack syncs the change across devices.
         try await request.commitChanges()
-        try await user.reload()
-        // Firebase Auth's `displayName` is private to the owner; mirror it to
-        // the public `users/{uid}` doc so friends' UIs can read it.
-        try? await Firestore.firestore()
-            .collection("users").document(user.uid)
-            .setData(["displayName": trimmed], merge: true)
+        // Immediate @Published update — consumers reading `authService.user`
+        // see the new name as soon as this returns. Stop the caller's
+        // spinner here, not after the trailing housekeeping below.
         self.user = Auth.auth().currentUser
+        // Background housekeeping: reload pulls any unrelated server-side
+        // fields; the Firestore mirror is what friends' UIs read for the
+        // display name. Neither needs to block the caller — Firestore's
+        // offline persistence retries the mirror on failure.
+        let uid = user.uid
+        Task {
+            try? await user.reload()
+            try? await Firestore.firestore()
+                .collection("users").document(uid)
+                .setData(["displayName": trimmed], merge: true)
+        }
     }
 
     func updateProfilePhoto(_ image: UIImage) async throws {
@@ -190,19 +201,24 @@ class AuthService: ObservableObject {
         // New object path each time so `photoURL` changes and other devices / URL caches load fresh bytes.
         let ref = Storage.storage().reference()
             .child("avatars/\(user.uid)/\(UUID().uuidString).jpg")
+        // Critical waits: image upload + download URL + Auth commit must
+        // all complete before we can call the photo "saved".
         _ = try await ref.putDataAsync(data)
         let url = try await ref.downloadURL()
         let request = user.createProfileChangeRequest()
         request.photoURL = url
         try await request.commitChanges()
-        try await user.reload()
-        // Mirror the new photoURL onto the public user doc so friends' UIs
-        // (map pin avatars, friend list, chat header) can render it.
-        // Firebase Auth's `photoURL` is only readable by the owner.
-        try? await Firestore.firestore()
-            .collection("users").document(user.uid)
-            .setData(["photoURL": url.absoluteString], merge: true)
         self.user = Auth.auth().currentUser
+        // Background housekeeping — reload + public Firestore mirror so
+        // friends' UIs (map pin avatars, friend list, chat header) render
+        // the new photoURL. Doesn't block the caller's spinner.
+        let uid = user.uid
+        Task {
+            try? await user.reload()
+            try? await Firestore.firestore()
+                .collection("users").document(uid)
+                .setData(["photoURL": url.absoluteString], merge: true)
+        }
     }
 
     /// Downscales to keep uploads fast; Auth photo URL is app-specific (not Google account).

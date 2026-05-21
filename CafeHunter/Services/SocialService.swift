@@ -202,6 +202,17 @@ final class SocialService: ObservableObject {
         feedPosts = [post] + feedPosts
     }
 
+    /// Author-only override on the classifier's verdict. Setting false
+    /// pulls the post out of Discover immediately (the rule check
+    /// `resource.data.discoverable == true` short-circuits). Setting
+    /// true is allowed by the rules but discouraged — the classifier's
+    /// face-gate exists for a reason.
+    func setDiscoverable(postId: String, _ value: Bool) async throws {
+        try await db.collection("posts").document(postId).setData([
+            "discoverable": value,
+        ], merge: true)
+    }
+
     func reserveUsername(_ raw: String) async throws {
         guard let u = uid else { throw SocialError.notSignedIn }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -381,6 +392,8 @@ final class SocialService: ObservableObject {
             guard let data = processed.jpegData(compressionQuality: 0.82) else { throw SocialError.uploadFailed }
             let path = "social/\(authorUid)/\(postId).jpg"
             let ref = Storage.storage().reference().child(path)
+            // Critical waits — the post payload needs the Storage URL, so
+            // we can't optimistically render anything until both resolve.
             _ = try await ref.putDataAsync(data)
             let url = try await ref.downloadURL()
             var payload: [String: Any] = [
@@ -395,7 +408,9 @@ final class SocialService: ObservableObject {
                 payload["placeId"] = resolvedPlace.id
                 payload["placeName"] = resolvedPlace.name
             }
-            try await postRef.setData(payload)
+            // Optimistic feed update FIRST — the post is now visible in the
+            // user's feed using the just-uploaded Storage URL. The caller's
+            // spinner can stop the moment this function returns.
             prependOptimisticFeedPost(FriendPost(
                 id: postId,
                 authorId: authorUid,
@@ -408,6 +423,34 @@ final class SocialService: ObservableObject {
                 placeId: resolvedPlace?.id,
                 placeName: resolvedPlace?.name
             ))
+            // Fire-and-forget the Firestore write. The SDK writes to the
+            // local cache immediately and queues the server push with
+            // automatic retry on failure, so blocking the caller on the
+            // server ack is just visible latency the user can't act on.
+            postRef.setData(payload) { error in
+                #if DEBUG
+                if let error {
+                    print("[SocialService] post setData failed: \(error.localizedDescription)")
+                }
+                #endif
+            }
+            // Background Discover-eligibility check. The processed image
+            // is what shipped to Storage, so it's exactly the bytes a
+            // stranger would see — classify *those* (not the raw camera
+            // capture). Doesn't block the caller's spinner or the post's
+            // visibility in the user's own feed.
+            let postRefForVerdict = postRef
+            Task.detached(priority: .utility) {
+                let verdict = await PostClassifier.classify(processed)
+                #if DEBUG
+                print("[Discover] post \(postId): faces=\(verdict.containsFaces) score=\(String(format: "%.2f", verdict.aestheticScore)) discoverable=\(verdict.discoverable)")
+                #endif
+                try? await postRefForVerdict.setData([
+                    "discoverable": verdict.discoverable,
+                    "aestheticScore": verdict.aestheticScore,
+                    "containsFaces": verdict.containsFaces,
+                ], merge: true)
+            }
             return
         }
 
@@ -443,7 +486,9 @@ final class SocialService: ObservableObject {
                 payload["placeId"] = resolvedPlace.id
                 payload["placeName"] = resolvedPlace.name
             }
-            try await postRef.setData(payload)
+            // Same optimistic-first / fire-and-forget-write pattern as the
+            // image path above — caller's spinner stops the moment the
+            // post is visible in the user's feed, not after server ack.
             prependOptimisticFeedPost(FriendPost(
                 id: postId,
                 authorId: authorUid,
@@ -456,6 +501,13 @@ final class SocialService: ObservableObject {
                 placeId: resolvedPlace?.id,
                 placeName: resolvedPlace?.name
             ))
+            postRef.setData(payload) { error in
+                #if DEBUG
+                if let error {
+                    print("[SocialService] post setData failed: \(error.localizedDescription)")
+                }
+                #endif
+            }
             return
         }
         throw SocialError.uploadFailed

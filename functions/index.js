@@ -184,6 +184,16 @@ exports.onPostCreatePlaceVisit = functions.firestore
             const updates = {
               uniquePlacesVisited: admin.firestore.FieldValue.increment(1),
             };
+            // Type-specific counters that power the profile page's
+            // "Cafés N / Stalls N" stats row and the Coffee Crawler /
+            // Stall Stalker achievements. Restaurants don't have a
+            // dedicated tile in the UI — they only roll up into
+            // uniquePlacesVisited above.
+            if (place.type === "cafe") {
+              updates.cafesVisited = admin.firestore.FieldValue.increment(1);
+            } else if (place.type === "stall") {
+              updates.stallsVisited = admin.firestore.FieldValue.increment(1);
+            }
             if (typeof place.lat === "number" && typeof place.lng === "number") {
               const area = geofire.geohashForLocation([place.lat, place.lng], 5);
               const counts = (user.areaPlaceCounts && typeof user.areaPlaceCounts === "object")
@@ -475,13 +485,39 @@ exports.backfillMyStats = onCall(
     ]);
 
     const pioneerCount = pioneerSnap.size;
-    const uniquePlacesVisited = visitsSnap.size;
 
-    // topPlaceVisitCount and area buckets need a per-place lookup —
-    // each visit doc carries firstPostLat/Lng, but if we want geohash5
-    // accuracy from the canonical place we should fetch the place too.
-    // Cheaper: fetch every referenced place doc concurrently, build the
-    // geohash map from those.
+    // Source of truth for "places I've been" is the user's own posts —
+    // the visit subcollection is a derived view written by the
+    // `onPostCreatePlaceVisit` trigger and can drift out of sync if the
+    // trigger ever skipped a post (network blip, race, code regression).
+    // Compute from posts so backfill self-heals any historical gap.
+    const distinctPlaceIds = [...new Set(
+      postsSnap.docs
+        .map((p) => (p.data() || {}).placeId)
+        .filter((id) => typeof id === "string" && id.length > 0),
+    )];
+
+    // Fan-out fetch for each unique place — bounded by the user's
+    // distinct-place count, typically tens not thousands.
+    const placeDocs = await Promise.all(
+      distinctPlaceIds.map((id) => db.collection("places").doc(id).get()),
+    );
+
+    const uniquePlacesVisited = placeDocs.filter((p) => p.exists).length;
+    let cafesVisited = 0;
+    let stallsVisited = 0;
+    for (const p of placeDocs) {
+      if (!p.exists) continue;
+      const t = (p.data() || {}).type;
+      if (t === "cafe") cafesVisited += 1;
+      else if (t === "stall") stallsVisited += 1;
+    }
+
+    // `topPlaceVisitCount` still comes from the visits subcollection — it
+    // depends on completed (closed) sessions per place, which is a
+    // user-behavior signal we don't try to reconstruct from posts. If the
+    // visits are out of sync this'll lag; we'll heal those in a separate
+    // pass if it ever matters.
     const visitDocs = visitsSnap.docs;
     let topPlaceVisitCount = 0;
     for (const v of visitDocs) {
@@ -489,14 +525,16 @@ exports.backfillMyStats = onCall(
       if (c > topPlaceVisitCount) topPlaceVisitCount = c;
     }
 
-    // Build areaPlaceCounts. Use the visit doc's stored lat/lng so we
-    // don't need a place fetch — first-post coords are always set on
-    // the visit doc by `onPostCreatePlaceVisit`.
+    // Build areaPlaceCounts from the canonical place docs (already fetched
+    // above for the type tally). Drives Local Guide. Skips places that
+    // didn't return a doc — e.g. a place that was deleted after the user
+    // posted at it.
     const areaPlaceCounts = {};
-    for (const v of visitDocs) {
-      const d = v.data() || {};
-      if (typeof d.firstPostLat !== "number" || typeof d.firstPostLng !== "number") continue;
-      const area = geofire.geohashForLocation([d.firstPostLat, d.firstPostLng], 5);
+    for (const p of placeDocs) {
+      if (!p.exists) continue;
+      const d = p.data() || {};
+      if (typeof d.lat !== "number" || typeof d.lng !== "number") continue;
+      const area = geofire.geohashForLocation([d.lat, d.lng], 5);
       areaPlaceCounts[area] = (areaPlaceCounts[area] || 0) + 1;
     }
     const topAreaPlaceCount = Object.values(areaPlaceCounts).reduce(
@@ -529,6 +567,8 @@ exports.backfillMyStats = onCall(
       topAreaPlaceCount,
       areaPlaceCounts,
       reactionsReceived,
+      cafesVisited,
+      stallsVisited,
     }, { merge: true });
 
     logger.info("backfillMyStats committed", {
@@ -539,6 +579,8 @@ exports.backfillMyStats = onCall(
       topAreaPlaceCount,
       areaCount: Object.keys(areaPlaceCounts).length,
       reactionsReceived,
+      cafesVisited,
+      stallsVisited,
     });
     return {
       pioneerCount,
@@ -546,6 +588,8 @@ exports.backfillMyStats = onCall(
       topPlaceVisitCount,
       topAreaPlaceCount,
       reactionsReceived,
+      cafesVisited,
+      stallsVisited,
     };
   },
 );

@@ -1,8 +1,8 @@
 ---
-title: CafeHunter — Legal
+title: Wandery — Legal
 ---
 
-# CafeHunter
+# Wandery
 
 Discover cafés and street stalls with friends.
 

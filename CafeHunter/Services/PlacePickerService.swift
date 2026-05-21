@@ -17,12 +17,17 @@ final class PlacePickerService {
 
     /// Default search radius. Wide enough to cover typical mall footprints
     /// and dense urban blocks where GPS can drift 100–300 m indoors. Earlier
-    /// 200 m default produced 0 results in malls because the user's fix and
-    /// the storefront coordinates were further apart than that.
+    /// Radius for the nearby DB + Google search around the user's current
+    /// location. History: 200m → 600m (malls had storefront coords > user fix)
+    /// → 3000m. The 600m default still hid DB places the user had tagged in
+    /// the same neighborhood — typical GPS drift indoors + the fact that a
+    /// "nearby" cafe can easily be a few blocks away pushed real venues out
+    /// of range. Bounded by `.limit(to: 200)` so the read cost stays flat
+    /// regardless of radius.
     /// `nonisolated` so it can be referenced as a default-argument value
     /// for `nearby(_:radius:)` — default-arg expressions evaluate outside
     /// the type's `@MainActor` context.
-    nonisolated static let defaultRadiusMeters: Double = 600
+    nonisolated static let defaultRadiusMeters: Double = 3_000
 
     /// Google categories we surface for the picker. Stalls have no Google
     /// equivalent — user adds those manually.
@@ -171,6 +176,58 @@ final class PlacePickerService {
         return matched
     }
 
+    /// Firestore name-prefix search across the *entire* `places` collection,
+    /// independent of the user's current location. Lets a typed search surface
+    /// DB places that are outside the nearby radius — i.e. "I tagged X last
+    /// week in a different neighborhood, let me find it again". Uses the
+    /// canonical Firestore prefix-range pattern (`name >= q && name < q + \u{f8ff}`)
+    /// which is auto-indexed on a single field.
+    ///
+    /// Case-sensitive — the user's typed text has to match how the place was
+    /// stored. Most CafeHunter places come from Google place names so they
+    /// follow conventional title case ("Starbucks Pavilion KL"). If this
+    /// proves brittle we can mirror a `nameLower` field in the Cloud Function.
+    func searchDbByName(_ text: String,
+                       around coord: CLLocationCoordinate2D?) async throws -> [PlaceCandidate] {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+        let upperBound = trimmed + "\u{f8ff}"
+        let snap = try await Firestore.firestore()
+            .collection("places")
+            .whereField("name", isGreaterThanOrEqualTo: trimmed)
+            .whereField("name", isLessThan: upperBound)
+            .limit(to: 30)
+            .getDocuments()
+        let origin = coord.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
+        var out: [PlaceCandidate] = []
+        for doc in snap.documents {
+            let d = doc.data()
+            guard let name = d["name"] as? String,
+                  let lat = d["lat"] as? Double,
+                  let lng = d["lng"] as? Double else { continue }
+            let typeStr = (d["type"] as? String) ?? "restaurant"
+            let resolvedType = PlaceType(rawValue: typeStr) ?? .restaurant
+            let placeLoc = CLLocation(latitude: lat, longitude: lng)
+            let distance = origin.map { placeLoc.distance(from: $0) }
+            out.append(PlaceCandidate(
+                id: doc.documentID,
+                googlePlaceId: d["googlePlaceId"] as? String,
+                name: name,
+                address: nil,
+                suggestedType: resolvedType,
+                lat: lat,
+                lng: lng,
+                distanceMeters: distance,
+                source: .db,
+                globalVisitCount: d["globalVisitCount"] as? Int
+            ))
+        }
+        #if DEBUG
+        print("[PlacePicker] DB name-prefix '\(trimmed)' returned \(out.count) results")
+        #endif
+        return out
+    }
+
     func autocomplete(_ query: String,
                       around coord: CLLocationCoordinate2D?) async throws -> [PlaceCandidate] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
@@ -292,15 +349,16 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
         // had the user at the wrong storefront. Battery cost is negligible
         // because we only stream while the app is foregrounded.
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        // Kick off authorization + a continuous stream so we have a warm
-        // location when the picker is later opened.
-        switch manager.authorizationStatus {
-        case .authorizedWhenInUse, .authorizedAlways:
+        // Warm the cache *only if permission is already granted*. Prompting
+        // here would fire the system alert on app launch, which would race
+        // ahead of the welcome carousel's location-prime card. Prompting is
+        // owned by:
+        //   - WelcomeView's third card (first-time users), or
+        //   - `currentCoordinate()` below (contextual fallback when the
+        //     picker is opened by someone who skipped the welcome).
+        if manager.authorizationStatus == .authorizedWhenInUse
+            || manager.authorizationStatus == .authorizedAlways {
             manager.startUpdatingLocation()
-        case .notDetermined:
-            manager.requestWhenInUseAuthorization()
-        default:
-            break
         }
     }
 

@@ -2,17 +2,17 @@
 title: Terms of Use
 ---
 
-# CafeHunter — Terms of Use
+# Wandery — Terms of Use
 
 _Last updated: 2026-05-20_
 
-These Terms of Use ("Terms") govern your use of the CafeHunter mobile application ("CafeHunter", "the app", "we", "us", "our"). By creating an account or using the app, you agree to these Terms.
+These Terms of Use ("Terms") govern your use of the Wandery mobile application ("Wandery", "the app", "we", "us", "our"). By creating an account or using the app, you agree to these Terms.
 
 If you do not agree, do not use the app.
 
 ## 1. Eligibility
 
-You must be **at least 13 years old** to use CafeHunter. If you are between 13 and the age of legal majority in your jurisdiction, you may only use the app with parental or guardian consent.
+You must be **at least 13 years old** to use Wandery. If you are between 13 and the age of legal majority in your jurisdiction, you may only use the app with parental or guardian consent.
 
 ## 2. Account
 
@@ -22,7 +22,7 @@ You can delete your account at any time from **Profile → Delete Account**. Del
 
 ## 3. User-Generated Content
 
-CafeHunter lets you create posts (photos and videos), captions, place tags, reactions, friend requests, and direct messages ("Content"). You retain ownership of your Content. By posting Content, you grant CafeHunter a worldwide, non-exclusive, royalty-free license to host, store, transmit, and display that Content for the purpose of operating the service.
+Wandery lets you create posts (photos and videos), captions, place tags, reactions, friend requests, and direct messages ("Content"). You retain ownership of your Content. By posting Content, you grant Wandery a worldwide, non-exclusive, royalty-free license to host, store, transmit, and display that Content for the purpose of operating the service.
 
 You are solely responsible for the Content you post and for any consequences arising from it.
 
@@ -61,11 +61,11 @@ We may suspend or terminate your account at any time, with or without notice, if
 
 ## 7. Disclaimer
 
-CafeHunter is provided "AS IS" without warranty of any kind. We do not guarantee the accuracy of place information, that the service will be uninterrupted, or that any defects will be corrected.
+Wandery is provided "AS IS" without warranty of any kind. We do not guarantee the accuracy of place information, that the service will be uninterrupted, or that any defects will be corrected.
 
 ## 8. Limitation of Liability
 
-To the maximum extent permitted by law, CafeHunter and its developers shall not be liable for any indirect, incidental, special, or consequential damages arising out of your use of the app.
+To the maximum extent permitted by law, Wandery and its developers shall not be liable for any indirect, incidental, special, or consequential damages arising out of your use of the app.
 
 ## 9. Changes to These Terms
 

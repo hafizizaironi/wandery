@@ -32,6 +32,6 @@ enum LegalURLs {
     /// `mailto:` URL with a default subject so support requests are
     /// easier to triage.
     static var supportMailto: URL {
-        URL(string: "mailto:\(supportEmail)?subject=CafeHunter%20Support")!
+        URL(string: "mailto:\(supportEmail)?subject=Wandery%20Support")!
     }
 }
