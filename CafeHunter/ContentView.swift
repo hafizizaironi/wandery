@@ -2,12 +2,13 @@ import FirebaseAuth
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var authService          = AuthService()
-    @StateObject private var firestoreService     = FirestoreService()
-    @StateObject private var statsService         = UserStatsService()
-    @StateObject private var socialService        = SocialService()
-    @StateObject private var conversationService  = ConversationService()
-    @StateObject private var visitTracker         = VisitTrackerService()
+    @State private var authService          = AuthService()
+    @State private var firestoreService     = FirestoreService()
+    @State private var statsService         = UserStatsService()
+    @State private var socialService        = SocialService()
+    @State private var userPrivateService   = UserPrivateService()
+    @State private var visitTracker         = VisitTrackerService()
+    @State private var conversationService  = ConversationService()
     @Environment(\.scenePhase) private var scenePhase
 
     /// Persists across launches — set true after a user finishes (or skips)
@@ -36,17 +37,28 @@ struct ContentView: View {
                     })
                     .transition(.opacity)
                 }
-            } else if socialService.isLoadingProfile {
+            } else if socialService.isLoadingProfile || userPrivateService.isLoading {
                 SplashView()
             } else if socialService.needsUsername {
                 UsernameOnboardingView(socialService: socialService, authService: authService)
+            } else if userPrivateService.needsBirthdate || userPrivateService.needsConsent {
+                BirthdateOnboardingView(
+                    userPrivateService: userPrivateService,
+                    authService:        authService
+                )
+            } else if userPrivateService.needsPhone {
+                PhoneOnboardingView(
+                    userPrivateService: userPrivateService,
+                    authService:        authService
+                )
             } else {
                 MainShellView(
                     authService:         authService,
                     firestoreService:    firestoreService,
                     statsService:        statsService,
                     socialService:       socialService,
-                    conversationService: conversationService
+                    conversationService: conversationService,
+                    userPrivateService:  userPrivateService
                 )
                 .onAppear  { firestoreService.subscribe() }
                 .onDisappear { firestoreService.unsubscribe() }
@@ -70,11 +82,16 @@ struct ContentView: View {
         }
         .task(id: authService.user?.uid) {
             socialService.start(for: authService.user)
+            userPrivateService.start(for: authService.user)
             conversationService.start(for: authService.user)
             // Catch up on any visit sessions that need to close after a
             // cold start. Cheap no-op when nothing's open.
             if authService.user != nil {
                 await visitTracker.sweepIfNeeded(force: true)
+                // First foreground after sign-in / cold launch counts as
+                // a presence event. The service throttles internally so
+                // repeated calls within ~5 min collapse to one write.
+                userPrivateService.touchLastSeen()
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -83,6 +100,7 @@ struct ContentView: View {
             // session closes so the next post counts as a fresh visit.
             guard phase == .active, authService.user != nil else { return }
             Task { await visitTracker.sweepIfNeeded() }
+            userPrivateService.touchLastSeen()
         }
     }
 }

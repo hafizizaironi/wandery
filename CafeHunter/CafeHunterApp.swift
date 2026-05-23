@@ -1,14 +1,15 @@
 import SwiftUI
-import FirebaseCore
 import GoogleSignIn
 import GooglePlacesSwift
 
 @main
 struct CafeHunterApp: App {
+    // FirebaseApp.configure() lives in `AppDelegate.didFinishLaunching`
+    // instead of here — required for the swizzling-disabled Phone Auth
+    // setup (see AppDelegate.swift comment for the why).
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        FirebaseApp.configure()
         AppAudioSession.registerObservers()
         Self.configureGooglePlaces()
         // Touch the LocationProvider singleton so it starts asking for / caching

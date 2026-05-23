@@ -6,12 +6,17 @@ struct AuthTextField: View {
     var isSecure: Bool = false
     @FocusState private var isFocused: Bool
 
+    private var promptText: Text {
+        Text(placeholder)
+            .foregroundStyle(AppTheme.textPrimary.opacity(0.4))
+    }
+
     var body: some View {
         Group {
             if isSecure {
-                SecureField(placeholder, text: $text)
+                SecureField("", text: $text, prompt: promptText)
             } else {
-                TextField(placeholder, text: $text)
+                TextField("", text: $text, prompt: promptText)
             }
         }
         .focused($isFocused)

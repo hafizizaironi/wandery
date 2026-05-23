@@ -9,9 +9,10 @@ import GoogleSignIn
 import UIKit
 
 @MainActor
-class AuthService: ObservableObject {
-    @Published var user: FirebaseAuth.User?
-    @Published var isLoading = true
+@Observable
+final class AuthService {
+    var user: FirebaseAuth.User?
+    var isLoading = true
 
     /// Set your admin Firebase UID in Info.plist under the key "ADMIN_UID".
     let adminUID: String = Bundle.main.object(forInfoDictionaryKey: "ADMIN_UID") as? String ?? ""
@@ -21,9 +22,14 @@ class AuthService: ObservableObject {
         return uid == adminUID
     }
 
-    private var handle: AuthStateDidChangeListenerHandle?
+    // `nonisolated(unsafe)` lets `deinit` (which is nonisolated) read the
+    // handle to detach the listener. Only ever touched during init + deinit
+    // so there's no real concurrency to protect against.
+    nonisolated(unsafe) private var handle: AuthStateDidChangeListenerHandle?
 
     init() {
+        // `appVerificationDisabledForTesting` is set up in `CafeHunterApp.init`
+        // so the flag lands before any other code touches Auth.
         handle = Auth.auth().addStateDidChangeListener { [weak self] _, user in
             Task { @MainActor [weak self] in
                 self?.user = user

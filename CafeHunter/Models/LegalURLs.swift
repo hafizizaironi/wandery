@@ -34,4 +34,18 @@ enum LegalURLs {
     static var supportMailto: URL {
         URL(string: "mailto:\(supportEmail)?subject=Wandery%20Support")!
     }
+
+    /// Version identifiers for the Terms of Use and Privacy Policy. Bumped
+    /// whenever the hosted documents change in a material way. The signup
+    /// flow records the accepted version on the user's private doc; if the
+    /// version here doesn't match what the user accepted, they're re-
+    /// prompted on next launch. Date-based so the "what did they accept"
+    /// answer is grep-able from Firestore.
+    static let termsVersion = "2026-05-23"
+    static let privacyVersion = "2026-05-23"
+
+    /// Minimum age required to use the app. 13 mirrors COPPA in the US and
+    /// the most common floor across regions. Some EU member states require
+    /// 16 — leave country-specific tightening for later.
+    static let minimumAge = 13
 }
