@@ -6,20 +6,16 @@ import FirebaseFunctions
 // MARK: - Profile home (tab page)
 
 struct ProfileHomeView: View {
-    @ObservedObject var authService:         AuthService
-    @ObservedObject var statsService:        UserStatsService
-    @ObservedObject var socialService:       SocialService
-    @ObservedObject var conversationService: ConversationService
+    var authService:         AuthService
+    var statsService:        UserStatsService
+    var socialService:       SocialService
+    var userPrivateService:  UserPrivateService
     /// True while this shell page is the visible tab (Map / Hero / Profile pager).
     var isTabActive: Bool
-    /// Flipped to true while a chat overlay is presented from this page so
-    /// MainShellView can spring the arc navbar off-screen. Mirrors the
-    /// same binding HeroPageView writes to.
-    @Binding var isChatActive: Bool
-    /// Set by MainShellView. Called when a chat thumbnail tapped here
-    /// wants to land on a post in the Hero feed; the shell switches to
-    /// the Hero tab and HeroPageView scrolls to the post.
-    var onJumpToHeroPost: (String) -> Void = { _ in }
+    /// Fired when the user taps the per-row chat icon in the friends
+    /// floating panel. MainShellView responds by presenting the chat
+    /// fullScreenCover already opened to this friend's thread.
+    var onMessageFriend: (FriendRow) -> Void = { _ in }
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -30,15 +26,12 @@ struct ProfileHomeView: View {
     @State private var friendBusy          = false
     @State private var friendMessage       = ""
     @State private var showFriendList      = false
-    @State private var pendingChat: PendingChat?
     /// Tracks which friend request is currently being accepted or declined
     /// so the row can show a spinner in place of the button label and the
     /// other action is disabled. Cleared once the await returns. The
     /// request id (not just a bool) is needed because incoming requests
     /// render in a ForEach — the busy state has to be per-row.
     @State private var processingRequestId: String?
-    @State private var isBackfilling       = false
-    @State private var backfillMessage     = ""
     @State private var signOutError       = ""
     @State private var showDeleteConfirm   = false
     @State private var isDeleting          = false
@@ -54,10 +47,24 @@ struct ProfileHomeView: View {
     /// suggestions survive across re-renders triggered by other state.
     @State private var friendSearch = FriendSearchModel()
 
-    /// Memoized derived state — see computeMilestones() / computeUnlockedCount().
-    /// Recomputed only via the .task(id:) at the bottom of body, not on
-    /// every body re-render.
-    @State private var memoizedMilestones: [MilestoneItem] = []
+    // Long-press-on-avatar moderation surface state. The .contextMenu on
+    // each FriendAvatarChip routes through these.
+    @State private var pendingUnfriend: FriendRow?
+    @State private var pendingBlock: FriendRow?
+    @State private var reportTarget: ReportTarget?
+
+    /// Presents the Creator's Pick curation surface (admin-only).
+    @State private var showCreatorPicksAdmin = false
+    /// Presents the FriendFind contact-scan surface.
+    @State private var showFriendFind = false
+
+    /// Memoized derived state. Recomputed via the .task(id:) at the bottom
+    /// of body, not on every body re-render.
+    /// `memoizedVisitedPlaces` drives the new "Your Story So Far" strip:
+    /// one card per distinct place the user has tagged in their own image
+    /// posts, most-recent visit first. Built from `socialService.feedPosts`
+    /// (which already includes the user's own posts).
+    @State private var memoizedVisitedPlaces: [VisitedPlaceItem] = []
     @State private var memoizedUnlockedCount: Int = 0
 
     // MARK: - Computed helpers
@@ -86,39 +93,45 @@ struct ProfileHomeView: View {
         return "Hunting since \(formatted)"
     }
 
-    // Build chronological milestone cards from unlocked achievements.
-    // Cached in `memoizedMilestones`; recomputed only when the achievement
-    // dictionary or the account creation date changes (driven by .task(id:)
-    // on the body below). Avoids running the sort + alloc on every parent
-    // re-render — and there are a lot of those since 4 @ObservedObject
-    // services feed this view.
-    private func computeMilestones() -> [MilestoneItem] {
-        var items: [MilestoneItem] = []
-        if let created = user?.metadata.creationDate {
-            items.append(MilestoneItem(id: "start", icon: "🚀",
-                                       title: "First Step",
-                                       description: "Joined the hunt",
-                                       date: created))
-        }
-        for a in Achievement.definitions {
-            if let date = statsService.stats.unlockedAchievements[a.id] {
-                items.append(MilestoneItem(id: a.id, icon: a.icon,
-                                           title: a.title,
-                                           description: a.flavourText,
-                                           date: date))
+    // Build the "Your Story So Far" cards from the user's own image posts.
+    // One card per distinct place the user has tagged; most-recent visit
+    // wins when the same place was tagged multiple times so a fresh photo
+    // surfaces on top. Memoized via `.task(id: …)` on body so the group +
+    // dedup work doesn't run on every parent re-render.
+    private func computeVisitedPlaces() -> [VisitedPlaceItem] {
+        guard let myUid = user?.uid else { return [] }
+        // Dedup by placeId, keeping the most recent post per place.
+        var byPlace: [String: FriendPost] = [:]
+        for post in socialService.feedPosts {
+            guard post.authorId == myUid,
+                  post.mediaType == "image",
+                  !post.mediaURL.isEmpty,
+                  let placeId = post.placeId, !placeId.isEmpty
+            else { continue }
+            if let existing = byPlace[placeId], existing.createdAt > post.createdAt {
+                continue
             }
+            byPlace[placeId] = post
         }
-        return items.sorted { $0.date < $1.date }
+        return byPlace.values
+            .map { VisitedPlaceItem(
+                id: $0.placeId ?? $0.id,
+                placeName: $0.placeName ?? "Unnamed place",
+                mediaURL: $0.mediaURL,
+                visitedAt: $0.createdAt
+            )}
+            .sorted { $0.visitedAt > $1.visitedAt }
     }
 
-    // Anniversary badge is evaluated from account creation date
+    // Routes through the fileprivate `achievementIsUnlocked` so this and
+    // the extracted `AchievementsSection` can never drift apart on what
+    // counts as "unlocked".
     private func isUnlocked(_ achievement: Achievement) -> Bool {
-        if achievement.id == "anniversary" {
-            guard let created = user?.metadata.creationDate else { return false }
-            return Date.now.timeIntervalSince(created) >= 365 * 24 * 3600
-        }
-        return statsService.stats.unlockedAchievements[achievement.id] != nil
-            || achievement.condition(statsService.stats)
+        achievementIsUnlocked(
+            achievement,
+            stats: statsService.stats,
+            accountCreatedAt: user?.metadata.creationDate
+        )
     }
 
     private func unlockDate(for achievement: Achievement) -> Date? {
@@ -153,8 +166,15 @@ struct ProfileHomeView: View {
                 }
                 .padding(.bottom, ArcNavBar.frameContentHeight + 24)
             }
+            // Drag-to-dismiss replaces the previous `.keyboardDismissToolbar()`
+            // accessory bar. That toolbar was leaking into ChatView's keyboard
+            // (ChatView is presented as an overlay of this view, so it
+            // inherits any `.toolbar(placement: .keyboard)` modifier) and
+            // crowding out the iOS predictive-emoji bar. Drag-to-dismiss
+            // covers the same intent without sitting on top of every
+            // TextField keyboard the user opens anywhere in the profile.
+            .scrollDismissesKeyboard(.interactively)
         }
-        .keyboardDismissToolbar()
         .floatingPanel(isPresented: $showEditProfile) {
             if let u = user {
                 EditProfileView(user: u, authService: authService) {
@@ -173,43 +193,73 @@ struct ProfileHomeView: View {
             FriendListView(
                 socialService: socialService,
                 loader: friendLoader,
-                onMessage: { row in openChat(otherUid: row.id, title: row.titleText) },
+                onMessage: { row in
+                    // Close the panel first so the fullScreenCover lands
+                    // on the underlying ProfileHomeView, not on top of
+                    // the floating panel (which then jumps to dismiss).
+                    showFriendList = false
+                    onMessageFriend(row)
+                },
                 onClose: { showFriendList = false }
             )
         }
-        // Full-screen chat — slides in from the trailing edge. Same pattern
-        // as the Hero feed's chat presentation so the surface is consistent.
-        .overlay {
-            if let chat = pendingChat {
-                ChatView(
-                    conversationService: conversationService,
-                    socialService: socialService,
-                    convId: chat.convId,
-                    otherUid: chat.otherUid,
-                    otherTitle: chat.title,
-                    onClose: {
-                        conversationService.openThread(nil)
-                        pendingChat = nil
-                    },
-                    onJumpToPost: { postId in
-                        conversationService.openThread(nil)
-                        pendingChat = nil
-                        onJumpToHeroPost(postId)
-                    }
-                )
-                .background(AppTheme.espresso.ignoresSafeArea())
-                .ignoresSafeArea(.container)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-                .zIndex(40)
-            }
-        }
-        .animation(
-            .motionRespecting(
-                .spring(response: 0.28, dampingFraction: 0.86),
-                reduceMotion: reduceMotion
+        // Long-press friend-avatar moderation flows. Mirror the pattern
+        // FriendListView already uses internally — alert for destructive
+        // confirms, sheet for the Report flow.
+        .alert(
+            "Unfriend \(pendingUnfriend?.titleText ?? "")?",
+            isPresented: Binding(
+                get: { pendingUnfriend != nil },
+                set: { if !$0 { pendingUnfriend = nil } }
             ),
-            value: pendingChat?.id
-        )
+            presenting: pendingUnfriend
+        ) { row in
+            Button("Cancel", role: .cancel) { pendingUnfriend = nil }
+            Button("Unfriend", role: .destructive) {
+                Task {
+                    pendingUnfriend = nil
+                    try? await socialService.removeFriend(uid: row.id)
+                }
+            }
+        } message: { _ in
+            Text("They'll no longer see your posts and you won't see theirs.")
+        }
+        .alert(
+            "Block \(pendingBlock?.titleText ?? "")?",
+            isPresented: Binding(
+                get: { pendingBlock != nil },
+                set: { if !$0 { pendingBlock = nil } }
+            ),
+            presenting: pendingBlock
+        ) { row in
+            Button("Cancel", role: .cancel) { pendingBlock = nil }
+            Button("Block", role: .destructive) {
+                Task {
+                    pendingBlock = nil
+                    try? await socialService.blockUser(uid: row.id)
+                }
+            }
+        } message: { _ in
+            Text("They'll be removed from your friends, can't message you, and won't appear in your feed.")
+        }
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                targetType: target.type,
+                targetId: target.targetId,
+                socialService: socialService
+            )
+            .presentationDetents([.medium, .large])
+        }
+        .fullScreenCover(isPresented: $showCreatorPicksAdmin) {
+            CreatorPicksAdminView(onClose: { showCreatorPicksAdmin = false })
+        }
+        .fullScreenCover(isPresented: $showFriendFind) {
+            FriendFindView(
+                socialService:      socialService,
+                userPrivateService: userPrivateService,
+                onClose:            { showFriendFind = false }
+            )
+        }
         // Pre-hydrate friend profiles while the user is still on the
         // profile page, so opening the Friends panel feels instant
         // instead of "tap → spinner → list".
@@ -218,24 +268,21 @@ struct ProfileHomeView: View {
         }
         // Recompute milestone + achievement-unlock derived state only when
         // the underlying achievement dictionary changes — not on every
-        // parent re-render. The 4-service @ObservedObject pattern means
+        // parent re-render. With the @Observable migration, only views
+        // that read `stats.unlockedAchievements` invalidate on change, but
+        // memoizing here still avoids redundant sorting + filtering on
+        // unrelated body re-evaluations.
         // body invalidates often (Firestore listener fires); without this
         // memoization we'd re-sort milestones and re-filter unlock count
         // on every chat message or feed snapshot.
         .task(id: statsService.stats.unlockedAchievements) {
-            memoizedMilestones = computeMilestones()
             memoizedUnlockedCount = computeUnlockedCount()
         }
-        // Hide the arc navbar while a chat overlay is presented from
-        // this page — mirrors HeroPageView's syncChatActiveFlag. Same
-        // spring as the shell so the navbar slide and the chat slide-in
-        // read as one coupled motion.
-        .onChange(of: pendingChat?.id) { _, _ in
-            let active = pendingChat != nil
-            guard active != isChatActive else { return }
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.78)) {
-                isChatActive = active
-            }
+        // Story-strip cards depend on the user's own posts. Recompute when
+        // the feed changes (which fires when a new post lands or when the
+        // listener re-emits after sign-in).
+        .task(id: socialService.feedPosts.count) {
+            memoizedVisitedPlaces = computeVisitedPlaces()
         }
         .onChange(of: isTabActive) { _, active in
             guard active else { return }
@@ -354,7 +401,7 @@ struct ProfileHomeView: View {
     @ViewBuilder
     private var avatarView: some View {
         if let url = user?.photoURL {
-            AsyncImage(url: url) { phase in
+            CachedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let img): img.resizable().scaledToFill()
                 default: initialsCircle
@@ -386,16 +433,20 @@ struct ProfileHomeView: View {
     }
 
     // MARK: - Stats row
+    //
+    // Implementation lives in `StatsRow` further down the file. Wrapping in
+    // `.equatable()` lets SwiftUI skip body re-evaluation when the three
+    // ints are unchanged from the previous render — which is almost always
+    // true even when surrounding state (friend strip, requests, story)
+    // updates several times a second from Firestore listeners.
 
     private var statsRow: some View {
-        HStack(spacing: 10) {
-            ProfileStatCell(value: "\(statsService.stats.cafesVisited)",  label: "Cafés",   icon: "☕")
-            ProfileStatCell(value: "\(statsService.stats.stallsVisited)", label: "Stalls",  icon: "🍜")
-            ProfileStatCell(value: "\(daysActive)",                       label: "Days",    icon: "📅")
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 20)
-        .padding(.bottom, 8)
+        StatsRow(
+            cafes: statsService.stats.cafesVisited,
+            stalls: statsService.stats.stallsVisited,
+            days: daysActive
+        )
+        .equatable()
     }
 
     // MARK: - Friend requests
@@ -531,15 +582,39 @@ struct ProfileHomeView: View {
             }
             .frame(height: 92)
         } else {
+            // Belt-and-suspenders: never render a row for someone in our
+            // blocked list. The blockUser cascade should keep them out of
+            // friendIds, but if the friends listener ever drifts (Firestore
+            // listener silent failure) a blocked user could ghost back in.
+            let visibleRows = friendLoader.rows.filter {
+                !socialService.blockedUserIds.contains($0.id)
+            }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
-                    ForEach(Array(friendLoader.rows.enumerated()), id: \.element.id) { index, row in
-                        Button {
-                            openChat(otherUid: row.id, title: row.titleText)
-                        } label: {
-                            FriendAvatarChip(row: row)
+                    ForEach(visibleRows.indices, id: \.self) { index in
+                        let row = visibleRows[index]
+                        FriendAvatarChip(row: row)
+                        // Long-press a friend's avatar for moderation
+                        // affordances. The tap target used to open a chat
+                        // thread; with chat removed, the avatar is no
+                        // longer interactive on tap — only via long-press.
+                        .contextMenu {
+                            Button {
+                                reportTarget = ReportTarget(type: .user, targetId: row.id)
+                            } label: {
+                                Label("Report \(row.titleText)", systemImage: "exclamationmark.triangle")
+                            }
+                            Button {
+                                pendingBlock = row
+                            } label: {
+                                Label("Block", systemImage: "hand.raised")
+                            }
+                            Button(role: .destructive) {
+                                pendingUnfriend = row
+                            } label: {
+                                Label("Unfriend", systemImage: "person.badge.minus")
+                            }
                         }
-                        .buttonStyle(.scalePress)
                         .transition(Motion.coziedScaleFade)
                         // 50ms cascade between bubbles — fast enough to
                         // feel snappy on a short list, slow enough to
@@ -675,7 +750,8 @@ struct ProfileHomeView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 12)
             } else {
-                ForEach(Array(friendSearch.suggestions.enumerated()), id: \.element.id) { index, hit in
+                ForEach(friendSearch.suggestions.indices, id: \.self) { index in
+                    let hit = friendSearch.suggestions[index]
                     Button {
                         // Send immediately — the user explicitly picked this
                         // row out of the dropdown, that's the confirmation.
@@ -778,101 +854,105 @@ struct ProfileHomeView: View {
     }
 
     // MARK: - Your story
+    //
+    // Implementation lives in `StorySection` further down the file. Only
+    // depends on the memoized milestone array — body skips diffing when
+    // it's unchanged.
 
     private var storySection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                sectionHeader("YOUR STORY SO FAR")
-                Text("Milestones from your hunt and achievements — not your Hero feed posts.")
-                    .font(.caption2)
-                    .contrastAware(AppTheme.cream, opacity: 0.35)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 16)
-
-            if memoizedMilestones.isEmpty {
-                Text("Your story is just beginning —\ngo find your first spot! ☕")
-                    .font(.footnote)
-                    .contrastAware(AppTheme.cream, opacity: 0.4)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 24)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(memoizedMilestones) { item in
-                            StoryCard(item: item)
-                        }
-                        if memoizedMilestones.count < 4 {
-                            StoryTeaserCard()
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 4)
-                }
-            }
-        }
-        .padding(.top, 24)
+        StorySection(places: memoizedVisitedPlaces)
     }
 
     // MARK: - Achievements
+    //
+    // Implementation lives in `AchievementsSection` further down the file.
+    // Receives the unlocked-date map directly so SwiftUI can diff it as a
+    // single value rather than re-reading every achievement off the stats
+    // service on each parent re-render.
 
     private var achievementsSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            sectionHeader(
-                "ACHIEVEMENTS",
-                trailing: "\(memoizedUnlockedCount) / \(Achievement.definitions.count)"
-            )
-
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
-                spacing: 16
-            ) {
-                ForEach(Achievement.definitions) { achievement in
-                    Button {
-                        selectedAchievement = achievement
-                    } label: {
-                        AchievementBadge(
-                            achievement: achievement,
-                            isUnlocked:  isUnlocked(achievement)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(16)
-        .padding(.top, 12)
+        AchievementsSection(
+            stats: statsService.stats,
+            accountCreatedAt: user?.metadata.creationDate,
+            unlockedCount: memoizedUnlockedCount,
+            onTap: { selectedAchievement = $0 }
+        )
     }
 
     // MARK: - Settings
 
     private var settingsSection: some View {
         VStack(spacing: 12) {
-            if authService.isAdmin {
-                HStack {
-                    Image(systemName: "star.fill")
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.cafeAccent)
-                    Text("Admin Account")
-                        .font(.caption).bold()
-                        .foregroundStyle(AppTheme.cafeAccent)
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                showFriendFind = true
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.2.wave.2.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.accentAction)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Find friends from contacts")
+                            .font(.subheadline).bold()
+                            .foregroundStyle(AppTheme.textPrimary)
+                        Text("See who's already on the app")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textSecondary.opacity(0.5))
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(AppTheme.cafeAccent.opacity(0.1))
-                .clipShape(.rect(cornerRadius: 20))
+                .padding(.vertical, 12)
+                .background(AppTheme.textPrimary.opacity(0.04))
+                .clipShape(.rect(cornerRadius: 14))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
                 }
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Find friends from contacts")
 
-            // Anyone can recompute their own Phase 5 counters. Useful for
-            // bringing legacy activity (posts/visits/places from before
-            // the achievement triggers shipped) into the achievement
-            // grid without waiting for new history to accumulate.
-            backfillStatsButton
+            if authService.isAdmin {
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    showCreatorPicksAdmin = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cafeAccent)
+                        Text("Manage Creator's Pick")
+                            .font(.caption).bold()
+                            .foregroundStyle(AppTheme.cafeAccent)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cafeAccent.opacity(0.6))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.cafeAccent.opacity(0.1))
+                    .clipShape(.rect(cornerRadius: 20))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Manage Creator's Pick")
+            }
+
+            // (Manual "Recompute achievements" button was removed — the
+            // user-doc listener + `persistNewlyUnlocked` chain in
+            // UserStatsService.subscribe now lays down unlock timestamps
+            // automatically the moment a stat-bumping trigger fires
+            // server-side. The backfillMyStats Cloud Function is kept on
+            // the server for support emergencies but no longer surfaced
+            // in the UI.)
 
             // Reviewer-required legal + support surfaces. App Store
             // Guideline 1.2 expects users to reach the developer from
@@ -1015,92 +1095,11 @@ struct ProfileHomeView: View {
 
     // MARK: - Section header helper
 
+    /// Shim so existing call sites in this struct's body continue to work
+    /// after `sectionHeader` was promoted into a fileprivate `SectionHeader`
+    /// View (so the extracted private subviews below can share it).
     private func sectionHeader(_ title: String, trailing: String? = nil) -> some View {
-        HStack {
-            Text(title)
-                .font(.caption2).bold()
-                .tracking(2)
-                .contrastAware(AppTheme.cream, opacity: 0.35)
-                .accessibilityAddTraits(.isHeader)
-            Spacer()
-            if let t = trailing {
-                Text(t)
-                    .font(.caption2).bold()
-                    .foregroundStyle(AppTheme.cafeAccent)
-            }
-        }
-    }
-
-    // MARK: - Backfill stats
-
-    private var backfillStatsButton: some View {
-        VStack(spacing: 6) {
-            Button { Task { await runBackfill() } } label: {
-                HStack(spacing: 8) {
-                    if isBackfilling {
-                        ProgressView().scaleEffect(0.7)
-                    } else {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.caption).bold()
-                    }
-                    Text(isBackfilling ? "Recomputing…" : "Recompute achievements")
-                        .font(.caption).bold()
-                }
-                .contrastAware(AppTheme.cream, opacity: 0.55)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(AppTheme.cream.opacity(0.04))
-                .clipShape(.rect(cornerRadius: 20))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(AppTheme.cream.opacity(0.10), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(isBackfilling)
-
-            if !backfillMessage.isEmpty {
-                Text(backfillMessage)
-                    .font(.caption2)
-                    .contrastAware(AppTheme.cream, opacity: 0.5)
-            }
-        }
-    }
-
-    private func runBackfill() async {
-        isBackfilling = true
-        backfillMessage = ""
-        defer { isBackfilling = false }
-        do {
-            let callable = Functions.functions().httpsCallable("backfillMyStats")
-            let result = try await callable.call([:])
-            if let dict = result.data as? [String: Any] {
-                let unique = dict["uniquePlacesVisited"] as? Int ?? 0
-                let pioneer = dict["pioneerCount"] as? Int ?? 0
-                let reactions = dict["reactionsReceived"] as? Int ?? 0
-                backfillMessage = "Found \(unique) places, \(pioneer) pioneered, \(reactions) reactions."
-            } else {
-                backfillMessage = "Done."
-            }
-        } catch {
-            backfillMessage = error.localizedDescription
-        }
-    }
-
-    // MARK: - Chat entry
-
-    /// Presents the chat sheet immediately. The conversation document is
-    /// *lazy-created* by ChatView on first send — see ChatView.send().
-    ///
-    /// Previous attempts (a) awaited findOrCreateConversation before
-    /// presenting (200–400ms blank gap) and (b) ran it in the background
-    /// after presenting (silently dismissed the chat if the create failed).
-    /// Both surprised the user. The lazy-on-send pattern matches the
-    /// expected mental model: tap Message → chat opens → type → first
-    /// send creates the thread + delivers the message.
-    private func openChat(otherUid: String, title: String) {
-        showFriendList = false
-        pendingChat = PendingChat(convId: nil, otherUid: otherUid, title: title)
+        SectionHeader(title: title, trailing: trailing)
     }
 
     // MARK: - Accept / decline friend request
@@ -1146,24 +1145,6 @@ struct ProfileHomeView: View {
         }
         friendBusy = false
     }
-}
-
-// MARK: - Pending chat (sheet driver)
-
-/// Identity wrapper so `.floatingPanel(item:)` can present a freshly-opened
-/// chat thread. Recreated each time `openChat` runs, even for the same
-/// friend, so the sheet always re-presents.
-///
-/// `convId` is optional because we present the chat shell *immediately* on
-/// the user's tap (so it slides in without waiting for Firestore) and patch
-/// the convId in once `findOrCreateConversation` resolves. ChatView keeps
-/// its @State across the patch since its position in the view tree doesn't
-/// change.
-struct PendingChat: Identifiable, Equatable {
-    let id = UUID()
-    var convId: String?
-    let otherUid: String
-    let title: String
 }
 
 // MARK: - Stat cell
@@ -1355,61 +1336,6 @@ private struct FriendAvatarChip: View {
     }
 }
 
-// MARK: - Milestone model
-
-struct MilestoneItem: Identifiable {
-    let id:          String
-    let icon:        String
-    let title:       String
-    let description: String
-    let date:        Date
-}
-
-// MARK: - Story card
-
-private struct StoryCard: View {
-    let item: MilestoneItem
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(item.icon)
-                .font(.largeTitle)
-
-            Spacer()
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
-                    .font(.subheadline).bold()
-                    .foregroundStyle(AppTheme.cream)
-                Text(item.description)
-                    .font(.caption2)
-                    .contrastAware(AppTheme.cream, opacity: 0.55)
-                    .lineLimit(2)
-                Text(item.date, format: .dateTime.day().month(.abbreviated).year())
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.cafeAccent.opacity(0.8))
-            }
-        }
-        .padding(16)
-        .frame(width: 148, height: 160)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.18, green: 0.10, blue: 0.05),
-                    Color(red: 0.12, green: 0.07, blue: 0.03),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .clipShape(.rect(cornerRadius: 16))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(AppTheme.cafeAccent.opacity(0.18), lineWidth: 1)
-        }
-    }
-}
-
 // MARK: - Story teaser card
 
 private struct StoryTeaserCard: View {
@@ -1571,4 +1497,225 @@ struct AchievementDetailSheet: View {
             }
         }
     }
+}
+
+// MARK: - Section header (shared)
+
+/// Small reusable header for the labelled sections in this profile. Promoted
+/// to a fileprivate View so the extracted private subviews below
+/// (StatsRow, StorySection, AchievementsSection) can share it without
+/// reaching into ProfileHomeView's private methods.
+fileprivate struct SectionHeader: View {
+    let title: String
+    var trailing: String?
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.caption2).bold()
+                .tracking(2)
+                .contrastAware(AppTheme.cream, opacity: 0.35)
+                .accessibilityAddTraits(.isHeader)
+            Spacer()
+            if let t = trailing {
+                Text(t)
+                    .font(.caption2).bold()
+                    .foregroundStyle(AppTheme.cafeAccent)
+            }
+        }
+    }
+}
+
+// MARK: - StatsRow (extracted)
+
+/// 3-tile row at the top of the profile (Cafés / Stalls / Days). Equatable
+/// so SwiftUI's `.equatable()` modifier can skip body re-evaluation when
+/// the three integer inputs are unchanged from the previous render — which
+/// is the common case while surrounding state churns (friend strip,
+/// requests, story timeline, etc).
+fileprivate struct StatsRow: View, Equatable {
+    let cafes: Int
+    let stalls: Int
+    let days: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProfileStatCell(value: "\(cafes)",  label: "Cafés",  icon: "☕")
+            ProfileStatCell(value: "\(stalls)", label: "Stalls", icon: "🍜")
+            ProfileStatCell(value: "\(days)",   label: "Days",   icon: "📅")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+        .padding(.bottom, 8)
+    }
+}
+
+// MARK: - StorySection (extracted)
+
+/// Horizontal "Your Story So Far" strip showing one card per distinct
+/// place the user has personally tagged. Sole dependency is the
+/// `[VisitedPlaceItem]` array — when unchanged, SwiftUI skips
+/// re-evaluation. Photo source is the user's own post photo for that
+/// place, so the section feels like a personal hunting log.
+fileprivate struct StorySection: View {
+    let places: [VisitedPlaceItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                SectionHeader(title: "YOUR STORY SO FAR")
+                Text("Places you've tagged on your hunt.")
+                    .font(.caption2)
+                    .contrastAware(AppTheme.cream, opacity: 0.35)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 16)
+
+            if places.isEmpty {
+                Text("Your story is just beginning —\ngo find your first spot! ☕")
+                    .font(.footnote)
+                    .contrastAware(AppTheme.cream, opacity: 0.4)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(places) { place in
+                            VisitedPlaceCard(item: place)
+                        }
+                        if places.count < 4 {
+                            StoryTeaserCard()
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .padding(.top, 24)
+    }
+}
+
+// MARK: - Visited place card (story strip)
+
+/// Card model for one place in "Your Story So Far". Identified by
+/// placeId so re-renders are stable across feed updates that don't
+/// change the underlying place set.
+struct VisitedPlaceItem: Identifiable, Equatable {
+    let id: String           // = placeId
+    let placeName: String
+    let mediaURL: String
+    let visitedAt: Date
+}
+
+/// One card in the story strip — photo of the place from the user's own
+/// post, place name overlay, visit-date caption. Tappable feel matches
+/// the friend-strip avatar style (scale-press) so the whole section
+/// feels like the same interaction surface.
+private struct VisitedPlaceCard: View {
+    let item: VisitedPlaceItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let url = URL(string: item.mediaURL) {
+                CachedAsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img): img.resizable().scaledToFill()
+                    default: Color.black.opacity(0.2)
+                    }
+                }
+                .frame(width: 148, height: 116)
+                .clipped()
+            } else {
+                Color.black.opacity(0.2)
+                    .frame(width: 148, height: 116)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.placeName)
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.cream)
+                    .lineLimit(1)
+                Text(item.visitedAt, format: .dateTime.day().month(.abbreviated))
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.cafeAccent.opacity(0.85))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .frame(width: 148, height: 164, alignment: .topLeading)
+        .background(AppTheme.cream.opacity(0.05))
+        .clipShape(.rect(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(AppTheme.cafeAccent.opacity(0.18), lineWidth: 1)
+        }
+    }
+}
+
+// MARK: - AchievementsSection (extracted)
+
+/// Achievement grid. Receives the full `UserStats` value + the account
+/// creation date so it can apply the same two-source unlock test the
+/// parent's `isUnlocked` uses:
+///   1. Stored unlock-timestamp on `users/{uid}.unlockedAchievements`.
+///   2. Fallback — the current stats meet the achievement's condition.
+/// The fallback is what keeps badges illuminated when the stored unlock
+/// never made it into Firestore (e.g. the previous version's broken
+/// strict-cast parse silently dropped the map). Both parent and section
+/// route through `achievementIsUnlocked(...)` so behavior stays
+/// identical to the pre-extraction code.
+fileprivate struct AchievementsSection: View {
+    let stats: UserStats
+    let accountCreatedAt: Date?
+    let unlockedCount: Int
+    let onTap: (Achievement) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(
+                title: "ACHIEVEMENTS",
+                trailing: "\(unlockedCount) / \(Achievement.definitions.count)"
+            )
+
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
+                spacing: 16
+            ) {
+                ForEach(Achievement.definitions) { achievement in
+                    Button { onTap(achievement) } label: {
+                        AchievementBadge(
+                            achievement: achievement,
+                            isUnlocked: achievementIsUnlocked(
+                                achievement,
+                                stats: stats,
+                                accountCreatedAt: accountCreatedAt
+                            )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(16)
+        .padding(.top, 12)
+    }
+}
+
+/// Single source of truth for "is this achievement unlocked?". Shared by
+/// `ProfileHomeView.isUnlocked` and `AchievementsSection` so the two
+/// can't drift apart again the way they did during the perf-pass
+/// extraction.
+fileprivate func achievementIsUnlocked(
+    _ achievement: Achievement,
+    stats: UserStats,
+    accountCreatedAt: Date?
+) -> Bool {
+    if achievement.id == "anniversary" {
+        guard let created = accountCreatedAt else { return false }
+        return Date.now.timeIntervalSince(created) >= 365 * 24 * 3600
+    }
+    return stats.unlockedAchievements[achievement.id] != nil
+        || achievement.condition(stats)
 }

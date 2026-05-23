@@ -10,6 +10,13 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == uid;
     }
 
+    // Admin escape hatch. Mirror of `ADMIN_UID` in the client Info.plist
+    // (read by `AuthService.isAdmin`). Update both when rotating admins.
+    // TODO: replace the literal with your admin Firebase UID before deploy.
+    function isAdmin() {
+      return signedIn() && request.auth.uid == "A7waeoywDgdauEvQk3SsjPRYzPg2";
+    }
+
     function postAuthorId(postId) {
       return get(/databases/$(database)/documents/posts/$(postId)).data.authorId;
     }
@@ -33,15 +40,15 @@ service cloud.firestore {
     }
 
     // Places — read by any signed-in user (the picker, the map, Discover
-    // all need this). All mutations are server-owned: creation flows
-    // through the `findOrCreatePlace` callable; counters
-    // (`globalVisitCount`, `globalEngagementCount`) are bumped by
-    // Firestore triggers that use the admin SDK. Direct client writes are
-    // denied so a malicious client can't fabricate a popular spot or
-    // tamper with engagement.
+    // all need this). Counter fields (`globalVisitCount`,
+    // `globalEngagementCount`) are bumped by Firestore triggers that use
+    // the admin SDK and bypass these rules. Direct client writes are
+    // denied for everyone *except* the configured admin UID, which can
+    // create/edit places via `AdminAddView` and curate Creator's Pick via
+    // `CreatorPicksAdminView`.
     match /places/{placeId} {
       allow read: if signedIn();
-      allow write: if false;
+      allow write: if isAdmin();
     }
 
     match /users/{uid} {
@@ -86,6 +93,14 @@ service cloud.firestore {
       }
     }
 
+    // Owner-only private profile fields — birthdate, ToS/Privacy consent
+    // timestamps, deletion request marker, future phone number. Split out
+    // from `users/{uid}` (which friends can read) so this sensitive data
+    // is never exposed across the friend graph.
+    match /userPrivate/{uid} {
+      allow read, write: if isSelf(uid);
+    }
+
     match /usernames/{name} {
       allow read: if signedIn();
       allow create: if signedIn()
@@ -108,7 +123,24 @@ service cloud.firestore {
     // sorted-uid pair joined by underscore. Participants arrays are
     // immutable; only `lastMessage*` fields update on send.
     match /conversations/{convId} {
-      allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
+      // Split get vs list:
+      //  - get: a single-doc fetch. Allow when the doc DOESN'T exist (so
+      //    `findOrCreateConversation`'s existence check can return "doesn't
+      //    exist" rather than permission-denied) OR when the caller is in
+      //    the participants. Conv ids are deterministic from the two uids,
+      //    which are knowable anyway, so exposing "is there a conv here?"
+      //    leaks nothing material.
+      //  - list: a collection-level query. Listed docs always exist, so we
+      //    just require the caller be a participant. The conversations
+      //    listener in ConversationService filters by participantIds
+      //    arrayContains me anyway, so every doc that comes back satisfies
+      //    this naturally.
+      allow get: if signedIn() && (
+        !exists(/databases/$(database)/documents/conversations/$(convId))
+        || request.auth.uid in resource.data.participantIds
+      );
+      allow list: if signedIn()
+        && request.auth.uid in resource.data.participantIds;
       allow create: if signedIn()
         && request.resource.data.participantIds is list
         && request.resource.data.participantIds.size() == 2
@@ -127,7 +159,15 @@ service cloud.firestore {
         allow create: if signedIn()
           && request.resource.data.senderId == request.auth.uid
           && request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds;
-        allow update, delete: if false;
+        // Messages are otherwise immutable — only the `reactions` map
+        // may be added/changed by any conversation participant.
+        // `.diff(...).affectedKeys().hasOnly(['reactions'])` blocks any
+        // attempt to edit `text`, `senderId`, `createdAt`, etc. while
+        // still allowing iMessage-style reaction toggles.
+        allow update: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']);
+        allow delete: if false;
       }
     }
 

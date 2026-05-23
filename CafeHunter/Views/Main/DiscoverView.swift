@@ -2,7 +2,7 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
-/// "Worth exploring" surface — places near the user that have a
+/// "Creator's pick" surface — places near the user that have a
 /// classifier-approved discoverable post but that the user hasn't tagged
 /// yet. Renders as a map of place pins by default, with a list fallback.
 /// Tap a pin → camera focuses on it + a bottom card slides up showing the
@@ -51,10 +51,10 @@ struct DiscoverView: View {
                 .font(.title3)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Worth exploring")
+                Text("Creator's pick")
                     .font(.title3).bold()
                     .foregroundStyle(AppTheme.cream)
-                Text("Places nearby you haven't been yet")
+                Text("Creator favourites you haven't visited yet")
                     .font(.caption2)
                     .contrastAware(AppTheme.cream, opacity: 0.45)
             }
@@ -122,10 +122,10 @@ struct DiscoverView: View {
                 .font(.largeTitle)
                 .contrastAware(AppTheme.cream, opacity: 0.25)
                 .accessibilityHidden(true)
-            Text("Nothing to discover yet")
+            Text("No picks nearby yet")
                 .font(.subheadline).bold()
                 .contrastAware(AppTheme.cream, opacity: 0.65)
-            Text("Be the first to share a face-free, well-composed shot — those become Discover candidates automatically.")
+            Text("Creator's Pick spots show up here when there's one within 15 km of you.")
                 .font(.caption)
                 .multilineTextAlignment(.center)
                 .contrastAware(AppTheme.cream, opacity: 0.4)

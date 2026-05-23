@@ -141,9 +141,9 @@ enum FilterType: String, CaseIterable {
 // MARK: - Main map view
 
 struct MainMapView: View {
-    @ObservedObject var authService: AuthService
-    @ObservedObject var firestoreService: FirestoreService
-    @ObservedObject var socialService: SocialService
+    var authService: AuthService
+    var firestoreService: FirestoreService
+    var socialService: SocialService
     /// Set externally (e.g. from a feed pill tap) to fly to a place + open
     /// the detail sheet. Cleared once consumed.
     @Binding var pendingPlaceJumpId: String?
@@ -327,7 +327,7 @@ struct MainMapView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Discover places worth exploring")
+            .accessibilityLabel("Discover creator's pick places")
         }
         .padding(.trailing, 16)
         .padding(.top, 60)

@@ -98,7 +98,7 @@ firebase emulators:start
 
 ## Conventions for changes
 
-- **Edit don't recreate**: prefer `Edit` on existing files; new top-level files need an Xcode project entry too (the `.pbxproj` is regenerated only when files are added through Xcode — adding files purely on disk will not include them in the build target).
+- **Edit don't recreate**: prefer `Edit` on existing files. New files can be dropped anywhere under `CafeHunter/` on disk — the project uses an Xcode 16 `PBXFileSystemSynchronizedRootGroup`, so all files under that folder are auto-included in the target with no `.pbxproj` edit required. The only current exclusion is `Info.plist`.
 - **No comments by default**: code is largely uncommented. Only add a comment when the *why* is non-obvious (e.g. the existing comments in `AuthService.updateProfilePhoto` about cache busting).
 - **No mocks for Firebase**: services talk to real Firebase. Test against the emulator suite instead of stubbing.
 - **Risky actions to confirm before running**:
