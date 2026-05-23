@@ -403,9 +403,17 @@ private struct PostStackCard: View {
         )
     }
 
-    private var relativeTime: String {
+    /// Reused across rows so each card doesn't pay for formatter setup.
+    /// `RelativeDateTimeFormatter` instantiation is non-trivial; this
+    /// shaves a few ms off body-eval when the place sheet renders a
+    /// stack of post cards.
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
-        return f.localizedString(for: post.createdAt, relativeTo: .now)
+        return f
+    }()
+
+    private var relativeTime: String {
+        Self.relativeFormatter.localizedString(for: post.createdAt, relativeTo: .now)
     }
 }

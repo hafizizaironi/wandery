@@ -6,7 +6,7 @@ import SwiftUI
 struct ReportSheet: View {
     let targetType: ReportTargetType
     let targetId: String
-    @ObservedObject var socialService: SocialService
+    var socialService: SocialService
     var onCompleted: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss

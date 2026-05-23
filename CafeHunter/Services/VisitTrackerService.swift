@@ -24,7 +24,8 @@ import FirebaseFirestore
 /// next time the app foregrounds with a fix beyond the threshold, which
 /// is plenty for "did the user leave the cafe" semantics.
 @MainActor
-final class VisitTrackerService: ObservableObject {
+@Observable
+final class VisitTrackerService {
 
     /// Distance the user must move from a visit's first-post location
     /// before that visit is considered "closed" and a future post can

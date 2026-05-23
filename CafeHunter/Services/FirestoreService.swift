@@ -5,8 +5,9 @@ import FirebaseStorage
 import UIKit
 
 @MainActor
-class FirestoreService: ObservableObject {
-    @Published var cafes: [Cafe] = []
+@Observable
+final class FirestoreService {
+    var cafes: [Cafe] = []
 
     private let db = Firestore.firestore()
     private var listener: ListenerRegistration?

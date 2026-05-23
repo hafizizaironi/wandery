@@ -4,7 +4,7 @@ import Combine
 
 // MARK: - User stats model
 
-struct UserStats {
+struct UserStats: Equatable {
     var cafesVisited:        Int = 0
     var stallsVisited:       Int = 0
     var photosShared:        Int = 0
@@ -36,8 +36,9 @@ struct UserStats {
 
 // MARK: - Service
 
-class UserStatsService: ObservableObject {
-    @Published var stats = UserStats()
+@Observable
+final class UserStatsService {
+    var stats = UserStats()
 
     private let db       = Firestore.firestore()
     private var listener: ListenerRegistration?
@@ -49,6 +50,13 @@ class UserStatsService: ObservableObject {
             .addSnapshotListener { [weak self] snap, _ in
                 guard let self else { return }
                 let data = snap?.data() ?? [:]
+                // Skip snapshots that are echoes of our own pending writes.
+                // The auto-persist below issues writes that bounce back as
+                // listener fires; without this gate, every unlock would
+                // re-trigger persistNewlyUnlocked while the server hadn't
+                // confirmed yet, which previously combined with a parse
+                // bug to produce a per-second write storm.
+                let hasPendingWrites = snap?.metadata.hasPendingWrites ?? false
                 Task { @MainActor in
                     var s = UserStats()
                     s.cafesVisited        = data["cafesVisited"]        as? Int ?? 0
@@ -63,11 +71,29 @@ class UserStatsService: ObservableObject {
                     s.topAreaPlaceCount   = data["topAreaPlaceCount"]   as? Int ?? 0
                     s.reactionsReceived   = data["reactionsReceived"]   as? Int ?? 0
                     s.topPlaceVisitCount  = data["topPlaceVisitCount"]  as? Int ?? 0
-                    if let map = data["unlockedAchievements"] as? [String: Timestamp] {
-                        s.unlockedAchievements = map.mapValues { $0.dateValue() }
+                    // Defensive value-by-value parse. The previous strict
+                    // `as? [String: Timestamp]` cast failed *entirely* if a
+                    // single nested value wasn't exactly a Timestamp (e.g. an
+                    // old test write that stamped a Date or null), wiping
+                    // the parsed unlock set to `[:]`. That tricked
+                    // `persistNewlyUnlocked` into re-writing every met
+                    // condition every snapshot — a Firestore write storm.
+                    if let raw = data["unlockedAchievements"] as? [String: Any] {
+                        s.unlockedAchievements = raw.reduce(into: [:]) { acc, kv in
+                            if let ts = kv.value as? Timestamp {
+                                acc[kv.key] = ts.dateValue()
+                            }
+                        }
                     }
+                    let previous = self.stats
                     self.stats = s
-                    // Auto-persist any newly earned achievements
+                    // Three guards on the auto-persist write:
+                    //  1. Don't react to our own pending-write echoes.
+                    //  2. Don't run if nothing observable changed (e.g. a
+                    //     no-op metadata refresh).
+                    //  3. (inside persistNewlyUnlocked) only write when
+                    //     there's a genuinely new unlock.
+                    guard !hasPendingWrites, s != previous else { return }
                     await self.persistNewlyUnlocked(uid: uid, stats: s)
                 }
             }

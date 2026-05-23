@@ -11,11 +11,12 @@ import FirebaseFirestore
 /// Single instance is started/stopped from the same place SocialService is
 /// (typically RootView), so listeners track auth state changes.
 @MainActor
-final class ConversationService: ObservableObject {
+@Observable
+final class ConversationService {
 
-    @Published private(set) var inbox: [Conversation] = []
-    @Published private(set) var activeMessages: [ChatMessage] = []
-    @Published private(set) var activeConvId: String?
+    private(set) var inbox: [Conversation] = []
+    private(set) var activeMessages: [ChatMessage] = []
+    private(set) var activeConvId: String?
 
     private let db = Firestore.firestore()
     private var inboxListener: ListenerRegistration?
@@ -83,6 +84,21 @@ final class ConversationService: ObservableObject {
             }
     }
 
+    /// Read-only counterpart to `findOrCreateConversation`. Returns the
+    /// deterministic id if a conv already exists between me + otherUid,
+    /// otherwise nil. Doesn't trigger the conversation-create rule, so
+    /// it's safe to call eagerly on chat appear (no empty conversation
+    /// docs get written just from peeking) — that's the call site that
+    /// fixes "tap a friend's avatar but past reply messages don't show".
+    func findConversation(with otherUid: String) async throws -> String? {
+        guard let me = uid else { return nil }
+        guard otherUid != me else { return nil }
+        let id = Conversation.id(for: me, otherUid)
+        let ref = db.collection("conversations").document(id)
+        let snap = try await ref.getDocument()
+        return snap.exists ? id : nil
+    }
+
     /// Returns the deterministic convId, creating the parent doc if it
     /// doesn't exist yet. Idempotent — safe to call from both sides.
     func findOrCreateConversation(with otherUid: String) async throws -> String {
@@ -90,15 +106,39 @@ final class ConversationService: ObservableObject {
         guard otherUid != me else { throw ConversationError.cannotMessageSelf }
         let id = Conversation.id(for: me, otherUid)
         let ref = db.collection("conversations").document(id)
-        let snap = try await ref.getDocument()
+        // Separate the GET and CREATE so the diagnostic tells us *which*
+        // step the rule engine rejected — they have different rules and
+        // different fix paths.
+        let snap: DocumentSnapshot
+        do {
+            snap = try await ref.getDocument()
+        } catch let getErr as NSError {
+            #if DEBUG
+            print("[Conv] doc \(id) — GET failed code=\(getErr.code) desc=\(getErr.localizedDescription)")
+            #endif
+            throw getErr
+        }
+        #if DEBUG
+        print("[Conv] doc \(id) — GET ok exists=\(snap.exists) participantIds=\(snap.data()?["participantIds"] ?? "nil")")
+        #endif
         if !snap.exists {
-            try await ref.setData([
-                "participantIds": [me, otherUid].sorted(),
-                "createdAt": FieldValue.serverTimestamp(),
-                "lastMessageAt": FieldValue.serverTimestamp(),
-                "lastMessage": "",
-                "lastMessageSenderId": "",
-            ])
+            do {
+                try await ref.setData([
+                    "participantIds": [me, otherUid].sorted(),
+                    "createdAt": FieldValue.serverTimestamp(),
+                    "lastMessageAt": FieldValue.serverTimestamp(),
+                    "lastMessage": "",
+                    "lastMessageSenderId": "",
+                ])
+                #if DEBUG
+                print("[Conv] doc \(id) — CREATE ok")
+                #endif
+            } catch let createErr as NSError {
+                #if DEBUG
+                print("[Conv] doc \(id) — CREATE failed code=\(createErr.code) desc=\(createErr.localizedDescription)")
+                #endif
+                throw createErr
+            }
         }
         return id
     }
@@ -181,6 +221,45 @@ final class ConversationService: ObservableObject {
             postMediaURL: postMediaURL,
             postIsVideo: postIsVideo
         )
+    }
+
+    /// Stamp `lastReadAt.<me> = now` on the conversation doc so the
+    /// unread state syncs across devices. Cheap idempotent write —
+    /// called when the user opens the thread and again on each new
+    /// message arrival while the thread is visible.
+    func markRead(convId: String) async {
+        guard let me = uid else { return }
+        let ref = db.collection("conversations").document(convId)
+        try? await ref.updateData([
+            "lastReadAt.\(me)": FieldValue.serverTimestamp(),
+        ])
+    }
+
+    /// iMessage-style: stamp my emoji onto a single message. Replaces
+    /// any previous reaction by me on the same message (only one
+    /// reaction per participant — the rules permit any participant to
+    /// update the `reactions` field, so updating my own entry is fine
+    /// and updating someone else's entry is *also* technically permitted
+    /// by the rules, but no UI surfaces that). Pass nil emoji to
+    /// remove. Bumps only the `reactions` field; the rule's
+    /// `affectedKeys().hasOnly(['reactions'])` check enforces this.
+    func reactToMessage(
+        convId: String,
+        messageId: String,
+        emoji: String?
+    ) async throws {
+        guard let me = uid else { throw ConversationError.notSignedIn }
+        let ref = db.collection("conversations").document(convId)
+            .collection("messages").document(messageId)
+        if let emoji {
+            try await ref.updateData([
+                "reactions.\(me)": emoji,
+            ])
+        } else {
+            try await ref.updateData([
+                "reactions.\(me)": FieldValue.delete(),
+            ])
+        }
     }
 
     /// Same shape as `mirrorReaction` but for a free-text reply.

@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		C40DF9032FA86EEB000FE277 /* GooglePlaces in Frameworks */ = {isa = PBXBuildFile; productRef = C40DF9022FA86EEB000FE277 /* GooglePlaces */; };
 		C40DF9052FA86EEB000FE277 /* GooglePlacesSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C40DF9042FA86EEB000FE277 /* GooglePlacesSwift */; };
+		C424C2E72FC15C97003256A0 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = C424C2E62FC15C97003256A0 /* FirebaseAppCheck */; };
 		C43CAA5C2F9B50EB00ABCA8A /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = C43CAA5B2F9B50EB00ABCA8A /* FirebaseFunctions */; };
 		C4795F692F8AE41D002495D1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F682F8AE41D002495D1 /* GoogleSignIn */; };
 		C4795F6B2F8AE41D002495D1 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F6A2F8AE41D002495D1 /* GoogleSignInSwift */; };
@@ -56,6 +57,7 @@
 				C4795F732F8AE41D002495D1 /* FirebaseCore in Frameworks */,
 				C4795F752F8AE41D002495D1 /* FirebaseFirestore in Frameworks */,
 				C40DF9032FA86EEB000FE277 /* GooglePlaces in Frameworks */,
+				C424C2E72FC15C97003256A0 /* FirebaseAppCheck in Frameworks */,
 				C43CAA5C2F9B50EB00ABCA8A /* FirebaseFunctions in Frameworks */,
 				C4795F772F8AE41D002495D1 /* FirebaseStorage in Frameworks */,
 				C4795F792F8AE41D002495D1 /* FirebaseMessaging in Frameworks */,
@@ -126,6 +128,7 @@
 				C43CAA5B2F9B50EB00ABCA8A /* FirebaseFunctions */,
 				C40DF9022FA86EEB000FE277 /* GooglePlaces */,
 				C40DF9042FA86EEB000FE277 /* GooglePlacesSwift */,
+				C424C2E62FC15C97003256A0 /* FirebaseAppCheck */,
 			);
 			productName = CafeHunter;
 			productReference = C4795F342F8ADCC7002495D1 /* CafeHunter.app */;
@@ -457,6 +460,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C40DF9012FA86EEB000FE277 /* XCRemoteSwiftPackageReference "ios-places-sdk" */;
 			productName = GooglePlacesSwift;
+		};
+		C424C2E62FC15C97003256A0 /* FirebaseAppCheck */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAppCheck;
 		};
 		C43CAA5B2F9B50EB00ABCA8A /* FirebaseFunctions */ = {
 			isa = XCSwiftPackageProductDependency;

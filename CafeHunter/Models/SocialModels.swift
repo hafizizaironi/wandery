@@ -106,6 +106,11 @@ struct Conversation: Identifiable, Equatable {
     let lastMessageSenderId: String
     let lastMessageAt: Date?
     let createdAt: Date?
+    /// Per-uid "last seen the thread" stamps. Promoted from the v1
+    /// local-only `@AppStorage` approach in Phase 3.6. Missing entries
+    /// mean "never marked read on this server" — readers fall back to
+    /// the local stamp for backwards compatibility on legacy convs.
+    let lastReadAt: [String: Date]
 
     static func id(for a: String, _ b: String) -> String {
         [a, b].sorted().joined(separator: "_")
@@ -125,6 +130,11 @@ struct Conversation: Identifiable, Equatable {
         lastMessageSenderId = d["lastMessageSenderId"] as? String ?? ""
         lastMessageAt = (d["lastMessageAt"] as? Timestamp)?.dateValue()
         createdAt = (d["createdAt"] as? Timestamp)?.dateValue()
+        if let raw = d["lastReadAt"] as? [String: Timestamp] {
+            lastReadAt = raw.mapValues { $0.dateValue() }
+        } else {
+            lastReadAt = [:]
+        }
     }
 }
 
@@ -152,6 +162,14 @@ struct ChatMessage: Identifiable, Equatable {
     let postMediaURL: String?
     let postIsVideo: Bool
     let createdAt: Date
+    /// Per-uid reactions on this message. Keys are participant uids,
+    /// values are emoji strings. iMessage-style: each participant may
+    /// add at most one reaction, and senders can react to their own
+    /// messages too. Updated in place via `reactToMessage` /
+    /// `unreactToMessage` on `ConversationService`. Empty by default
+    /// for any message older than 2026-05; new messages also start
+    /// empty and only materialise the field after a first reaction.
+    let reactions: [String: String]
 
     var isPostReaction: Bool { kind == "reaction" }
     var isPostReply: Bool { kind == "reply" }
@@ -170,6 +188,7 @@ struct ChatMessage: Identifiable, Equatable {
         emoji = d["emoji"] as? String
         postMediaURL = d["postMediaURL"] as? String
         postIsVideo = d["postIsVideo"] as? Bool ?? false
+        reactions = d["reactions"] as? [String: String] ?? [:]
         if let ts = d["createdAt"] as? Timestamp {
             createdAt = ts.dateValue()
         } else {

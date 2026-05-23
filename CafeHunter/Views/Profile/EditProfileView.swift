@@ -4,7 +4,7 @@ import FirebaseAuth
 
 struct EditProfileView: View {
     let user: FirebaseAuth.User
-    @ObservedObject var authService: AuthService
+    var authService: AuthService
     /// Required when presented outside NavigationStack/sheet (e.g. floating panel).
     var onClose: () -> Void
 

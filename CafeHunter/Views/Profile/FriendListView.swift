@@ -73,7 +73,7 @@ final class FriendListLoader {
 }
 
 struct FriendListView: View {
-    @ObservedObject var socialService: SocialService
+    var socialService: SocialService
     /// Injected by the host (e.g. ProfileHomeView) so friend profiles can be
     /// pre-fetched before the panel opens — the panel then appears with rows
     /// already populated instead of a loading spinner. Host owns the loader

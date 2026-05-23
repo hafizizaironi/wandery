@@ -8,15 +8,16 @@ import FirebaseStorage
 import UIKit
 
 @MainActor
-final class SocialService: ObservableObject {
+@Observable
+final class SocialService {
 
-    @Published private(set) var profile: UserProfile?
-    @Published private(set) var friendIds: [String] = []
-    @Published private(set) var incomingRequests: [FriendRequestModel] = []
-    @Published private(set) var feedPosts: [FriendPost] = []
-    @Published private(set) var blockedUserIds: Set<String> = []
-    @Published private(set) var isLoadingProfile = true
-    @Published var errorMessage: String?
+    private(set) var profile: UserProfile?
+    private(set) var friendIds: [String] = []
+    private(set) var incomingRequests: [FriendRequestModel] = []
+    private(set) var feedPosts: [FriendPost] = []
+    private(set) var blockedUserIds: Set<String> = []
+    private(set) var isLoadingProfile = true
+    var errorMessage: String?
 
     /// Raw posts from Firestore before blocked-user filtering. Kept private
     /// so callers always see the filtered `feedPosts`. Re-applied through
@@ -113,7 +114,18 @@ final class SocialService: ObservableObject {
     private func attachFriendsListener(uid: String) {
         friendsListener?.remove()
         friendsListener = db.collection("users").document(uid).collection("friends")
-            .addSnapshotListener { [weak self] snap, _ in
+            .addSnapshotListener { [weak self] snap, err in
+                if let err {
+                    // A swallowed error here is how ghost friends end up in
+                    // `friendIds` — the listener stops reflecting reality but
+                    // the UI keeps showing a friend who was unfriended /
+                    // blocked / cascaded away. Surface to console so we
+                    // notice. `refreshFriendsFromServer()` below is the
+                    // recovery path when this happens in production.
+                    #if DEBUG
+                    print("[SocialService] friends listener error: \(err.localizedDescription)")
+                    #endif
+                }
                 Task { @MainActor in
                     guard let self else { return }
                     self.friendIds = snap?.documents.map(\.documentID) ?? []
@@ -122,12 +134,39 @@ final class SocialService: ObservableObject {
             }
     }
 
+    /// One-shot server read of the friend collection. Bypasses the listener
+    /// cache. Use when there's a strong signal that `friendIds` has gone
+    /// out of sync with the server — e.g. a conversation create just got
+    /// rejected for a user that the local listener still thinks is a friend.
+    func refreshFriendsFromServer() async {
+        guard let uid else { return }
+        do {
+            let snap = try await db.collection("users").document(uid)
+                .collection("friends")
+                .getDocuments(source: .server)
+            self.friendIds = snap.documents.map(\.documentID)
+        } catch {
+            #if DEBUG
+            print("[SocialService] refreshFriendsFromServer failed: \(error.localizedDescription)")
+            #endif
+        }
+    }
+
     private func attachIncomingRequestsListener(uid: String) {
         requestsListener?.remove()
         requestsListener = db.collection("friendRequests")
             .whereField("toUid", isEqualTo: uid)
             .whereField("status", isEqualTo: "pending")
-            .addSnapshotListener { [weak self] snap, _ in
+            .addSnapshotListener { [weak self] snap, err in
+                if let err {
+                    // Silent failures here are the worst kind — friend
+                    // requests appear stuck in the UI with no signal to
+                    // the user or the dev. Surface to console so we
+                    // notice. Common cause: missing composite index.
+                    #if DEBUG
+                    print("[SocialService] incoming-requests listener error: \(err.localizedDescription)")
+                    #endif
+                }
                 Task { @MainActor in
                     guard let self else { return }
                     self.incomingRequests = snap?.documents.compactMap { FriendRequestModel(document: $0) } ?? []
@@ -270,6 +309,15 @@ final class SocialService: ObservableObject {
         let nameSnap = try await db.collection("usernames").document(lower).getDocument()
         guard let toUid = nameSnap.data()?["uid"] as? String else { throw SocialError.userNotFound }
         guard toUid != fromUid else { throw SocialError.cannotAddSelf }
+        // Block re-adding someone who's already a friend. The autocomplete
+        // dropdown already filters them out, but a user could still type a
+        // full username by hand. We check the local listener cache here for
+        // a fast path; the Cloud-Function-side accept rules wouldn't reject
+        // a duplicate `pending` request the way the rules reject self-adds,
+        // so the only place to catch this cleanly is the client.
+        if friendIds.contains(toUid) {
+            throw SocialError.alreadyFriends(username: lower)
+        }
         let fromName = profile?.username ?? (Auth.auth().currentUser?.email ?? "user")
         try await db.collection("friendRequests").addDocument(data: [
             "fromUid": fromUid,
@@ -304,6 +352,13 @@ final class SocialService: ObservableObject {
             }
             throw error
         }
+        // Optimistic local removal. The incoming-requests listener filters
+        // on status=="pending" and *should* drop this doc when the
+        // callable's transaction commits status=="accepted", but Firestore
+        // listener cache can lag a few seconds (or fail silently if a rule
+        // ever rejects). Dropping locally guarantees the UI updates the
+        // instant the user sees the accept "succeed".
+        incomingRequests.removeAll { $0.id == request.id }
     }
 
     /// Symmetric unfriend. Routed through the `removeFriend` callable so
@@ -365,6 +420,9 @@ final class SocialService: ObservableObject {
         try await db.collection("friendRequests").document(request.id).updateData([
             "status": "rejected",
         ])
+        // Same optimistic-remove rationale as acceptRequest — listener
+        // will reconcile when it fires, we don't wait.
+        incomingRequests.removeAll { $0.id == request.id }
     }
 
     func uploadAndCreatePost(image: UIImage?,
@@ -602,6 +660,7 @@ enum SocialError: LocalizedError {
     case needsUsername
     case notAuthorized
     case friendsCapReached
+    case alreadyFriends(username: String)
 
     var errorDescription: String? {
         switch self {
@@ -614,6 +673,7 @@ enum SocialError: LocalizedError {
         case .needsUsername: return "Choose a username first."
         case .notAuthorized: return "Not allowed."
         case .friendsCapReached: return "20-friend limit reached. Remove someone first."
+        case .alreadyFriends(let username): return "You're already friends with @\(username)."
         }
     }
 }

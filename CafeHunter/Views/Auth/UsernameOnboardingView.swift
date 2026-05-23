@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct UsernameOnboardingView: View {
-    @ObservedObject var socialService: SocialService
-    @ObservedObject var authService: AuthService
+    var socialService: SocialService
+    var authService: AuthService
 
     @State private var username = ""
     @State private var isSaving = false

@@ -328,6 +328,65 @@ exports.onReplyEngagement = functions.firestore
     }
   });
 
+// Push notification to the *other* participant when a new chat message
+// lands. Fans out to all of the recipient's FCM tokens via sendToUser.
+// Body is chosen to match what the client renders in the inbox preview
+// so the user reads the same string in both places.
+//
+// NOTE: not deployed yet. Run `firebase deploy --only functions:onNewMessage`
+// from the repo root once you're ready to enable chat push.
+exports.onNewMessage = functions.firestore
+  .document("conversations/{convId}/messages/{msgId}")
+  .onCreate(async (snap, context) => {
+    const m = snap.data();
+    if (!m) return;
+    const senderId = m.senderId;
+    if (!senderId) return;
+
+    const convSnap = await admin
+      .firestore()
+      .doc(`conversations/${context.params.convId}`)
+      .get();
+    const conv = convSnap.data();
+    if (!conv || !Array.isArray(conv.participantIds)) return;
+
+    const recipient = conv.participantIds.find((id) => id !== senderId);
+    if (!recipient) return;
+
+    // Resolve a friendly sender label from users/{uid}; fall back to
+    // "Someone" if the doc is missing or the field is empty.
+    let senderName = "Someone";
+    try {
+      const userSnap = await admin.firestore().doc(`users/${senderId}`).get();
+      const u = userSnap.data();
+      senderName =
+        (u && (u.displayName || u.username)) || senderName;
+    } catch (err) {
+      logger.warn("onNewMessage sender lookup failed", {
+        senderId,
+        message: err && err.message,
+      });
+    }
+
+    // Mirror the inbox preview shape so the push body matches what the
+    // user sees in the conversation list when they open the app.
+    let body;
+    if (m.kind === "reaction") {
+      body = `Reacted ${m.emoji || "•"} to your post`;
+    } else if (m.kind === "reply") {
+      const snippet = (m.text || "").trim().slice(0, 80);
+      body = snippet ? `Replied: ${snippet}` : "Replied to your post";
+    } else {
+      body = (m.text || "").trim().slice(0, 120) || "New message";
+    }
+
+    await sendToUser(recipient, senderName, body, {
+      type: "message",
+      convId: context.params.convId,
+      senderId,
+    });
+  });
+
 exports.onReaction = functions.firestore
   .document("posts/{postId}/reactions/{reactorUid}")
   .onCreate(async (snap, context) => {

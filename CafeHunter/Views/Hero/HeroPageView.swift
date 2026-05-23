@@ -61,93 +61,52 @@ private enum HeroCardID: Hashable {
     case post(String)
 }
 
-// MARK: - Circular reveal transition
-
-/// View modifier that masks `content` to a circle anchored at `origin` and
-/// scaled by `progress`. Pair with `AnyTransition.modifier(active:identity:)`
-/// to drive a circular open/close from a tap point.
-private struct CircularRevealModifier: ViewModifier {
-    let origin: CGPoint
-    let progress: CGFloat
-
-    func body(content: Content) -> some View {
-        content.mask(
-            // Fixed-size disc much larger than any phone screen so when
-            // `scaleEffect = 1` the mask covers the entire view, and when
-            // it's 0 it hides everything.
-            Circle()
-                .frame(width: 2400, height: 2400)
-                .position(origin)
-                .scaleEffect(progress)
-        )
-    }
-}
-
-private extension AnyTransition {
-    static func circularReveal(origin: CGPoint) -> AnyTransition {
-        .modifier(
-            active: CircularRevealModifier(origin: origin, progress: 0),
-            identity: CircularRevealModifier(origin: origin, progress: 1)
-        )
-    }
-}
-
-/// PreferenceKey we use to bubble the Messages button's screen-space center
-/// up to HeroPageView so the circular reveal originates from the tap point.
-private struct MessageButtonOriginKey: PreferenceKey {
-    static var defaultValue: CGPoint = CGPoint(x: 0, y: 0)
-    static func reduce(value: inout CGPoint, nextValue: () -> CGPoint) {
-        value = nextValue()
-    }
-}
-
-/// Per-post screen-space frame of the in-feed reply pill. The composer
-/// overlay uses this so the focused input bar can settle at exactly the
-/// pill's resting position when the keyboard is hidden — making the
-/// pill→focused-input transition feel like one object morphing in place.
-private struct ReplyPillFramesKey: PreferenceKey {
-    static var defaultValue: [String: CGRect] = [:]
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue()) { _, new in new }
-    }
-}
 
 // MARK: - Hero page
 
 struct HeroPageView: View {
     var isActive: Bool = false
-    @ObservedObject var socialService: SocialService
-    @ObservedObject var conversationService: ConversationService
-    /// Set by the parent shell. We flip it whenever the inbox or a chat
-    /// thread is open so MainShellView can spring the arc navbar away.
-    @Binding var isChatActive: Bool
-    /// External "scroll to this post" trigger — set by the shell when a
-    /// chat thumbnail tapped on a different page jumps here. Cleared after
-    /// consumption.
-    @Binding var pendingHeroJumpPostId: String?
+    var socialService: SocialService
+    /// Live inbox snapshot — used to derive the Messages button's unread
+    /// dot. Owned by ContentView, passed via MainShellView.
+    var conversationService: ConversationService
+    /// Two-way binding owned by MainShellView. Set by chat's post-reference
+    /// bubble when the user taps it; this view consumes the value by
+    /// scrolling to the matching post, then resets the binding to nil so
+    /// the same id can fire again later.
+    @Binding var pendingPostJumpId: String?
+    /// True while MainShellView is interpreting a drag as an edge-swipe
+    /// page-switch. We disable the vertical pager during this window
+    /// so the two gestures don't compete and stutter the animation.
+    var edgeDragActive: Bool = false
     /// Fired when a feed post's place pill is tapped — parent (MainShellView)
     /// switches to the map page and centers on the tagged place.
     var onJumpToPlace: (String) -> Void = { _ in }
+    /// Fired when the user taps the top-trailing Messages button.
+    /// MainShellView presents the chat fullScreenCover.
+    var onOpenMessages: () -> Void = { }
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var camera = CameraService()
 
-    @State private var showInbox = false
-    @State private var pendingChat: PendingChat?
-    /// Screen-space center of the Messages button. Captured by the button
-    /// background's GeometryReader and consumed by the circular-reveal
-    /// transition so the inbox spirals open from where the user tapped.
-    @State private var inboxRevealOrigin: CGPoint = CGPoint(x: 360, y: 80)
+    /// Captured at View init so context-menu predicates ("is this my own
+    /// post?") don't hit the Firebase Auth bridge on every body re-render.
+    /// Bridge cost is small individually but compounds during scroll with
+    /// many post cells in the LazyVStack.
+    private let myUid: String = Auth.auth().currentUser?.uid ?? ""
 
     @State private var previewCaption = ""
     @FocusState private var captionFocused: Bool
     @State private var isPosting = false
     @State private var postError = ""
 
-    // Full-screen reaction burst
-    @State private var reactionBurstEmoji: String? = nil
-    @State private var burstRenderId = UUID()
-    @State private var burstOffsetY: CGFloat = 700
+    /// Mirror of the system keyboard's visible height. Driven by
+    /// `keyboardWillShow / keyboardWillHide` notifications because the
+    /// parent chain (MainShellView's GeometryReader) applies
+    /// `.ignoresSafeArea()` with no edge filter, which disables
+    /// SwiftUI's automatic keyboard avoidance for descendant overlays.
+    /// The inline reply composer reads this to lift above the keyboard.
+    @State private var keyboardHeight: CGFloat = 0
 
     private let maxCaptionLength = 25
 
@@ -171,21 +130,10 @@ struct HeroPageView: View {
     @State private var pendingPlace: PlaceSelection?
     @State private var showPlacePicker = false
 
-    // Reply composer state. Tapping the in-feed reply pill sets
-    // `replyTargetPost`, which renders the composer in a separate overlay
-    // above the feed. Drafts persist per-post so dismissing without
-    // sending doesn't lose what the user typed.
-    @State private var replyTargetPost: FriendPost?
-    @State private var replyDrafts: [String: String] = [:]
-
     // Moderation state. Long-press on a feed post surfaces report/block.
     @State private var reportTarget: ReportTarget?
     @State private var pendingBlockUid: String?
     @State private var pendingBlockTitle: String = ""
-    /// Live screen-space frame of each post's reply pill — the composer
-    /// uses the active post's frame to anchor its idle position so the
-    /// pill→focused-input morph feels like a single object.
-    @State private var replyPillFrames: [String: CGRect] = [:]
 
     // MARK: - Body
 
@@ -222,166 +170,83 @@ struct HeroPageView: View {
                     }
                     .scrollTargetBehavior(.paging)
                     .scrollPosition(id: $heroCardID)
-                    // The reply composer renders as a separate overlay
-                    // and floats above the keyboard on its own — we don't
-                    // want the feed page to also lift, so ignore the
-                    // keyboard inset here.
+                    // Disable the vertical pager while MainShellView
+                    // is interpreting a horizontal edge-swipe as a
+                    // page-switch. Otherwise both gestures fight for
+                    // ownership of the drag and the page-switch
+                    // animation stutters when the user's finger
+                    // crosses the Hero region.
+                    .scrollDisabled(edgeDragActive)
+                    // The composer manages its own keyboard lift via
+                    // a manual `.offset(y:)` driven by the
+                    // keyboardWillShow/Hide observer — so we still
+                    // tell the ScrollView itself to ignore the
+                    // keyboard edge (otherwise the WHOLE pager would
+                    // shift up when the keyboard appears, breaking
+                    // page geometry).
                     .ignoresSafeArea(.keyboard, edges: .bottom)
+                    // Interactive dismissal: as the user drags the
+                    // pager vertically, the keyboard tracks the
+                    // gesture and slides off-screen in lock-step. By
+                    // the time the next post snaps into view the
+                    // keyboard is gone — composer's `keyboardHeight`
+                    // observer drops to 0 in sync, so the composer's
+                    // `.offset(y:)` lift unwinds back to its resting
+                    // position.
+                    .scrollDismissesKeyboard(.interactively)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 permissionDeniedUI
             }
 
-            // Full-screen reaction burst – sits above everything
-            if let em = reactionBurstEmoji {
-                fullScreenBurstOverlay(em)
-            }
-
-            // Top-right Messages button — sits in the safe-area inset on
-            // every Hero card (camera, empty feed, post). Hidden while the
-            // inbox or a chat thread is open so it doesn't fight the panel.
-            messagesTopButton
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .opacity(showInbox || pendingChat != nil ? 0 : 1)
-                .animation(.easeInOut(duration: 0.18), value: showInbox)
-                .animation(.easeInOut(duration: 0.18), value: pendingChat?.id)
         }
+        // Keyboard observer — composer reads `keyboardHeight` from
+        // this view via a parameter and applies it as a vertical
+        // offset inside each post page. Observer stays at the
+        // HeroPageView level so every post page shares one source
+        // of truth (only one composer is focused at a time anyway).
+        .animation(.easeOut(duration: 0.25), value: keyboardHeight)
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillShowNotification
+        )) { note in
+            // `keyboardFrameEnd` is the keyboard's final rect in screen
+            // coords; its height is from the bottom of the screen up to
+            // the top of the keyboard, including the home-indicator
+            // area. Setting padding ≥ this height places the composer
+            // 12pt above the keyboard's top edge.
+            if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                keyboardHeight = frame.height
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillHideNotification
+        )) { _ in
+            keyboardHeight = 0
+        }
+        .overlay(alignment: .topTrailing) {
+            // Hide during capture review — the capture-preview chrome
+            // (caption pill, place pill, post/retake/save control) sits
+            // in the same screen region and the messages button would
+            // both distract and compete for taps.
+            //
+            // Parent chain (MainShellView -> GeometryReader.ignoresSafeArea)
+            // makes the body's ZStack frame the full screen and *consumes*
+            // the safe area, so a child GeometryReader's
+            // `proxy.safeAreaInsets.top` reports 0 here. Read the actual
+            // inset from the key window — reliable across notch / Dynamic
+            // Island / no-notch phones.
+            if !isReviewingCapture {
+                messagesTopButton
+                    .padding(.top, Self.topSafeAreaInset + 8)
+                    .padding(.trailing, 16)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
+        }
+        .animation(Motion.iosDrawer(duration: 0.22), value: isReviewingCapture)
         .photosPicker(isPresented: $showPhotosPicker,
                       selection: $selectedPhoto,
                       matching: .images)
-        // Full-screen inbox with a circular reveal anchored at the Messages
-        // button's tap point. We use overlay-with-transition rather than
-        // floatingPanel so the surface fills the screen and the entry/exit
-        // animation is custom.
-        .overlay {
-            if showInbox {
-                ConversationsListView(
-                    conversationService: conversationService,
-                    socialService: socialService,
-                    onClose: { closeInbox() },
-                    onJumpToPost: { postId in
-                        closeInbox()
-                        scrollFeedToPost(postId)
-                    }
-                )
-                .background(AppTheme.espresso.ignoresSafeArea())
-                .ignoresSafeArea()
-                .transition(.circularReveal(origin: inboxRevealOrigin))
-                .zIndex(30)
-            }
-        }
-        // Full-screen chat (opened from FriendList → Message). Slides in
-        // from the trailing edge instead of circular-revealing — the entry
-        // point isn't a single tap target, so the circular metaphor
-        // wouldn't read.
-        .overlay {
-            if let chat = pendingChat {
-                ChatView(
-                    conversationService: conversationService,
-                    socialService: socialService,
-                    convId: chat.convId,
-                    otherUid: chat.otherUid,
-                    otherTitle: chat.title,
-                    onClose: { closePendingChat() },
-                    onJumpToPost: { postId in
-                        closePendingChat()
-                        scrollFeedToPost(postId)
-                    }
-                )
-                .background(AppTheme.espresso.ignoresSafeArea())
-                .ignoresSafeArea(.container)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-                .zIndex(31)
-            }
-        }
-        // Reply composer — renders above the feed so the post stays put.
-        // The composer floats above the keyboard via SwiftUI's automatic
-        // safe-area avoidance (the feed itself ignores the keyboard inset).
-        .overlay {
-            if let post = replyTargetPost {
-                ReplyComposerOverlay(
-                    post: post,
-                    messageButtonOrigin: inboxRevealOrigin,
-                    pillFrame: replyPillFrames[post.id] ?? .zero,
-                    draft: Binding(
-                        get: { replyDrafts[post.id] ?? "" },
-                        set: { replyDrafts[post.id] = $0 }
-                    ),
-                    onSend: {
-                        let trimmed = (replyDrafts[post.id] ?? "")
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { return }
-                        let media = post.isVideo
-                            ? (post.thumbnailURL ?? post.mediaURL)
-                            : post.mediaURL
-                        try await conversationService.mirrorReply(
-                            toAuthor: post.authorId,
-                            text: trimmed,
-                            postId: post.id,
-                            postPreview: post.caption,
-                            postMediaURL: media,
-                            postIsVideo: post.isVideo
-                        )
-                        replyDrafts[post.id] = ""
-                    },
-                    // Tap-away dismiss → springy fade so the pill
-                    // re-emerges underneath as the input bar settles.
-                    onClose: {
-                        withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) {
-                            replyTargetPost = nil
-                        }
-                    },
-                    // Send completes after the swoosh — bypass the
-                    // animation so the input bar doesn't morph back to
-                    // the pill on its way to the messages button.
-                    onSendComplete: {
-                        var t = Transaction()
-                        t.disablesAnimations = true
-                        withTransaction(t) {
-                            replyTargetPost = nil
-                        }
-                    }
-                )
-                .transition(.opacity)
-                .zIndex(35)
-            }
-        }
-        .onPreferenceChange(ReplyPillFramesKey.self) { newValue in
-            replyPillFrames.merge(newValue) { _, new in new }
-        }
-        .animation(
-            .motionRespecting(
-                .spring(response: 0.32, dampingFraction: 0.78),
-                reduceMotion: reduceMotion
-            ),
-            value: showInbox
-        )
-        .animation(
-            .motionRespecting(
-                .spring(response: 0.28, dampingFraction: 0.86),
-                reduceMotion: reduceMotion
-            ),
-            value: pendingChat?.id
-        )
-        // Spring-driven flag the shell observes to slide the arc navbar away.
-        .onChange(of: showInbox) { _, _ in syncChatActiveFlag() }
-        .onChange(of: pendingChat?.id) { _, _ in syncChatActiveFlag() }
-        // Profile-side chat sets this when its thumbnail is tapped; we
-        // consume it here once Hero is the visible tab.
-        .onChange(of: pendingHeroJumpPostId) { _, newValue in
-            guard let postId = newValue else { return }
-            scrollFeedToPost(postId)
-            pendingHeroJumpPostId = nil
-        }
-        .task {
-            // Cover first-launch case where the post id was set before
-            // Hero appeared on screen.
-            if let postId = pendingHeroJumpPostId {
-                scrollFeedToPost(postId)
-                pendingHeroJumpPostId = nil
-            }
-        }
         .task {
             await camera.requestAccess()
             // `onChange(of: isActive)` does not run for the initial value, so on first launch
@@ -403,6 +268,13 @@ struct HeroPageView: View {
             if authorized && isActive {
                 camera.startSession()
             }
+        }
+        .onChange(of: heroCardID) { _, _ in
+            // Paging away from the current post (to camera, empty
+            // feed, or a different post) dismisses any active keyboard
+            // so the composer doesn't follow the user into a context
+            // where it shouldn't be focused.
+            Self.dismissKeyboard()
         }
         .onChange(of: camera.capturedImage) { _, _ in
             syncCameraSessionForCaptureReview()
@@ -443,184 +315,130 @@ struct HeroPageView: View {
                 break
             }
         }
+        .onChange(of: pendingPostJumpId) { _, newId in
+            guard let postId = newId else { return }
+            // Confirm the post is still in the feed (it may have been
+            // deleted between the time the chat reference was written
+            // and this jump). If missing, fall back to the camera.
+            let exists = socialService.feedPosts.contains(where: { $0.id == postId })
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                heroCardID = exists ? .post(postId) : .camera
+            }
+            // Clear the binding so the same id can fire again later.
+            pendingPostJumpId = nil
+        }
     }
 
     // MARK: - Messages top button
 
-    /// Top-right liquid-glass HUD that opens the inbox. Sits well below the
-    /// status bar / dynamic island so it doesn't fight the system overlay.
-    /// Visibility is gated above by `showInbox || pendingChat != nil`.
-    private var messagesTopButton: some View {
-        Button {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            // Drive the spring via the .animation modifier on the overlay.
-            // We just flip the bool — the circular reveal reads
-            // `inboxRevealOrigin` which is already up-to-date from the
-            // GeometryReader inside the label below.
-            showInbox = true
-        } label: {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.callout).bold()
-                    .foregroundStyle(AppTheme.textPrimary)
-                    .frame(width: 44, height: 44)
-                    // Same liquid-glass recipe used on the map's "center on
-                    // me" HUD: real iOS 26 Liquid Glass + faint terracotta
-                    // tint, white→accent rim highlight, lifted shadow.
-                    .glassEffect(
-                        .regular
-                            .tint(AppTheme.accentAction.opacity(0.07)),
-                        in: Circle()
-                    )
-                    .liquidGlassShine(in: Circle(), strength: 1.0)
-                    .overlay {
-                        Circle()
-                            .stroke(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.70),
-                                        Color.white.opacity(0.18),
-                                        AppTheme.accentAction.opacity(0.22),
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 0.8
-                            )
-                    }
-                    .shadow(color: AppTheme.accentAction.opacity(0.14),
-                            radius: 8, x: 0, y: 3)
-                    .shadow(color: .black.opacity(0.10), radius: 5, x: 0, y: 2)
-
-                if unreadCount > 0 {
-                    Text("\(min(unreadCount, 99))")
-                        .font(.caption2).bold()
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(AppTheme.accentAction))
-                        .overlay {
-                            Capsule().stroke(Color.white.opacity(0.6), lineWidth: 1)
-                        }
-                        .offset(x: 4, y: -3)
-                }
-            }
-            .contentShape(Circle())
-            // Capture inside the label — measures the actual button
-            // content (44×44 icon), NOT the outer frame inflated by
-            // .padding(.top, 60). With the prior placement the captured
-            // midX/midY was the padded-frame center, which sat well above
-            // and left of the visible button → reveal originated near
-            // screen-center instead of from the tap point.
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: MessageButtonOriginKey.self,
-                        value: CGPoint(
-                            x: proxy.frame(in: .global).midX,
-                            y: proxy.frame(in: .global).midY
-                        )
-                    )
-                }
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open messages")
-        .padding(.trailing, 16)
-        // Pad past the status bar / dynamic island. Matches the map page's
-        // top-button placement so the two pages feel consistent.
-        .padding(.top, 60)
-        .onPreferenceChange(MessageButtonOriginKey.self) { center in
-            // Only update when the value is plausible — preference key
-            // briefly emits .zero during view rebuilds which would launch
-            // the reveal from the top-left corner.
-            if center.x > 0, center.y > 0 {
-                inboxRevealOrigin = center
-            }
-        }
+    /// Reads the top safe-area inset directly from the key window. We do
+    /// this instead of relying on a GeometryReader because the parent
+    /// chain (MainShellView's outer GeometryReader applies
+    /// `.ignoresSafeArea()`) zeroes the safe area for child GeometryReaders.
+    private static var topSafeAreaInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .safeAreaInsets.top ?? 0
     }
 
-    private func closeInbox() {
-        showInbox = false
+    private static var bottomSafeAreaInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .safeAreaInsets.bottom ?? 0
     }
 
-    private func closePendingChat() {
-        conversationService.openThread(nil)
-        pendingChat = nil
+    /// Resign whatever's first responder app-wide. Used to dismiss
+    /// the keyboard when the user pages between posts or taps outside
+    /// the composer pill.
+    private static func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil
+        )
     }
 
-    /// "Unread-ish" count: any inbox conversation whose last message wasn't
-    /// authored by me. Cheap heuristic until we wire per-uid unread counters.
-    private var unreadCount: Int {
-        let myUid = Auth.auth().currentUser?.uid ?? ""
-        return conversationService.inbox.filter { conv in
-            !conv.lastMessageSenderId.isEmpty && conv.lastMessageSenderId != myUid
-        }.count
+    /// Vertical offset for the composer when the keyboard is up.
+    /// The composer is rendered inside each post page (inside the
+    /// `.ignoresSafeArea(.keyboard)` ScrollView), so SwiftUI's
+    /// automatic keyboard avoidance is disabled — we apply this
+    /// negative offset manually to lift the pill above the keyboard.
+    ///
+    /// At rest the composer's bottom edge sits at `bottomChrome` from
+    /// the screen bottom (just above the navbar arc). When the
+    /// keyboard is up, we want it clear of the post card's bottom
+    /// edge — `keyboardClearance = 32pt` keeps a comfortable gap
+    /// between the composer top and the lowest visible part of the
+    /// post (the caption pill / place chip overlay). `.offset(y: negative)`
+    /// moves up.
+    private static let composerKeyboardClearance: CGFloat = 48
+    private var composerKeyboardLift: CGFloat {
+        guard keyboardHeight > 0 else { return 0 }
+        let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: Self.bottomSafeAreaInset)
+        return -max(0, keyboardHeight + Self.composerKeyboardClearance - bottomChrome)
     }
 
-    private func syncChatActiveFlag() {
-        let active = showInbox || pendingChat != nil
-        guard active != isChatActive else { return }
-        // Spring with a touch of overshoot — the shell mirrors this so the
-        // arc navbar slide and the panel rise are visually coupled.
-        withAnimation(.spring(response: 0.5, dampingFraction: 0.78)) {
-            isChatActive = active
-        }
-    }
-
-    /// Scrolls the Hero pager to the given post id. Called when a chat
-    /// thumbnail is tapped — the chat sheet has already been dismissed by
-    /// the call site, so this just lines up the destination.
-    private func scrollFeedToPost(_ postId: String) {
-        guard socialService.feedPosts.contains(where: { $0.id == postId }) else {
-            // Post is no longer in the feed (deleted or fell off the
-            // window). Bail silently — the chat is already dismissed and
-            // the user lands back on whatever was visible.
-            return
-        }
-        withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
-            heroCardID = .post(postId)
-        }
-    }
-
-    // MARK: - Full-screen reaction burst
-
-    /// Slides a large animated emoji from below the screen to center, then out through the top.
-    @MainActor
-    private func triggerFullScreenBurst(_ emoji: String) {
-        burstRenderId = UUID()
-        burstOffsetY = 700
-        reactionBurstEmoji = emoji
-
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) {
-            burstOffsetY = 0
-        }
-        Task { @MainActor in
-            // Hold at center (~1.1 s) while the Lottie plays through, then exit upward.
-            try? await Task.sleep(for: .milliseconds(1100))
-            withAnimation(.easeIn(duration: 0.36)) {
-                burstOffsetY = -700
-            }
-            try? await Task.sleep(for: .milliseconds(380))
-            reactionBurstEmoji = nil
+    /// Unread-conversation count derived from the conversation docs'
+    /// server-side `lastReadAt` map, with the legacy local
+    /// `@AppStorage` stamp as a fallback for convs that haven't yet
+    /// been read on this account on the new schema.
+    ///
+    /// Reactivity: this computed property reads `conversationService.inbox`,
+    /// which is `@Observable` — so any time the inbox listener
+    /// delivers an update (including the `lastReadAt` field change
+    /// `markRead` writes), Hero re-renders and the badge updates
+    /// across devices.
+    private var unreadConversationCount: Int {
+        let defaults = UserDefaults.standard
+        return conversationService.inbox.reduce(into: 0) { partial, conv in
+            guard let last = conv.lastMessageAt else { return }
+            // My own latest message never counts as unread.
+            guard conv.lastMessageSenderId != myUid else { return }
+            let serverStamp = conv.lastReadAt[myUid]?.timeIntervalSince1970 ?? 0
+            let localStamp  = defaults.double(forKey: "chat.lastRead.\(conv.id)")
+            let effective   = max(serverStamp, localStamp)
+            if last.timeIntervalSince1970 > effective { partial += 1 }
         }
     }
 
     @ViewBuilder
-    private func fullScreenBurstOverlay(_ emoji: String) -> some View {
-        ZStack {
-            if !reduceMotion, let slug = NotoEmojiLottie.notoSlug(for: emoji) {
-                NotoEmojiLottieView(notoSlug: slug, fallbackEmoji: emoji, size: 180, loop: false)
-                    .id(burstRenderId)
-            } else {
-                Text(emoji)
-                    .font(.system(size: 180))
+    private var messagesTopButton: some View {
+        Button {
+            let g = UIImpactFeedbackGenerator(style: .light)
+            g.impactOccurred()
+            onOpenMessages()
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(
+                        Circle().fill(.ultraThinMaterial)
+                    )
+                    .overlay {
+                        Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
+                    }
+
+                if unreadConversationCount > 0 {
+                    Circle()
+                        .fill(AppTheme.accentAction)
+                        .frame(width: 10, height: 10)
+                        .overlay { Circle().stroke(Color.black.opacity(0.25), lineWidth: 0.5) }
+                        .offset(x: 2, y: -2)
+                        .accessibilityHidden(true)
+                }
             }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
-        .offset(y: burstOffsetY)
-        .allowsHitTesting(false)
+        .buttonStyle(.plain)
+        .accessibilityLabel(unreadConversationCount > 0
+                            ? "Messages, \(unreadConversationCount) unread"
+                            : "Messages")
     }
 
     /// Minimal chrome in the same family as the keyboard **Done** control (accent, no heavy fill).
@@ -820,7 +638,7 @@ struct HeroPageView: View {
                 // Guideline 1.2 requires report + block affordances on
                 // user-generated content. Hidden for your own posts.
                 .contextMenu {
-                    if post.authorId != Auth.auth().currentUser?.uid {
+                    if post.authorId != myUid {
                         Button {
                             reportTarget = ReportTarget(type: .post, targetId: post.id)
                         } label: {
@@ -853,41 +671,27 @@ struct HeroPageView: View {
                 }
             }
 
-            // Reactions + comment hug the card; Spacer fills leftover space above navbar.
-            // Own posts skip the reaction/reply chrome — there's nobody to
-            // react/reply to yourself. Just keep the image and fill space.
+            // Below-card area: composer pinned to the bottom of this
+            // 160pt zone (just above the navbar arc / bottomChrome),
+            // with a Color.clear above it filling the leftover space.
+            // By living *inside* the post page (not as a body overlay),
+            // the composer pages vertically with the post — same scroll
+            // animation as the image card itself, no separate
+            // transition needed.
             VStack(spacing: 0) {
-                if post.authorId != Auth.auth().currentUser?.uid {
-                    VStack(spacing: 12) {
-                        FeedPostReactions(post: post,
-                                          socialService: socialService,
-                                          conversationService: conversationService,
-                                          onBurst: triggerFullScreenBurst)
-                        ReplyTriggerPill(
-                            draftPreview: replyDrafts[post.id] ?? ""
-                        ) {
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
-                                replyTargetPost = post
-                            }
-                        }
-                        // Hidden while the composer is up — the overlay's
-                        // input bar takes over at this exact Y, so the
-                        // user perceives one object morphing into focus.
-                        .opacity(replyTargetPost?.id == post.id ? 0 : 1)
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear.preference(
-                                    key: ReplyPillFramesKey.self,
-                                    value: [post.id: proxy.frame(in: .global)]
-                                )
-                            }
-                        )
-                    }
-                    .padding(.top, 14)
+                Color.clear
+                if post.authorId != myUid {
+                    PostReplyComposer(
+                        post: post,
+                        conversationService: conversationService
+                    )
+                    // Manual keyboard lift — see `composerKeyboardLift`
+                    // doc-comment. The ScrollView's
+                    // `.ignoresSafeArea(.keyboard)` disables automatic
+                    // keyboard avoidance, so we offset upward here.
+                    .offset(y: composerKeyboardLift)
+                    .animation(.easeOut(duration: 0.25), value: keyboardHeight)
                 }
-
-                Spacer(minLength: 0)
             }
             .frame(height: belowCardHeight)
         }
@@ -895,6 +699,17 @@ struct HeroPageView: View {
         .padding(.horizontal, HeroCameraLayout.horizontalPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .padding(.bottom, bottomChrome)
+        // Tap anywhere on the page that isn't consumed by a Button /
+        // TextField → dismiss keyboard. Covers the post image, header
+        // text, and the empty zone above the composer. The composer's
+        // internal Buttons/TextField consume their own taps so the
+        // user can still interact with the pill normally.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if keyboardHeight > 0 {
+                Self.dismissKeyboard()
+            }
+        }
     }
 
     // MARK: - Viewfinder
@@ -1496,7 +1311,7 @@ struct HeroPageView: View {
 private struct FeedPostCard: View {
     let post: FriendPost
     let index: Int
-    @ObservedObject var socialService: SocialService
+    var socialService: SocialService
     /// Only the page aligned with the vertical pager should play; keeps off-screen and background posts silent.
     let isVideoActive: Bool
     var onPlaceTap: (String) -> Void = { _ in }
@@ -1597,460 +1412,6 @@ private struct FeedPostCard: View {
         }
     }
 }
-
-private struct FeedPostReactions: View {
-    let post: FriendPost
-    @ObservedObject var socialService: SocialService
-    @ObservedObject var conversationService: ConversationService
-    var onBurst: (String) -> Void = { _ in }
-
-    @State private var myEmoji: String?
-    @State private var showEmojiPicker = false
-
-    private let reactionOptions = ["❤️", "🔥", "😂", "👏"]
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ForEach(reactionOptions, id: \.self) { e in
-                Button {
-                    Task { @MainActor in
-                        await onTapReaction(e)
-                    }
-                } label: {
-                    Text(e)
-                        .font(.title2)
-                        .padding(6)
-                        .background((myEmoji == e) ? AppTheme.cafeAccent.opacity(0.2) : Color.white.opacity(0.08))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("React with \(e)")
-            }
-
-            Button {
-                showEmojiPicker = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.callout).bold()
-                    .foregroundStyle(.white.opacity(0.8))
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.10))
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("More reactions")
-        }
-        .frame(minHeight: 64)
-        .task(id: post.id) {
-            myEmoji = await socialService.myReactionEmoji(for: post)
-        }
-        .sheet(isPresented: $showEmojiPicker) {
-            EmojiPickerSheet(myEmoji: myEmoji) { e in
-                Task { @MainActor in
-                    await onTapReaction(e)
-                }
-            }
-            .presentationDetents([.fraction(0.55)])
-            .presentationDragIndicator(.visible)
-            .presentationCornerRadius(24)
-        }
-    }
-
-    @MainActor
-    private func onTapReaction(_ e: String) async {
-        if myEmoji == e {
-            try? await socialService.removeReaction(from: post)
-            myEmoji = nil
-            return
-        }
-        do {
-            try await socialService.react(to: post, emoji: e)
-            myEmoji = e
-            onBurst(e)
-            // Mirror the reaction into the 1:1 chat between the reactor and
-            // the post author so the author sees it in their inbox alongside
-            // direct messages. Self-reactions are skipped inside the service.
-            do {
-                // For videos use the thumbnail URL since `mediaURL` is the
-                // .mp4. For images both fields are absent and `mediaURL`
-                // is the rendered image — same effect.
-                let media = post.isVideo
-                    ? (post.thumbnailURL ?? post.mediaURL)
-                    : post.mediaURL
-                try await conversationService.mirrorReaction(
-                    toAuthor: post.authorId,
-                    emoji: e,
-                    postId: post.id,
-                    postPreview: post.caption,
-                    postMediaURL: media,
-                    postIsVideo: post.isVideo
-                )
-            } catch {
-                print("[FeedPostReactions] reaction mirror failed: \(error)")
-            }
-        } catch { }
-    }
-}
-
-// MARK: - Reply trigger pill (in-feed)
-
-/// Liquid-glass pill that lives inline with the post. It does NOT host a
-/// real TextField — tapping it opens the dedicated ReplyComposerOverlay.
-/// This keeps the feed page itself out of the keyboard's hair.
-private struct ReplyTriggerPill: View {
-    let draftPreview: String
-    var onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 10) {
-                Text(draftPreview.isEmpty ? "Send a message" : draftPreview)
-                    .font(.subheadline)
-                    .foregroundStyle(draftPreview.isEmpty
-                                     ? Color.white.opacity(0.7)
-                                     : Color.white)
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "paperplane.fill")
-                    .font(.footnote).bold()
-                    .foregroundStyle(Color.white.opacity(0.85))
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .glassEffect(
-                .regular.tint(Color.white.opacity(0.08)),
-                in: Capsule(style: .continuous)
-            )
-            .liquidGlassShine(in: Capsule(style: .continuous), strength: 0.85)
-            .overlay {
-                Capsule(style: .continuous)
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.55),
-                                Color.white.opacity(0.18),
-                                Color.white.opacity(0.30),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-            }
-            .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-    }
-}
-
-// MARK: - Reply composer overlay
-
-/// Full-screen overlay that hosts the actual TextField. The dark backdrop
-/// signals "reply mode"; tapping it dismisses without losing the draft.
-///
-/// We drive the keyboard lift manually via NotificationCenter — SwiftUI's
-/// automatic safe-area avoidance doesn't reach into nested `.overlay`
-/// content reliably, so the input bar stayed pinned to the bottom of the
-/// screen while the keyboard slid up over it. With the manual observer +
-/// a spring animation, the bar travels in lock-step with the keyboard.
-///
-/// On send, the input bar swooshes diagonally toward `messageButtonOrigin`
-/// (the screen-space center of the top-right Messages HUD) so the user
-/// sees their reply land in the inbox. On tap-away dismiss, the keyboard
-/// hides first and the bar springs down with it before the overlay fades.
-private struct ReplyComposerOverlay: View {
-    let post: FriendPost
-    let messageButtonOrigin: CGPoint
-    /// Screen-space frame of the in-feed pill. Used as the input bar's
-    /// idle anchor so when the keyboard is down the bar sits on top of
-    /// the pill exactly — and the cross-fade reads as one object.
-    let pillFrame: CGRect
-    @Binding var draft: String
-    var onSend: () async throws -> Void
-    var onClose: () -> Void
-    var onSendComplete: () -> Void
-
-    @FocusState private var focused: Bool
-    @State private var isSending = false
-    @State private var sendError: String?
-    @State private var keyboardLift: CGFloat = 0
-    /// Captured ONCE on first appear, before the keyboard pops up. On
-    /// iOS 26 `safeAreaInsets.bottom` flips to the keyboard frame the
-    /// moment `keyboardWillShow` fires, so reading it inside the
-    /// notification handler returns the wrong value.
-    @State private var homeIndicator: CGFloat = 34
-    @State private var sentFlying = false
-    @State private var dismissingAfterClose = false
-
-    private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                // Dimmed backdrop. The keyboard sits on top; tapping
-                // anywhere else dismisses the composer.
-                Color.black.opacity(0.55)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture { handleClose() }
-
-                VStack(spacing: 6) {
-                    if let err = sendError {
-                        Text(err)
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.errorRed)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                    }
-                    inputBar
-                }
-                .frame(width: max(geo.size.width - 32, 0))
-                .position(x: geo.size.width / 2, y: anchorY(in: geo))
-                .scaleEffect(sentFlying ? 0.12 : 1.0, anchor: .center)
-                .offset(
-                    x: sentFlying ? swooshOffsetX(in: geo) : 0,
-                    y: sentFlying ? swooshOffsetY(in: geo) : 0
-                )
-                .opacity(sentFlying ? 0 : 1)
-                .animation(.spring(response: 0.48, dampingFraction: 0.82),
-                           value: keyboardLift)
-                .animation(.spring(response: 0.55, dampingFraction: 0.78),
-                           value: sentFlying)
-            }
-            // Disable SwiftUI's auto avoidance — we drive the lift
-            // ourselves so we get a single, spring-tuned motion.
-            .ignoresSafeArea(.keyboard, edges: .bottom)
-            .onAppear {
-                homeIndicator = geo.safeAreaInsets.bottom
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(50))
-                    focused = true
-                }
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
-            guard
-                let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
-            else { return }
-            keyboardLift = max(0, frame.cgRectValue.height - homeIndicator)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardLift = 0
-        }
-    }
-
-    /// The input bar's anchor Y. With the keyboard hidden it sits exactly
-    /// where the in-feed pill is (so the cross-fade looks like a morph).
-    /// With the keyboard up it floats just above the keyboard's top edge.
-    private func anchorY(in geo: GeometryProxy) -> CGFloat {
-        if keyboardLift > 0 {
-            // Above keyboard, with a small breathing-room margin.
-            return geo.size.height - keyboardLift - 8 - estimatedBarHalfHeight
-        }
-        // Idle: lock onto pill's center if we have it, else fall back
-        // to a sensible bottom-anchored position.
-        if pillFrame.height > 0 {
-            return pillFrame.midY
-        }
-        return geo.size.height - homeIndicator - 8 - estimatedBarHalfHeight
-    }
-
-    private var estimatedBarHalfHeight: CGFloat { 25 }
-
-    /// Horizontal flight offset = where the messages button is, minus
-    /// the bar's resting center (which is at screen midX).
-    private func swooshOffsetX(in geo: GeometryProxy) -> CGFloat {
-        messageButtonOrigin.x - geo.size.width / 2
-    }
-
-    /// Vertical flight offset = messages button Y minus the bar's
-    /// current anchor Y (which is where it actually sits when sending).
-    private func swooshOffsetY(in geo: GeometryProxy) -> CGFloat {
-        messageButtonOrigin.y - anchorY(in: geo)
-    }
-
-    /// Tap-away dismiss. Resigns the keyboard so the bar can spring back
-    /// to the pill's resting position in lock-step with the keyboard
-    /// slide-down, then tells the parent to fade the overlay.
-    private func handleClose() {
-        guard !dismissingAfterClose else { return }
-        dismissingAfterClose = true
-        focused = false
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(320))
-            onClose()
-        }
-    }
-
-    private var inputBar: some View {
-        HStack(spacing: 10) {
-            ZStack(alignment: .leading) {
-                if draft.isEmpty {
-                    Text("Send a message")
-                        .font(.subheadline)
-                        .foregroundStyle(Color.white.opacity(0.7))
-                        .allowsHitTesting(false)
-                }
-                // Single-line on purpose — Return submits, doesn't add a
-                // newline. Both the keyboard's return key and the
-                // paperplane button hit the same trySend path.
-                TextField("", text: $draft)
-                    .font(.subheadline)
-                    .foregroundStyle(.white)
-                    .tint(.white)
-                    .focused($focused)
-                    .submitLabel(.send)
-                    .onSubmit { Task { await trySend() } }
-                    .textInputAutocapitalization(.sentences)
-                    .autocorrectionDisabled(false)
-            }
-
-            Button {
-                Task { await trySend() }
-            } label: {
-                Image(systemName: "paperplane.fill")
-                    .font(.subheadline).bold()
-                    .foregroundStyle(canSend
-                                     ? .white
-                                     : Color.white.opacity(0.45))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSend || isSending)
-            .accessibilityLabel("Send reply")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .glassEffect(
-            .regular.tint(Color.white.opacity(0.10)),
-            in: Capsule(style: .continuous)
-        )
-        .liquidGlassShine(in: Capsule(style: .continuous), strength: 1.0)
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.70),
-                            Color.white.opacity(0.20),
-                            Color.white.opacity(0.35),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
-        }
-        .shadow(color: .black.opacity(0.30), radius: 18, y: 6)
-    }
-
-    private func trySend() async {
-        guard canSend, !isSending else { return }
-        isSending = true
-        sendError = nil
-        defer { isSending = false }
-        do {
-            try await onSend()
-            // Trigger the swoosh AFTER the message has actually landed,
-            // so we never claim success on a failed send.
-            withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) {
-                sentFlying = true
-            }
-            // Wait for the swoosh to land, then tear the overlay down
-            // without a transition (the swoosh did the visual work).
-            try? await Task.sleep(for: .milliseconds(430))
-            onSendComplete()
-        } catch {
-            print("[ReplyComposerOverlay] reply mirror failed: \(error)")
-            withAnimation(.easeInOut(duration: 0.18)) {
-                sendError = error.localizedDescription
-            }
-        }
-    }
-}
-
-// MARK: - Emoji picker sheet
-
-private struct EmojiPickerSheet: View {
-    var myEmoji: String?
-    var onSelect: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 6)
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Handle + title row
-            HStack {
-                Text("React")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close emoji picker")
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .padding(.bottom, 14)
-
-            Divider()
-                .opacity(0.4)
-
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 10) {
-                    ForEach(NotoEmojiLottie.catalog, id: \.slug) { item in
-                        Button {
-                            onSelect(item.emoji)
-                            dismiss()
-                        } label: {
-                            NotoEmojiLottieView(
-                                notoSlug: item.slug,
-                                fallbackEmoji: item.emoji,
-                                size: 36,
-                                loop: true
-                            )
-                            .frame(width: 50, height: 50)
-                            .background(
-                                myEmoji == item.emoji
-                                    ? AppTheme.cafeAccent.opacity(0.28)
-                                    : Color.white.opacity(0.06)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(
-                                        myEmoji == item.emoji
-                                            ? AppTheme.cafeAccent.opacity(0.7)
-                                            : Color.clear,
-                                        lineWidth: 1.5
-                                    )
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-            }
-        }
-        .background(Color(UIColor.systemBackground))
-    }
-}
-
 // MARK: - Feed moderation modifier
 
 /// Hosts the report-content sheet + block-user confirmation alert for the
@@ -2062,7 +1423,7 @@ private struct FeedModerationModifier: ViewModifier {
     @Binding var reportTarget: ReportTarget?
     @Binding var pendingBlockUid: String?
     let pendingBlockTitle: String
-    @ObservedObject var socialService: SocialService
+    var socialService: SocialService
 
     func body(content: Content) -> some View {
         content

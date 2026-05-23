@@ -3,7 +3,7 @@ import PhotosUI
 import MapKit
 
 struct AdminAddView: View {
-    @ObservedObject var firestoreService: FirestoreService
+    var firestoreService: FirestoreService
     let editCafe: Cafe?
     let onClose: () -> Void
 
