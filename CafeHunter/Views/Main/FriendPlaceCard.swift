@@ -315,11 +315,11 @@ struct FriendPlaceCarousel: View {
         HStack(spacing: 6) {
             Text("\(topIndex + 1)")
                 .font(.system(size: 12, weight: .bold))
-                .foregroundColor(AppTheme.textPrimary)
+                .foregroundColor(.primary)
                 .monospacedDigit()
             Text("of \(places.count)")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(AppTheme.textSecondary)
+                .foregroundColor(.secondary)
                 .monospacedDigit()
         }
         .padding(.bottom, 4)

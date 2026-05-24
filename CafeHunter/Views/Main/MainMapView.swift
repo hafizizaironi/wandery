@@ -230,6 +230,12 @@ struct MainMapView: View {
 
     @State private var friendPlacesService = FriendPlacesService()
     @State private var activeFriendPlace: FriendPlace?
+    /// Shuffled order of `filteredPlaces` used by the Tinder card stack.
+    /// Recomputed whenever the filter or the underlying places list
+    /// changes. The first element is guaranteed to differ from the first
+    /// element of the *list view* so the carousel + list don't show the
+    /// same top item.
+    @State private var carouselOrder: [FriendPlace] = []
     /// Set when the user taps a multi-place cluster pin (e.g. a mall). Drives
     /// a small picker sheet that lets them pick which of the bundled places
     /// to actually open.
@@ -258,6 +264,24 @@ struct MainMapView: View {
     @State private var screenHeight: CGFloat = 700
     private var expandedHeight: CGFloat { screenHeight * 0.75 }
     private var isListAtTop: Bool { listScrollOffset >= -1 }
+
+    /// 0 when the sheet is at `peekHeight`, 1 when fully expanded.
+    /// Drives the dynamic carousel shrink + fade below.
+    private var expansionProgress: CGFloat {
+        let range = expandedHeight - peekHeight
+        guard range > 0 else { return 0 }
+        return max(0, min(1, (sheetHeight - peekHeight) / range))
+    }
+
+    /// Carousel height shrinks linearly with sheet expansion. Capped at
+    /// 0 so the cards fully collapse before the sheet reaches its top.
+    private var dynamicCarouselHeight: CGFloat {
+        max(0, 340 - 340 * expansionProgress * 1.25)
+    }
+
+    private var carouselOpacity: Double {
+        max(0, 1 - Double(expansionProgress) * 1.5)
+    }
 
     /// Map pins still draw the legacy curated cafes for now (Phase 2 decision),
     /// but the sheet list no longer reflects them — it lists places shared via
@@ -292,6 +316,12 @@ struct MainMapView: View {
             )
             .task(id: socialService.feedPosts.map(\.id)) {
                 await friendPlacesService.refresh(from: socialService.feedPosts)
+            }
+            // Reshuffle the carousel order whenever the filter or the
+            // visible places change. Runs on first appearance + every
+            // time the place-id set or the active filter changes.
+            .task(id: "\(filter.rawValue):\(filteredPlaces.map(\.id).joined())") {
+                refreshCarouselOrder()
             }
             .sheet(item: $activeFriendPlace) { place in
                 PlaceDetailSheet(place: place) {
@@ -368,6 +398,16 @@ struct MainMapView: View {
 
             // List overlay
             if showListOverlay {
+                // Backdrop dim — mirrors the system `.sheet` dim that
+                // sits behind the detail-location panel. Without this,
+                // the visited-places panel's glass refracts a bright
+                // map and reads visibly lighter than the detail-
+                // location panel. Tap to dismiss.
+                Color.black.opacity(0.30)
+                    .ignoresSafeArea()
+                    .onTapGesture { hideListSheet() }
+                    .transition(.opacity)
+
                 BottomSheetView(
                     height: $sheetHeight,
                     peekHeight: peekHeight,
@@ -573,17 +613,172 @@ struct MainMapView: View {
                      : "No \(filter.label.lowercased()) shared yet.")
                     .font(.system(size: 13))
                     .multilineTextAlignment(.center)
-                    .foregroundColor(AppTheme.textSecondary)
+                    .foregroundColor(.secondary)
                     .padding(.horizontal, 24)
                 Spacer(minLength: 32)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            FriendPlaceCarousel(places: filteredPlaces) { place in
+            // Card carousel up top — shrinks + fades out as the user
+            // scrolls the list below. Uses `carouselOrder` (shuffled)
+            // so the top card never matches the top of the list.
+            FriendPlaceCarousel(places: carouselOrder) { place in
                 selectFriendPlace(place)
             }
-            .padding(.bottom, 10)
+            .frame(height: dynamicCarouselHeight)
+            .opacity(carouselOpacity)
+            .clipped()
+            .padding(.bottom, 6)
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: expansionProgress)
+
+            Divider()
+                .background(Color.primary.opacity(0.10))
+                .padding(.horizontal, 14)
+                .opacity(carouselOpacity)
+
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(filteredPlaces) { place in
+                        compactPlaceRow(place)
+                    }
+                    Color.clear.frame(height: 20)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+            }
+            // Trigger auto-expand / auto-collapse ONLY on threshold-
+            // crossings (oldValue → newValue transitions). Without this
+            // guard the `withAnimation { sheetHeight = … }` would fire
+            // on every scroll frame, interrupting the spring and
+            // producing the stutter the user reported.
+            .onScrollGeometryChange(for: CGFloat.self) { proxy in
+                proxy.contentOffset.y
+            } action: { oldOffset, newOffset in
+                // Snap-update `listScrollOffset` only on top/non-top
+                // transitions (keeps the existing `isListAtTop` gate
+                // working without firing a state-write every frame).
+                let wasAtTop = oldOffset <= 1
+                let nowAtTop = newOffset <= 1
+                if wasAtTop != nowAtTop {
+                    listScrollOffset = nowAtTop ? 0 : -100
+                }
+                // Crossing 4pt down → auto-expand.
+                if oldOffset <= 4, newOffset > 4,
+                   sheetHeight < expandedHeight - 4 {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+                        sheetHeight = expandedHeight
+                    }
+                }
+                // Crossing -60pt up (overscroll pull-down at top) → auto-collapse.
+                else if oldOffset >= -60, newOffset < -60,
+                        sheetHeight > peekHeight + 4 {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+                        sheetHeight = peekHeight
+                    }
+                }
+            }
         }
+    }
+
+    /// Re-shuffles the carousel order so the top card is randomised AND
+    /// distinct from the top of the list. Called via `.task(id:)` on the
+    /// view body whenever the filter or place list changes.
+    private func refreshCarouselOrder() {
+        let source = filteredPlaces
+        guard source.count > 1 else {
+            carouselOrder = source
+            return
+        }
+        var shuffled = source.shuffled()
+        // If shuffle happened to put the list-top first, swap with index 1.
+        if shuffled.first?.id == source.first?.id {
+            shuffled.swapAt(0, 1)
+        }
+        carouselOrder = shuffled
+    }
+
+    /// Compact list row used under the Tinder carousel — same places, but
+    /// scannable. Tap routes through `selectFriendPlace` just like the card.
+    private func compactPlaceRow(_ place: FriendPlace) -> some View {
+        Button {
+            selectFriendPlace(place)
+        } label: {
+            HStack(spacing: 12) {
+                rowThumbnail(place)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(place.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Text(visitsLabel(place))
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Square thumbnail of the most-recent friend post at the place.
+    /// Falls back to a translucent panel + type emoji when the URL is
+    /// missing or fails to load.
+    private func rowThumbnail(_ place: FriendPlace) -> some View {
+        let url: URL? = {
+            guard let post = place.mostRecent else { return nil }
+            let raw = post.isVideo
+                ? (post.thumbnailURL ?? post.mediaURL)
+                : post.mediaURL
+            return URL(string: raw)
+        }()
+        return CachedAsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().aspectRatio(contentMode: .fill)
+            case .failure, .empty:
+                thumbnailPlaceholder(for: place.type)
+            @unknown default:
+                thumbnailPlaceholder(for: place.type)
+            }
+        }
+        .frame(width: 50, height: 50)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+        )
+    }
+
+    private func thumbnailPlaceholder(for type: PlaceType) -> some View {
+        ZStack {
+            Color.primary.opacity(0.08)
+            Text(type.emoji)
+                .font(.system(size: 22))
+                .opacity(0.6)
+        }
+    }
+
+    private func visitsLabel(_ place: FriendPlace) -> String {
+        let visits = max(place.globalVisitCount, 0)
+        let displayed = visits > 0 ? visits : place.posts.count
+        let friendCount = Set(place.posts.map(\.authorId)).count
+        if displayed == 1 { return "1 visit" }
+        if friendCount <= 1 { return "\(displayed) visits" }
+        return "\(displayed) visits · \(friendCount) friends"
     }
 
     private var filterCounts: (all: Int, cafe: Int, restaurant: Int, stall: Int) {
@@ -760,14 +955,23 @@ struct BottomSheetView<Content: View>: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: currentHeight)
+        // Liquid Glass with a black tint for higher opacity — the panel
+        // reads as a more material-y surface than plain `.clear`, while
+        // still preserving the refractive edges.
         .clipShape(RoundedRectangle(
             cornerRadius: FloatingPanelStyle.cornerRadius,
             style: .continuous
         ))
-        // Real iOS 26 Liquid Glass — refractive edges + shine + gradient
-        // rim. Matches the circular HUD buttons + the navbar pill so all
-        // floating chrome reads as the same material.
-        .liquidGlassPanel(cornerRadius: FloatingPanelStyle.cornerRadius)
+        // `Color(.systemBackground)` adapts: near-white tint in light mode,
+        // near-black in dark mode. Keeps the panel readable in both.
+        .glassEffect(
+            .clear.tint(Color(.systemBackground).opacity(0.90)),
+            in: RoundedRectangle(
+                cornerRadius: FloatingPanelStyle.cornerRadius,
+                style: .continuous
+            )
+        )
+        .shadow(color: .black.opacity(0.20), radius: 14, x: 0, y: 6)
     }
 
     /// Compact liquid-glass icon button used in the sheet header.
@@ -779,7 +983,7 @@ struct BottomSheetView<Content: View>: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .bold))
-                .foregroundColor(AppTheme.textPrimary)
+                .foregroundColor(.primary)
                 .frame(width: 34, height: 34)
                 .glassEffect(
                     .regular
@@ -947,8 +1151,8 @@ struct FilterTabBar: View {
                             .monospacedDigit()
                             .foregroundColor(
                                 isActive
-                                    ? (chipAccent ?? AppTheme.textPrimary)
-                                    : AppTheme.textSecondary
+                                    ? (chipAccent ?? .primary)
+                                    : .secondary
                             )
                     }
                     .padding(.horizontal, 12)

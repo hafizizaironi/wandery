@@ -106,17 +106,36 @@ struct ContentView: View {
 }
 
 struct SplashView: View {
+    /// Drives the continuous rotation. Goes 0 → 360, then resets to 0
+    /// (instantly, no animation) so each subsequent revolution starts
+    /// from the same angle without snapping back through 360→0.
+    @State private var rotation: Double = 0
+    /// Subtle scale pulse layered on top of the rotation — gives the
+    /// spinner a tiny "breath" so it doesn't feel mechanical.
     @State private var pulsing = false
 
     var body: some View {
         ZStack {
             AppTheme.espresso.ignoresSafeArea()
-            Text("☕")
-                .font(.system(size: 60))
-                .foregroundColor(AppTheme.cream.opacity(0.85))
-                .scaleEffect(pulsing ? 1.1 : 0.95)
-                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulsing)
-                .onAppear { pulsing = true }
+
+            Image("WanderyPolaroidPin")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 96, height: 96)
+                .rotationEffect(.degrees(rotation))
+                .scaleEffect(pulsing ? 1.05 : 0.97)
+                .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 6)
+                .onAppear {
+                    // Continuous rotation: 1.6s per revolution, linear so
+                    // the spin reads as a steady buffer-style loader.
+                    withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
+                        rotation = 360
+                    }
+                    // Independent slow pulse for the gentle breathing.
+                    withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                        pulsing = true
+                    }
+                }
         }
     }
 }

@@ -21,12 +21,12 @@ struct PhonePromptPanel: View {
                 VStack(spacing: 6) {
                     Text("Add your phone number")
                         .font(.title3).bold()
-                        .foregroundStyle(AppTheme.textPrimary)
+                        .foregroundStyle(.primary)
                         .multilineTextAlignment(.center)
 
                     Text("Friends who already have you in their contacts can find you instantly. Your number stays private — only friends see it.")
                         .font(.subheadline)
-                        .foregroundStyle(AppTheme.textSecondary)
+                        .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 4)
                 }
@@ -50,7 +50,7 @@ struct PhonePromptPanel: View {
                 Button(action: onDismiss) {
                     Text("Maybe later")
                         .font(.subheadline)
-                        .foregroundStyle(AppTheme.textSecondary)
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
                 }
@@ -60,6 +60,8 @@ struct PhonePromptPanel: View {
             .padding(.bottom, 18)
         }
         .frame(maxWidth: .infinity)
-        .background(AppTheme.surfaceCanvas.ignoresSafeArea())
+        // No custom background — let the system .sheet's Liquid Glass
+        // backdrop show through from top to bottom as one continuous
+        // surface. Adapts to light/dark mode automatically.
     }
 }
