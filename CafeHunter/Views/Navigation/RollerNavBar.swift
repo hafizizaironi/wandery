@@ -91,29 +91,28 @@ struct ArcNavBar: View {
                     .frame(maxWidth: .infinity)
             }
         }
-        // Sliding indicator BEHIND the cells, sized to the HStack's
-        // content frame (not the outer padded frame) so cell-width
-        // math lines up cleanly with each tab's position.
+        // Sliding indicator BEHIND the cells — iOS-26 segmented-control
+        // style: a subtle "raised glass" capsule that looks like a lifted
+        // inner pane, not a colored accent fill.
         .background(alignment: .leading) {
             GeometryReader { geo in
                 let cellWidth = geo.size.width / CGFloat(tabs.count)
                 Capsule()
-                    .fill(AppTheme.accentAction.opacity(0.22))
+                    .fill(.white.opacity(0.22))
+                    .overlay {
+                        Capsule().stroke(.white.opacity(0.18), lineWidth: 0.5)
+                    }
+                    .shadow(color: .black.opacity(0.10), radius: 3, x: 0, y: 1)
                     .frame(width: cellWidth - 6, height: geo.size.height - 4)
                     .padding(.vertical, 2)
                     .offset(x: cellWidth * pageProgress + 3)
             }
         }
         .padding(pillInnerPadding)
-        // Outer pill surface — adaptive material gives the iOS-26
-        // glass look (dark over Hero, light over Profile, etc.).
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay {
-            Capsule()
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-        }
-        .clipShape(Capsule())
-        .shadow(color: Color.black.opacity(0.18), radius: 14, x: 0, y: 6)
+        // Outer pill surface — project-wide Liquid Glass chrome treatment
+        // so the navbar reads as the same material as the sheet panels
+        // and floating buttons.
+        .liquidGlassChrome(in: Capsule())
     }
 
     @ViewBuilder

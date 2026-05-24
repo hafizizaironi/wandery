@@ -416,12 +416,8 @@ struct HeroPageView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .frame(width: 38, height: 38)
-                    .background(
-                        Circle().fill(.ultraThinMaterial)
-                    )
-                    .overlay {
-                        Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
-                    }
+                    // Project-wide Liquid Glass chrome.
+                    .liquidGlassChrome(in: Circle())
 
                 if unreadConversationCount > 0 {
                     Circle()
@@ -1373,10 +1369,7 @@ private struct FeedPostCard: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
-        .background(
-            Capsule().fill(.ultraThinMaterial)
-                .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 2)
-        )
+        .liquidGlassChrome(in: Capsule())
         .padding(.horizontal, 20)
     }
 
@@ -1388,11 +1381,7 @@ private struct FeedPostCard: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 2)
-            )
+            .liquidGlassChrome(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .padding(.horizontal, 20)
     }
 

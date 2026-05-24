@@ -83,13 +83,36 @@ final class FriendPlacesService {
         #endif
         if !toFetch.isEmpty {
             for id in toFetch { inflight.insert(id) }
+            // Identify which fetches need fresh server data vs which can come
+            // from the local Firestore cache. A first-time-this-session load
+            // (placeCache miss) is happy with cached counters. A refetch
+            // driven by a newly-landed post wants the server's authoritative
+            // visit/engagement counts, which are bumped server-side by the
+            // post-create Cloud Function.
+            let firstTimeIds: Set<String> = Set(toFetch.filter { placeCache[$0] == nil })
             await withTaskGroup(of: (String, FetchedPlaceFields?, Error?).self) { group in
                 for id in toFetch {
+                    let preferCache = firstTimeIds.contains(id)
                     group.addTask { [db] in
                         do {
-                            let snap = try await db.collection("places")
-                                .document(id)
-                                .getDocument()
+                            let snap: DocumentSnapshot
+                            if preferCache {
+                                // Cache hit = zero billed reads. On miss the
+                                // SDK throws; we fall back to server.
+                                do {
+                                    snap = try await db.collection("places")
+                                        .document(id)
+                                        .getDocument(source: .cache)
+                                } catch {
+                                    snap = try await db.collection("places")
+                                        .document(id)
+                                        .getDocument(source: .server)
+                                }
+                            } else {
+                                snap = try await db.collection("places")
+                                    .document(id)
+                                    .getDocument(source: .server)
+                            }
                             // Manual dict decode rather than Codable — the
                             // FirestoreDecoder fails opaquely when a field's
                             // type drifts (e.g. a new field was added but

@@ -22,12 +22,15 @@ final class NotificationService: NSObject, ObservableObject {
     }
 
     func requestAuthorizationAndRegister() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
-            guard granted else { return }
-            DispatchQueue.main.async {
-                UIApplication.shared.registerForRemoteNotifications()
-            }
+        // Register for remote notifications unconditionally — silent-push
+        // (used by Firebase Phone Auth verification) only needs an APNs
+        // device token, not visible-notification permission. Gating this
+        // on `granted` would break Phone Auth for any user who declines
+        // the alerts prompt.
+        DispatchQueue.main.async {
+            UIApplication.shared.registerForRemoteNotifications()
         }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in }
     }
 
     func saveFCMToken(_ token: String?) {

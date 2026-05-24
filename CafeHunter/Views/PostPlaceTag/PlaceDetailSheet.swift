@@ -30,6 +30,9 @@ struct PlaceDetailSheet: View {
     @State private var flyingPost: FriendPost?
     @State private var flyingOffset: CGSize = .zero
     @State private var flyingRotation: Double = 0
+    /// Shared hydrator for post-author avatars. Prefetched on appear so the
+    /// avatar corner never renders empty even for one frame.
+    @State private var hydrator = ParticipantHydrator()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,7 +44,9 @@ struct PlaceDetailSheet: View {
                 .padding(.vertical, 16)
             Spacer(minLength: 0)
         }
-        .background(AppTheme.surfaceCanvas.ignoresSafeArea())
+        .task {
+            hydrator.prefetch(place.posts.map(\.authorId))
+        }
     }
 
     private var grabber: some View {
@@ -60,10 +65,12 @@ struct PlaceDetailSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(place.name)
                     .font(.headline)
-                    .foregroundStyle(AppTheme.textPrimary)
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.35), radius: 3, x: 0, y: 1)
                 Text(visitsLine)
                     .font(.caption)
-                    .foregroundStyle(AppTheme.textSecondary)
+                    .foregroundStyle(.white.opacity(0.78))
+                    .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
             }
             Spacer()
             Button {
@@ -71,7 +78,8 @@ struct PlaceDetailSheet: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.title2)
-                    .foregroundStyle(AppTheme.textSecondary.opacity(0.7))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close")
@@ -115,13 +123,13 @@ struct PlaceDetailSheet: View {
                 Text(title)
                     .font(.footnote).bold()
             }
-            .foregroundStyle(AppTheme.textPrimary)
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(AppTheme.surfacePrimary, in: Capsule())
-            .overlay {
-                Capsule().stroke(AppTheme.borderSubtle, lineWidth: 1)
-            }
+            // Project-wide Liquid Glass chrome — matches the sheet
+            // panel + every other floating button in the app.
+            .liquidGlassChrome(in: Capsule())
         }
         .buttonStyle(.plain)
     }
@@ -168,7 +176,7 @@ struct PlaceDetailSheet: View {
                 }
                 // Departing card during a swipe-off, rendered above the stack.
                 if let flying = flyingPost {
-                    PostStackCard(post: flying)
+                    PostStackCard(post: flying, hydrator: hydrator)
                         .frame(width: cardSide, height: cardSide)
                         .offset(flyingOffset)
                         .rotationEffect(.degrees(flyingRotation))
@@ -218,7 +226,7 @@ struct PlaceDetailSheet: View {
         // AsyncImage and reloads it, which is what produced the post-swipe
         // spinner. Always attach the same DragGesture and gate behavior
         // inside its handlers.
-        return PostStackCard(post: post)
+        return PostStackCard(post: post, hydrator: hydrator)
             .frame(width: side, height: side)
             .scaleEffect(isFront ? 1.0 : advancedScale)
             .offset(
@@ -329,12 +337,27 @@ struct PlaceDetailSheet: View {
 /// Single post card inside the place-detail stack.
 private struct PostStackCard: View {
     let post: FriendPost
+    let hydrator: ParticipantHydrator
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             mediaLayer
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             metaOverlay
+        }
+        // Author avatar pinned to the top-right corner — replaces the
+        // `@username` text that used to live in the bottom overlay.
+        .overlay(alignment: .topTrailing) {
+            ParticipantAvatar(
+                participant: hydrator.participant(for: post.authorId),
+                uid: post.authorId,
+                size: 38
+            )
+            .overlay {
+                Circle().stroke(Color.white.opacity(0.55), lineWidth: 1.5)
+            }
+            .shadow(color: .black.opacity(0.35), radius: 5, x: 0, y: 2)
+            .padding(12)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -378,18 +401,16 @@ private struct PostStackCard: View {
     private var metaOverlay: some View {
         VStack(alignment: .leading, spacing: 4) {
             Spacer(minLength: 0)
-            Text("@\(post.authorUsername)")
-                .font(.subheadline).bold()
-                .foregroundStyle(.white)
             if !post.caption.isEmpty {
                 Text(post.caption)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.92))
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
                     .lineLimit(2)
+                    .shadow(color: .black.opacity(0.35), radius: 3, x: 0, y: 1)
             }
             Text(relativeTime)
                 .font(.caption2)
-                .foregroundStyle(.white.opacity(0.7))
+                .foregroundStyle(.white.opacity(0.78))
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

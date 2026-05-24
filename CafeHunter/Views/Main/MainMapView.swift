@@ -79,32 +79,10 @@ extension View {
 /// catchlight, and a soft lift shadow.
 private struct LiquidGlassHUDModifier: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            // No `.interactive()` — it defers tap recognition while resolving touch vs. glass tracking.
-            .glassEffect(
-                .regular
-                    .tint(AppTheme.accentAction.opacity(0.07)),
-                in: Circle()
-            )
-            .liquidGlassShine(in: Circle(), strength: 1.0)
-            .overlay(
-                Circle()
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.70),
-                                Color.white.opacity(0.18),
-                                AppTheme.accentAction.opacity(0.22)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.8
-                    )
-            )
-            .shadow(color: AppTheme.accentAction.opacity(0.14),
-                    radius: 8, x: 0, y: 3)
-            .shadow(color: .black.opacity(0.10), radius: 5, x: 0, y: 2)
+        // Same recipe as the project-wide `liquidGlassChrome` — kept as a
+        // separate modifier purely for the legacy `liquidGlassHUD()` call
+        // sites and so we can tweak HUD-specific shadow weight if needed.
+        content.liquidGlassChrome(in: Circle())
     }
 }
 
@@ -112,6 +90,108 @@ extension View {
     /// Applies the shared circular Liquid Glass HUD styling.
     fileprivate func liquidGlassHUD() -> some View {
         modifier(LiquidGlassHUDModifier())
+    }
+}
+
+// MARK: - Shared Liquid Glass chrome
+
+/// One-size-fits-most Liquid Glass treatment for any chrome shape — nav
+/// pills, button capsules, composer input fields, etc. Uses the same
+/// `.glassEffect(.clear, in: shape)` recipe as the sheet panels with a
+/// dark-tinted gradient stroke for the rim, so every floating element in
+/// the app reads as the same material.
+private struct LiquidGlassChromeModifier<S: Shape>: ViewModifier {
+    let shape: S
+
+    func body(content: Content) -> some View {
+        content
+            .glassEffect(.clear, in: shape)
+            .overlay {
+                shape.stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(0.28),
+                            Color.black.opacity(0.08),
+                            Color.black.opacity(0.20)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
+            }
+            .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 4)
+    }
+}
+
+extension View {
+    /// Applies the project-wide Liquid Glass chrome treatment to any shape.
+    /// Use for pills, capsules, composer inputs, navbar surfaces — anything
+    /// that should read as the same material as the sheet panels.
+    func liquidGlassChrome<S: Shape>(in shape: S) -> some View {
+        modifier(LiquidGlassChromeModifier(shape: shape))
+    }
+}
+
+/// Liquid Glass backdrop for system sheets — same `.glassEffect(.clear)`
+/// as the floating panel + chrome modifiers. The system clips to the
+/// sheet's rounded top corners for us. Used via
+/// `.presentationBackground { LiquidGlassSheetBackground() }`.
+struct LiquidGlassSheetBackground: View {
+    var body: some View {
+        Rectangle()
+            .fill(.clear)
+            .glassEffect(.clear, in: Rectangle())
+    }
+}
+
+// MARK: - Liquid-glass panel surface
+
+/// High-fidelity Liquid Glass panel — translated from the CSS recipe at
+/// https://codepen.io ("color-mix inset box-shadow stack"). The CSS uses
+/// 8+ layered inset shadows to fake the asymmetric lighting that makes
+/// real glass look like a domed lens: bright top-left, faint dark line
+/// just inside the top edge, soft bottom darkening, gradient rim. SwiftUI
+/// can't do inset shadows directly, so each "layer" becomes either an
+/// overlay gradient (for area shading) or a strokes-with-offset trick
+/// (for thin specular lines).
+private struct LiquidGlassPanelModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            // iOS 26 Liquid Glass — `.clear` is the see-through variant
+            // (more transparent than `.regular` while preserving Apple's
+            // refractive lens at the edges). Apple's docs warn against
+            // stacking glass with materials, masks, or custom Metal —
+            // the system is designed to be applied directly to a shape
+            // and left alone. One subtle gradient stroke is the only
+            // decoration on top; it gives the panel a defined edge over
+            // any backdrop the map provides.
+            .glassEffect(.clear, in: shape)
+            .overlay {
+                shape.stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(0.32),
+                            Color.black.opacity(0.10),
+                            Color.black.opacity(0.22)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
+            }
+            .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 6)
+    }
+}
+
+extension View {
+    /// Applies the shared rounded-rectangle Liquid Glass panel styling.
+    fileprivate func liquidGlassPanel(cornerRadius: CGFloat) -> some View {
+        modifier(LiquidGlassPanelModifier(cornerRadius: cornerRadius))
     }
 }
 
@@ -171,7 +251,10 @@ struct MainMapView: View {
     @State private var showListPressed     = false
     @State private var showListIdleTask:   Task<Void, Never>? = nil
 
-    private let peekHeight: CGFloat = 210
+    // Sized for the Tinder-style card carousel — the old 210pt peek was for
+    // a vertical row list where chips + 2 rows were a useful tease. A hero
+    // card needs ~520pt to render at a natural portrait proportion.
+    private let peekHeight: CGFloat = 520
     @State private var screenHeight: CGFloat = 700
     private var expandedHeight: CGFloat { screenHeight * 0.75 }
     private var isListAtTop: Bool { listScrollOffset >= -1 }
@@ -214,8 +297,17 @@ struct MainMapView: View {
                 PlaceDetailSheet(place: place) {
                     activeFriendPlace = nil
                 }
-                .presentationDetents([.medium, .large])
+                // `.fraction(0.7)` sits well above `.medium` so the place
+                // name and primary actions (Google Maps / Waze) are clear
+                // of the sheet edge, without going fullscreen.
+                .presentationDetents([.fraction(0.7)])
                 .presentationDragIndicator(.hidden)
+                // Custom Liquid Glass to match the visited-places panel.
+                // Sheet content uses white text (set inside the views)
+                // for contrast against the clear-glass backdrop.
+                .presentationBackground {
+                    LiquidGlassSheetBackground()
+                }
             }
             .sheet(isPresented: $showDiscover) {
                 DiscoverView(
@@ -235,6 +327,9 @@ struct MainMapView: View {
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
+                .presentationBackground {
+                    LiquidGlassSheetBackground()
+                }
             }
             .sheet(item: $clusterSelection) { selection in
                 ClusterPickerSheet(
@@ -253,6 +348,9 @@ struct MainMapView: View {
                 )
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+                .presentationBackground {
+                    LiquidGlassSheetBackground()
+                }
             }
             .onChange(of: pendingPlaceJumpId) { _, newId in
                 guard let placeId = newId else { return }
@@ -280,8 +378,11 @@ struct MainMapView: View {
                 ) {
                     sheetContent
                 }
-                // Horizontal inset so the sheet floats like a card
+                // Horizontal inset so the sheet floats like a card; bottom
+                // inset lifts it above the arc nav bar (Map/Hero/Profile)
+                // so the card isn't clipped by the bar.
                 .padding(.horizontal, FloatingPanelStyle.horizontalInset)
+                .padding(.bottom, ArcNavBar.frameContentHeight + geo.safeAreaInsets.bottom + 24)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -382,30 +483,7 @@ struct MainMapView: View {
             .padding(.leading, 12)
             .padding(.trailing, 14)
             .padding(.vertical, 10)
-            .glassEffect(
-                .regular
-                    .tint(AppTheme.accentAction.opacity(0.08)),
-                in: Capsule()
-            )
-            .liquidGlassShine(in: Capsule(), strength: 1.0)
-            .overlay(
-                Capsule()
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.70),
-                                Color.white.opacity(0.20),
-                                AppTheme.accentAction.opacity(0.22)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.8
-                    )
-            )
-            .shadow(color: AppTheme.accentAction.opacity(0.18),
-                    radius: 10, x: 0, y: 3)
-            .shadow(color: .black.opacity(0.10), radius: 6, x: 0, y: 2)
+            .liquidGlassChrome(in: Capsule())
             // Jump offset + scale drive the periodic hop; press squash stays.
             .scaleEffect(showListPressed ? 0.94 : showListJumpScale)
             .offset(y: showListJumpOffset)
@@ -487,88 +565,25 @@ struct MainMapView: View {
         }
         .padding(.top, 4)
 
-        ScrollView {
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: SheetListOffsetPreferenceKey.self,
-                                value: proxy.frame(in: .named("CafeListScroll")).minY)
-            }
-            .frame(height: 0)
-
-            LazyVStack(spacing: 8) {
-                ForEach(filteredPlaces) { place in
-                    placeRow(place)
-                }
-                if filteredPlaces.isEmpty {
-                    Text(filter == .all
-                         ? "No places shared yet — tag a place when you post."
-                         : "No \(filter.label.lowercased()) shared yet.")
-                        .font(.system(size: 13))
-                        .multilineTextAlignment(.center)
-                        .foregroundColor(AppTheme.textSecondary)
-                        .padding(.top, 32)
-                        .padding(.horizontal, 24)
-                }
-                // Reserve room so the last row sits comfortably above the
-                // arc navbar at max scroll-down.
-                Color.clear.frame(height: 170)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-        }
-        .coordinateSpace(name: "CafeListScroll")
-        .onPreferenceChange(SheetListOffsetPreferenceKey.self) { value in
-            listScrollOffset = value
-        }
-    }
-
-    /// Plain row — emoji, name, visit count. Tap centers the map on the
-    /// place and opens the friend-posts card stack.
-    private func placeRow(_ place: FriendPlace) -> some View {
-        Button {
-            selectFriendPlace(place)
-        } label: {
-            HStack(spacing: 12) {
-                Text(place.type.emoji).font(.system(size: 18))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(place.name)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(AppTheme.textPrimary)
-                        .lineLimit(1)
-                    Text(visitsLabel(place))
-                        .font(.system(size: 11))
-                        .foregroundColor(AppTheme.textSecondary)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
+        if filteredPlaces.isEmpty {
+            VStack {
+                Spacer(minLength: 32)
+                Text(filter == .all
+                     ? "No places shared yet — tag a place when you post."
+                     : "No \(filter.label.lowercased()) shared yet.")
+                    .font(.system(size: 13))
+                    .multilineTextAlignment(.center)
                     .foregroundColor(AppTheme.textSecondary)
+                    .padding(.horizontal, 24)
+                Spacer(minLength: 32)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(AppTheme.surfacePrimary)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
-            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            FriendPlaceCarousel(places: filteredPlaces) { place in
+                selectFriendPlace(place)
+            }
+            .padding(.bottom, 10)
         }
-        .buttonStyle(.plain)
-    }
-
-    private func visitsLabel(_ place: FriendPlace) -> String {
-        // `globalVisitCount` is the real visit metric (one visit per
-        // session, not one per post). Falls back to post count for places
-        // whose counter hasn't been hydrated yet — better than showing 0.
-        let visits = max(place.globalVisitCount, 0)
-        let displayed = visits > 0 ? visits : place.posts.count
-        let friendCount = Set(place.posts.map(\.authorId)).count
-        if displayed == 1 { return "1 visit" }
-        if friendCount <= 1 { return "\(displayed) visits" }
-        return "\(displayed) visits · \(friendCount) friends"
     }
 
     private var filterCounts: (all: Int, cafe: Int, restaurant: Int, stall: Int) {
@@ -745,12 +760,14 @@ struct BottomSheetView<Content: View>: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: currentHeight)
-        .background(AppTheme.espresso)
         .clipShape(RoundedRectangle(
             cornerRadius: FloatingPanelStyle.cornerRadius,
             style: .continuous
         ))
-        .shadow(color: .black.opacity(0.28), radius: 24, x: 0, y: -6)
+        // Real iOS 26 Liquid Glass — refractive edges + shine + gradient
+        // rim. Matches the circular HUD buttons + the navbar pill so all
+        // floating chrome reads as the same material.
+        .liquidGlassPanel(cornerRadius: FloatingPanelStyle.cornerRadius)
     }
 
     /// Compact liquid-glass icon button used in the sheet header.
@@ -825,7 +842,9 @@ struct ClusterPickerSheet: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                AppTheme.surfaceCanvas.ignoresSafeArea()
+                // Sheet background is glass via .presentationBackground;
+                // ZStack root must stay transparent so the glass shows.
+                Color.clear
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(sortedPlaces) { place in
@@ -837,22 +856,25 @@ struct ClusterPickerSheet: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(place.name)
                                             .font(.system(size: 14, weight: .semibold))
-                                            .foregroundColor(AppTheme.textPrimary)
+                                            .foregroundColor(.white)
                                             .lineLimit(1)
+                                            .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
                                         Text(visitsLabel(place))
                                             .font(.system(size: 11))
-                                            .foregroundColor(AppTheme.textSecondary)
+                                            .foregroundColor(.white.opacity(0.78))
+                                            .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
                                     }
                                     Spacer(minLength: 8)
                                     Image(systemName: "chevron.right")
                                         .font(.system(size: 11, weight: .semibold))
-                                        .foregroundColor(AppTheme.textSecondary)
+                                        .foregroundColor(.white.opacity(0.78))
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 10)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(RoundedRectangle(cornerRadius: 12).fill(AppTheme.surfacePrimary))
-                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.borderSubtle, lineWidth: 1))
+                                // Glass row chrome — matches every other
+                                // pill / panel surface in the app.
+                                .liquidGlassChrome(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                             }
                             .buttonStyle(.plain)
                         }
@@ -885,13 +907,6 @@ struct ClusterPickerSheet: View {
     }
 }
 
-private struct SheetListOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 // MARK: - Filter tab bar
 
 struct FilterTabBar: View {
@@ -918,53 +933,49 @@ struct FilterTabBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 10) {
             ForEach(FilterType.allCases, id: \.self) { type in
                 let count = count(for: type)
                 let isActive = active == type
                 let chipAccent = chipAccent(for: type)
 
                 Button { onChange(type) } label: {
-                    HStack(spacing: 4) {
-                        Text(type.emoji).font(.system(size: 12))
-                        Text(type.label).font(.system(size: 11, weight: .semibold))
+                    HStack(spacing: 6) {
+                        Text(type.emoji).font(.system(size: 15))
                         Text("\(count)")
-                            .font(.system(size: 10))
-                            .foregroundColor(isActive ? AppTheme.textPrimary.opacity(0.7) : AppTheme.textSecondary)
-                            .padding(.horizontal, 4)
-                            .background(
-                                Capsule()
-                                    .fill(
-                                        isActive
-                                            ? AppTheme.textPrimary.opacity(type == .all ? 0.1 : 0.06)
-                                            : AppTheme.textPrimary.opacity(0.05)
-                                    )
+                            .font(.system(size: 12, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundColor(
+                                isActive
+                                    ? (chipAccent ?? AppTheme.textPrimary)
+                                    : AppTheme.textSecondary
                             )
                     }
-                    .foregroundColor(
-                        isActive
-                            ? (chipAccent ?? AppTheme.textPrimary)
-                            : AppTheme.textSecondary
-                    )
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
                     .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(isActive ? AppTheme.surfacePrimary : AppTheme.textPrimary.opacity(0.04))
+                        Capsule().fill(
+                            isActive
+                                ? (chipAccent?.opacity(0.14) ?? AppTheme.surfacePrimary)
+                                : AppTheme.textPrimary.opacity(0.04)
+                        )
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(
-                                isActive
-                                    ? (chipAccent?.opacity(0.4) ?? AppTheme.borderSubtle)
-                                    : AppTheme.borderSubtle,
-                                lineWidth: 1
-                            )
+                        Capsule().stroke(
+                            isActive
+                                ? (chipAccent?.opacity(0.55) ?? AppTheme.borderSubtle)
+                                : AppTheme.borderSubtle.opacity(0.6),
+                            lineWidth: isActive ? 1.2 : 0.8
+                        )
                     )
+                    .scaleEffect(isActive ? 1.0 : 0.96)
+                    .animation(.spring(response: 0.32, dampingFraction: 0.78), value: isActive)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("\(type.label), \(count) places")
             }
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 14)
         .padding(.bottom, 8)
     }

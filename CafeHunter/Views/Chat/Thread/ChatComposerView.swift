@@ -81,14 +81,11 @@ struct ChatComposerView: View {
             .focused($focused)
             .padding(.vertical, 9)
             .padding(.horizontal, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(AppTheme.surfacePrimary)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
-            }
+            // Project-wide Liquid Glass chrome — matches the navbar, sheet
+            // panels, and floating buttons. Replaces the previous solid
+            // `surfacePrimary` fill so the composer reads as the same
+            // material as the rest of the floating chrome.
+            .liquidGlassChrome(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .submitLabel(.send)
             .onSubmit {
                 guard canSend else { return }

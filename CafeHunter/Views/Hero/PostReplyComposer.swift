@@ -99,12 +99,15 @@ struct PostReplyComposer: View {
         .padding(.leading, 18)
         .padding(.trailing, 6)
         .padding(.vertical, 6)
-        .background(Capsule().fill(AppTheme.surfacePrimary))
+        // Project-wide Liquid Glass chrome — matches the navbar, sheet
+        // panels, and floating buttons. The accent/error stroke is
+        // layered on top so the success-flash + error states still read.
+        .liquidGlassChrome(in: Capsule())
         .overlay {
             Capsule().stroke(
                 didSendFlash ? AppTheme.accentAction
-                : (errorMessage != nil ? AppTheme.errorRed : AppTheme.borderSubtle),
-                lineWidth: didSendFlash || errorMessage != nil ? 1.5 : 1
+                : (errorMessage != nil ? AppTheme.errorRed : Color.clear),
+                lineWidth: didSendFlash || errorMessage != nil ? 1.5 : 0
             )
         }
         .scaleEffect(didSendFlash ? 1.02 : 1.0)
