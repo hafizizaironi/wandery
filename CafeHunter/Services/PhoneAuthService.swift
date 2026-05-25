@@ -15,6 +15,17 @@ import UIKit
 @MainActor
 enum PhoneAuthService {
 
+    /// Key under which the most recent verificationID is persisted, so an
+    /// app relaunch mid-flow can still complete sign-in (per Firebase's docs).
+    private static let verificationIDKey = "authVerificationID"
+
+    /// The verificationID persisted by the last `sendCode`, if any. Used as
+    /// a fallback when the in-memory view state was lost (e.g. app killed
+    /// while the user was reading the SMS).
+    static var savedVerificationID: String? {
+        UserDefaults.standard.string(forKey: verificationIDKey)
+    }
+
     /// Sends the SMS code and returns the Firebase verificationID.
     /// Passes a uiDelegate so Firebase can present its reCAPTCHA web
     /// view when silent-push verification is unavailable.
@@ -30,8 +41,10 @@ enum PhoneAuthService {
         print("[PhoneAuth-DEBUG] Options.projectID: \(app?.options.projectID ?? "<nil>")")
         #endif
         do {
-            return try await PhoneAuthProvider.provider()
+            let id = try await PhoneAuthProvider.provider()
                 .verifyPhoneNumber(phoneE164, uiDelegate: uiDelegate)
+            UserDefaults.standard.set(id, forKey: Self.verificationIDKey)
+            return id
         } catch {
             #if DEBUG
             let nsError = error as NSError
@@ -66,6 +79,7 @@ enum PhoneAuthService {
         )
         do {
             _ = try await user.link(with: credential)
+            UserDefaults.standard.removeObject(forKey: Self.verificationIDKey)
         } catch let error as NSError {
             throw map(error)
         }

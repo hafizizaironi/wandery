@@ -241,7 +241,7 @@ struct PhoneOnboardingView: View {
 
     private func verifyCode() async {
         errorMessage = ""
-        guard let id = verificationID else {
+        guard let id = verificationID ?? PhoneAuthService.savedVerificationID else {
             errorMessage = PhoneAuthError.codeExpired.errorDescription ?? ""
             return
         }
