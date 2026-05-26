@@ -203,6 +203,9 @@ struct FriendRequestModel: Identifiable, Equatable {
     let fromUid: String
     let toUid: String
     let fromUsername: String
+    /// Recipient's username — only present on requests created after the
+    /// cancel feature shipped; older docs leave it nil.
+    let toUsername: String?
     let status: String
     let createdAt: Date
 
@@ -216,6 +219,7 @@ struct FriendRequestModel: Identifiable, Equatable {
         self.toUid = toUid
         self.status = status
         fromUsername = d["fromUsername"] as? String ?? "user"
+        toUsername = d["toUsername"] as? String
         if let ts = d["createdAt"] as? Timestamp {
             createdAt = ts.dateValue()
         } else {

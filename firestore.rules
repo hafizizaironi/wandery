@@ -116,7 +116,10 @@ service cloud.firestore {
         && request.resource.data.status == "pending";
       allow update: if signedIn() &&
         resource.data.toUid == request.auth.uid;
-      allow delete: if false;
+      // Sender may cancel (delete) their own still-pending request.
+      allow delete: if signedIn()
+        && resource.data.fromUid == request.auth.uid
+        && resource.data.status == "pending";
     }
 
     // 1:1 conversations between friends. Document id is the deterministic

@@ -159,6 +159,9 @@ struct ProfileHomeView: View {
                     if !socialService.incomingRequests.isEmpty {
                         friendRequestsSection
                     }
+                    if !socialService.outgoingRequests.isEmpty {
+                        sentRequestsSection
+                    }
                     friendsSection
                     storySection
                     achievementsSection
@@ -518,6 +521,59 @@ struct ProfileHomeView: View {
         .padding(.top, 20)
     }
 
+    // MARK: - Sent requests (outgoing, cancellable)
+
+    private var sentRequestsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("SENT REQUESTS",
+                          trailing: "\(socialService.outgoingRequests.count) pending")
+
+            ForEach(socialService.outgoingRequests) { req in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(req.toUsername.map { "@\($0)" } ?? "Pending request")
+                            .font(.subheadline).bold()
+                            .foregroundStyle(AppTheme.cream)
+                        Text("Awaiting their reply")
+                            .font(.caption2)
+                            .contrastAware(AppTheme.cream, opacity: 0.45)
+                    }
+                    Spacer()
+                    let busy = processingRequestId == req.id
+
+                    Button {
+                        Task { await cancelSentRequest(req) }
+                    } label: {
+                        if busy {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(AppTheme.errorRed.opacity(0.7))
+                                .frame(minWidth: 44)
+                        } else {
+                            Text("Cancel")
+                        }
+                    }
+                    .font(.caption).bold()
+                    .foregroundStyle(AppTheme.errorRed)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(AppTheme.errorRed.opacity(0.12))
+                    .clipShape(.rect(cornerRadius: 10))
+                    .disabled(processingRequestId != nil)
+                }
+                .padding(14)
+                .background(AppTheme.cream.opacity(0.05))
+                .clipShape(.rect(cornerRadius: 14))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(AppTheme.cafeAccent.opacity(0.2), lineWidth: 1)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+    }
+
     // MARK: - Friends (combined avatar strip + add-friend input)
 
     /// One section that owns everything friend-related on the profile:
@@ -750,8 +806,7 @@ struct ProfileHomeView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 12)
             } else {
-                ForEach(friendSearch.suggestions.indices, id: \.self) { index in
-                    let hit = friendSearch.suggestions[index]
+                ForEach(friendSearch.suggestions) { hit in
                     Button {
                         // Send immediately — the user explicitly picked this
                         // row out of the dropdown, that's the confirmation.
@@ -769,7 +824,7 @@ struct ProfileHomeView: View {
                     .buttonStyle(.scalePress)
                     .disabled(friendBusy)
 
-                    if index < friendSearch.suggestions.count - 1 {
+                    if hit.id != friendSearch.suggestions.last?.id {
                         Rectangle()
                             .fill(AppTheme.cream.opacity(0.08))
                             .frame(height: 0.5)
@@ -1121,6 +1176,17 @@ struct ProfileHomeView: View {
         } catch {
             // Surface via the friend-search message slot — same spot the
             // user already looks for friend-related errors.
+            friendMessage = error.localizedDescription
+        }
+    }
+
+    private func cancelSentRequest(_ req: FriendRequestModel) async {
+        guard processingRequestId == nil else { return }
+        processingRequestId = req.id
+        defer { processingRequestId = nil }
+        do {
+            try await socialService.cancelRequest(req)
+        } catch {
             friendMessage = error.localizedDescription
         }
     }

@@ -14,6 +14,7 @@ final class SocialService {
     private(set) var profile: UserProfile?
     private(set) var friendIds: [String] = []
     private(set) var incomingRequests: [FriendRequestModel] = []
+    private(set) var outgoingRequests: [FriendRequestModel] = []
     private(set) var feedPosts: [FriendPost] = []
     private(set) var blockedUserIds: Set<String> = []
     private(set) var isLoadingProfile = true
@@ -33,6 +34,7 @@ final class SocialService {
     private var feedListener: ListenerRegistration?
     private var friendsListener: ListenerRegistration?
     private var requestsListener: ListenerRegistration?
+    private var outgoingRequestsListener: ListenerRegistration?
     private var profileListener: ListenerRegistration?
     private var blockedListener: ListenerRegistration?
 
@@ -65,6 +67,7 @@ final class SocialService {
         }
         attachFriendsListener(uid: user.uid)
         attachIncomingRequestsListener(uid: user.uid)
+        attachOutgoingRequestsListener(uid: user.uid)
         attachBlockedUsersListener(uid: user.uid)
     }
 
@@ -72,16 +75,19 @@ final class SocialService {
         feedListener?.remove()
         friendsListener?.remove()
         requestsListener?.remove()
+        outgoingRequestsListener?.remove()
         profileListener?.remove()
         blockedListener?.remove()
         feedListener = nil
         friendsListener = nil
         requestsListener = nil
+        outgoingRequestsListener = nil
         profileListener = nil
         blockedListener = nil
         profile = nil
         friendIds = []
         incomingRequests = []
+        outgoingRequests = []
         feedPosts = []
         rawFeedPosts = []
         blockedUserIds = []
@@ -170,6 +176,27 @@ final class SocialService {
                 Task { @MainActor in
                     guard let self else { return }
                     self.incomingRequests = snap?.documents.compactMap { FriendRequestModel(document: $0) } ?? []
+                }
+            }
+    }
+
+    /// Mirror of the incoming listener for requests *this* user has sent and
+    /// are still pending — powers the "Sent requests" list so they can be
+    /// cancelled. Needs the (fromUid, status) composite index.
+    private func attachOutgoingRequestsListener(uid: String) {
+        outgoingRequestsListener?.remove()
+        outgoingRequestsListener = db.collection("friendRequests")
+            .whereField("fromUid", isEqualTo: uid)
+            .whereField("status", isEqualTo: "pending")
+            .addSnapshotListener { [weak self] snap, err in
+                if let err {
+                    #if DEBUG
+                    print("[SocialService] outgoing-requests listener error: \(err.localizedDescription)")
+                    #endif
+                }
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.outgoingRequests = snap?.documents.compactMap { FriendRequestModel(document: $0) } ?? []
                 }
             }
     }
@@ -323,6 +350,7 @@ final class SocialService {
             "fromUid": fromUid,
             "toUid": toUid,
             "fromUsername": fromName,
+            "toUsername": lower,
             "status": "pending",
             "createdAt": FieldValue.serverTimestamp(),
         ])
@@ -423,6 +451,18 @@ final class SocialService {
         // Same optimistic-remove rationale as acceptRequest — listener
         // will reconcile when it fires, we don't wait.
         incomingRequests.removeAll { $0.id == request.id }
+    }
+
+    /// Cancels an outgoing pending request the current user sent, by deleting
+    /// the `friendRequests` doc. The rules permit the sender to delete their
+    /// own pending request; deleting it also clears the recipient's incoming
+    /// list (their listener filters status=="pending"). Optimistic local
+    /// removal mirrors accept/reject — the listener reconciles on commit.
+    func cancelRequest(_ request: FriendRequestModel) async throws {
+        guard let myUid = uid else { throw SocialError.notSignedIn }
+        guard request.fromUid == myUid else { return }
+        try await db.collection("friendRequests").document(request.id).delete()
+        outgoingRequests.removeAll { $0.id == request.id }
     }
 
     func uploadAndCreatePost(image: UIImage?,
