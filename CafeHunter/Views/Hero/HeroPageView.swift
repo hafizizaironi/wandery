@@ -731,15 +731,6 @@ struct HeroPageView: View {
         .padding(.bottom, bottomChrome)
     }
 
-    /// Deterministic per-post tilt so each polaroid sits at a slightly
-    /// different angle (a scattered-pile look), stable across renders and
-    /// launches (FNV-1a over the post id) so cards never jitter on scroll.
-    private static func polaroidTilt(for id: String) -> Double {
-        var h: UInt64 = 1469598103934665603        // FNV-1a offset basis
-        for b in id.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
-        return Double(Int(h % 121)) / 20.0 - 3.0   // -3.0 … +3.0 degrees
-    }
-
     private func heroFeedPostPage(geometry geo: GeometryProxy, post: FriendPost, index: Int, isVideoActive: Bool) -> some View {
         let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
         let side = HeroCameraLayout.viewfinderSide(in: geo)
@@ -754,7 +745,6 @@ struct HeroPageView: View {
                 index: index,
                 isVideoActive: isVideoActive,
                 side: side,
-                tilt: Self.polaroidTilt(for: post.id),
                 onPlaceTap: { placeId in onJumpToPlace(placeId) }
             )
             // Long-press surfaces moderation actions — App Store
@@ -1511,34 +1501,50 @@ struct HeroPageView: View {
 /// One post in the feed: the polaroid frame wrapping a paged media carousel.
 /// Owns the carousel's `page` so the place + caption pills (polaroid overlay
 /// slots) reflect the currently-visible photo.
+/// One post in the feed. A single-media post is one polaroid; a multi-media
+/// post is a swipeable STACK of polaroids — each photo its own tilted frame
+/// with its own place/caption pills — flipped like a physical pile of prints.
 private struct FeedPolaroidCard: View {
     let post: FriendPost
     let index: Int
     let isVideoActive: Bool
     let side: CGFloat
-    let tilt: Double
     var onPlaceTap: (String) -> Void = { _ in }
 
-    @State private var page = 0
+    @State private var topIndex = 0
+    @State private var dragOffset: CGSize = .zero
+    @State private var dragHappened = false
+    @State private var exiting: PostMedia?
+    @State private var exitTranslation: CGSize = .zero
+
+    private let exitDistanceThreshold: CGFloat = 55
+    private let exitVelocityThreshold: CGFloat = 220
+    private let dragRecognitionThreshold: CGFloat = 6
+    private let stackDepth = 3
+
+    private var media: [PostMedia] { post.media }
+    private var visibleDepth: Int { min(stackDepth, media.count) }
 
     var body: some View {
-        let media = post.media
-        let current = media.indices.contains(page) ? media[page] : media.first
-        PolaroidFrame(
-            username: "@\(post.authorUsername)",
-            date: post.createdAt,
-            tilt: tilt,
-            photoSide: side
-        ) {
-            FeedMediaCarousel(media: media, page: $page, isVideoActive: isVideoActive, index: index)
-        } topLeading: {
-            if let name = current?.placeName, let pid = current?.placeId {
-                Button { onPlaceTap(pid) } label: { placePill(name: name) }
-                    .buttonStyle(.plain)
-            }
-        } bottomCenter: {
-            if let cap = current?.caption, !cap.isEmpty {
-                captionPill(text: cap)
+        Group {
+            if media.count <= 1 {
+                polaroid(for: media.first, rel: 0)
+            } else {
+                ZStack {
+                    // Back cards laid down first; explicit zIndex keeps order.
+                    ForEach((0..<visibleDepth).reversed(), id: \.self) { rel in
+                        polaroid(for: media[(topIndex + rel) % media.count], rel: rel)
+                            .modifier(PolaroidStackTransform(rel: rel, dragOffset: dragOffset))
+                            .zIndex(Double(visibleDepth - rel))
+                    }
+                    if let exiting {
+                        polaroid(for: exiting, rel: 0)
+                            .modifier(PolaroidExitTransform(translation: exitTranslation))
+                            .allowsHitTesting(false)
+                            .zIndex(1000)
+                    }
+                }
+                .simultaneousGesture(swipeGesture)
             }
         }
         // Photo stays full `side`; the cream frame bleeds past this square slot,
@@ -1547,59 +1553,39 @@ private struct FeedPolaroidCard: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func placePill(name: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "mappin.circle.fill")
-                .font(.caption2).bold()
-            Text(name)
-                .font(.caption).bold()
-                .lineLimit(1)
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .liquidGlassChrome(in: Capsule())
-    }
-
-    private func captionPill(text: String) -> some View {
-        Text(text)
-            .font(.footnote).fontWeight(.semibold)
-            .foregroundStyle(.white)
-            .lineLimit(2)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .liquidGlassChrome(in: Capsule())
-    }
-}
-
-/// Horizontal paged carousel over a post's media. A single item renders with
-/// no page dots (identical to the old single-photo card); only the visible
-/// page's video plays.
-private struct FeedMediaCarousel: View {
-    let media: [PostMedia]
-    @Binding var page: Int
-    let isVideoActive: Bool
-    let index: Int
-
-    var body: some View {
-        TabView(selection: $page) {
-            ForEach(Array(media.enumerated()), id: \.element.id) { idx, item in
-                cell(item, isActive: isVideoActive && idx == page)
-                    .tag(idx)
+    @ViewBuilder
+    private func polaroid(for item: PostMedia?, rel: Int) -> some View {
+        let isTop = rel == 0
+        PolaroidFrame(
+            username: "@\(post.authorUsername)",
+            date: post.createdAt,
+            tilt: Self.tilt(seed: item?.url ?? post.id),
+            photoSide: side
+        ) {
+            mediaCell(item, isActive: isVideoActive && isTop)
+        } topLeading: {
+            if let name = item?.placeName, let pid = item?.placeId {
+                Button {
+                    if isTop, !dragHappened { onPlaceTap(pid) }
+                } label: {
+                    placePill(name: name)
+                }
+                .buttonStyle(.plain)
+                .allowsHitTesting(isTop)
+            }
+        } bottomCenter: {
+            if let cap = item?.caption, !cap.isEmpty {
+                captionPill(text: cap)
             }
         }
-        .tabViewStyle(.page(indexDisplayMode: media.count > 1 ? .always : .never))
     }
 
     @ViewBuilder
-    private func cell(_ item: PostMedia, isActive: Bool) -> some View {
+    private func mediaCell(_ item: PostMedia?, isActive: Bool) -> some View {
         Group {
-            if item.url.isEmpty {
-                placeholder
-            } else if item.isVideo, let u = URL(string: item.url) {
+            if let item, !item.url.isEmpty, item.isVideo, let u = URL(string: item.url) {
                 SquareVideoFillView(url: u, isPlaying: isActive)
-            } else if let u = URL(string: item.url) {
+            } else if let item, !item.url.isEmpty, let u = URL(string: item.url) {
                 CachedAsyncImage(url: u) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
@@ -1630,6 +1616,125 @@ private struct FeedMediaCarousel: View {
                     .foregroundStyle(.white.opacity(0.5))
             }
         }
+    }
+
+    private func placePill(name: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "mappin.circle.fill")
+                .font(.caption2).bold()
+            Text(name)
+                .font(.caption).bold()
+                .lineLimit(1)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .liquidGlassChrome(in: Capsule())
+    }
+
+    private func captionPill(text: String) -> some View {
+        Text(text)
+            .font(.footnote).fontWeight(.semibold)
+            .foregroundStyle(.white)
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .liquidGlassChrome(in: Capsule())
+    }
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                dragOffset = value.translation
+                if !dragHappened,
+                   abs(value.translation.width) > dragRecognitionThreshold ||
+                   abs(value.translation.height) > dragRecognitionThreshold {
+                    dragHappened = true
+                }
+            }
+            .onEnded { value in
+                let absDistance = abs(value.translation.width)
+                let absPredicted = abs(value.predictedEndTranslation.width)
+                let shouldExit = (absDistance > exitDistanceThreshold ||
+                                  absPredicted > exitVelocityThreshold) && media.count > 1
+                if shouldExit {
+                    let dirSource = absPredicted > absDistance
+                        ? value.predictedEndTranslation.width : value.translation.width
+                    flyOff(translation: value.translation, direction: dirSource > 0 ? 1 : -1)
+                } else {
+                    withAnimation(.spring(response: 0.36, dampingFraction: 0.74)) {
+                        dragOffset = .zero
+                    }
+                }
+                // Reset next tick so the place-pill tap-up (which fires
+                // synchronously after onEnded) still sees the drag and bails.
+                DispatchQueue.main.async { dragHappened = false }
+            }
+    }
+
+    /// Flip the top polaroid off-screen and advance the stack (cyclic), so the
+    /// user can keep flipping through the pile.
+    private func flyOff(translation: CGSize, direction: CGFloat) {
+        let leaving = media[topIndex % media.count]
+        var t = Transaction(); t.disablesAnimations = true
+        withTransaction(t) {
+            exiting = leaving
+            exitTranslation = translation
+            topIndex = (topIndex + 1) % media.count
+            dragOffset = .zero
+        }
+        withAnimation(.snappy(duration: 0.28, extraBounce: 0)) {
+            exitTranslation = CGSize(width: direction * 850,
+                                     height: translation.height + translation.height * 0.2)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
+            var c = Transaction(); c.disablesAnimations = true
+            withTransaction(c) { exiting = nil; exitTranslation = .zero }
+        }
+    }
+
+    /// Stable per-photo tilt (FNV-1a over the media URL) so the stack looks
+    /// like scattered prints and never jitters on scroll.
+    static func tilt(seed: String) -> Double {
+        var h: UInt64 = 1469598103934665603
+        for b in seed.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return Double(Int(h % 121)) / 20.0 - 3.0   // -3.0 … +3.0 degrees
+    }
+}
+
+/// Positions a polaroid within the swipe stack. Top card follows the drag +
+/// rotates; back cards sit smaller/lower and rise as the top card drags.
+private struct PolaroidStackTransform: ViewModifier {
+    let rel: Int
+    let dragOffset: CGSize
+
+    func body(content: Content) -> some View {
+        let dragMag = min(abs(dragOffset.width) / 110, 1)
+        let baseScale = 1.0 - CGFloat(rel) * 0.05
+        let baseY = CGFloat(rel) * 12
+        let scale = baseScale + CGFloat(rel) * 0.05 * dragMag
+        let yOffset = baseY - CGFloat(rel) * 12 * dragMag
+        let isTop = rel == 0
+        return content
+            .scaleEffect(scale)
+            // Adds to each polaroid's own tilt; back cards only get scale/offset.
+            .rotationEffect(.degrees(isTop ? Double(dragOffset.width / 18) : 0))
+            .offset(x: isTop ? dragOffset.width : 0, y: isTop ? dragOffset.height : yOffset)
+            .opacity(isTop ? 1.0 : max(0.5, 0.9 - Double(rel) * 0.13))
+            .allowsHitTesting(isTop)
+    }
+}
+
+/// Positions the polaroid flying off-screen — same translation+rotation feel
+/// as a top-card drag, but lives outside the stack so the deck can advance.
+private struct PolaroidExitTransform: ViewModifier {
+    let translation: CGSize
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: translation.width, y: translation.height)
+            .rotationEffect(.degrees(Double(translation.width / 18)))
     }
 }
 // MARK: - Feed moderation modifier
