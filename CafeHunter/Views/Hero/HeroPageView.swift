@@ -124,7 +124,16 @@ struct HeroPageView: View {
 
     // Mode state
     @State private var showPhotosPicker = false
-    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var librarySelection: [PhotosPickerItem] = []
+
+    // Multi-media draft tray (≤6 mixed photos + one video). Camera captures and
+    // library imports accumulate here; the review screen edits the current item.
+    @State private var drafts: [MediaDraft] = []
+    @State private var currentDraftIndex = 0
+    /// True while re-opening the live camera to add another item to a non-empty
+    /// tray (so review doesn't cover the viewfinder).
+    @State private var isCapturingMore = false
+    private let maxDrafts = 6
 
     // Place tagging
     @State private var pendingPlace: PlaceSelection?
@@ -245,8 +254,23 @@ struct HeroPageView: View {
         }
         .animation(Motion.iosDrawer(duration: 0.22), value: isReviewingCapture)
         .photosPicker(isPresented: $showPhotosPicker,
-                      selection: $selectedPhoto,
+                      selection: $librarySelection,
+                      maxSelectionCount: max(1, maxDrafts - drafts.count),
                       matching: .images)
+        .onChange(of: librarySelection) { _, items in
+            guard !items.isEmpty else { return }
+            Task { await importLibrarySelection(items) }
+        }
+        .onChange(of: camera.capturedImage) { _, img in
+            guard let img else { return }
+            appendDraft(.image(img))
+            camera.discardCapture()
+        }
+        .onChange(of: camera.capturedVideoURL) { _, url in
+            guard let url else { return }
+            appendDraft(.video(url))
+            camera.discardCapture()
+        }
         .task {
             await camera.requestAccess()
             // `onChange(of: isActive)` does not run for the initial value, so on first launch
@@ -463,7 +487,9 @@ struct HeroPageView: View {
     }
 
     private var isReviewingCapture: Bool {
-        camera.capturedImage != nil || camera.capturedVideoURL != nil || camera.isProcessingVideo
+        // Review when the tray has items (or a video is still processing),
+        // unless we've stepped back to the live camera to add another item.
+        (!drafts.isEmpty || camera.isProcessingVideo) && !isCapturingMore
     }
 
     /// Stop the session only during capture review (preview covers the viewfinder anyway).
@@ -495,15 +521,11 @@ struct HeroPageView: View {
         postError = ""
         isPosting = true
         defer { isPosting = false }
+        // Flush the current working-copy (caption + place) into its draft.
+        syncWorkingCopyToCurrentDraft()
         do {
-            try await socialService.uploadAndCreatePost(
-                image: camera.capturedImage,
-                videoURL: camera.capturedVideoURL,
-                caption: previewCaption,
-                place: pendingPlace
-            )
-            previewCaption = ""
-            pendingPlace = nil
+            try await socialService.uploadAndCreatePost(drafts: drafts)
+            clearDraftTray()
             reviewPostTranslation = .zero
             camera.discardCapture()
             syncCameraSessionForCaptureReview()
@@ -529,12 +551,92 @@ struct HeroPageView: View {
     }
 
     private func retakeFromReview() {
-        previewCaption = ""
-        pendingPlace = nil
         postError = ""
         reviewPostTranslation = .zero
+        clearDraftTray()
         camera.discardCapture()
         syncCameraSessionForCaptureReview()
+    }
+
+    // MARK: - Draft tray (multi-media compose)
+
+    /// Adds a captured/imported item to the tray, enforcing the ≤6 cap and the
+    /// single-video rule, then focuses it. `previewCaption`/`pendingPlace` are
+    /// the *working copy* of the focused draft; we flush before switching.
+    private func appendDraft(_ source: MediaDraft.Source) {
+        guard drafts.count < maxDrafts else { return }
+        if case .video = source, drafts.contains(where: \.isVideo) { return }
+        syncWorkingCopyToCurrentDraft()
+        drafts.append(MediaDraft(source: source, place: nil, caption: nil))
+        currentDraftIndex = drafts.count - 1
+        isCapturingMore = false
+        loadWorkingCopyFromCurrentDraft()
+    }
+
+    private func selectDraft(_ index: Int) {
+        guard drafts.indices.contains(index), index != currentDraftIndex else { return }
+        syncWorkingCopyToCurrentDraft()
+        currentDraftIndex = index
+        loadWorkingCopyFromCurrentDraft()
+    }
+
+    private func deleteDraft(at index: Int) {
+        guard drafts.indices.contains(index) else { return }
+        syncWorkingCopyToCurrentDraft()
+        drafts.remove(at: index)
+        if drafts.isEmpty {
+            clearDraftTray()
+            camera.discardCapture()
+            syncCameraSessionForCaptureReview()
+            return
+        }
+        currentDraftIndex = min(currentDraftIndex, drafts.count - 1)
+        loadWorkingCopyFromCurrentDraft()
+    }
+
+    /// Mirror the focused draft's caption + place into the editable working copy.
+    private func loadWorkingCopyFromCurrentDraft() {
+        guard drafts.indices.contains(currentDraftIndex) else {
+            previewCaption = ""
+            pendingPlace = nil
+            return
+        }
+        previewCaption = drafts[currentDraftIndex].caption ?? ""
+        pendingPlace = drafts[currentDraftIndex].place
+    }
+
+    /// Persist the working-copy edits back onto the focused draft.
+    private func syncWorkingCopyToCurrentDraft() {
+        guard drafts.indices.contains(currentDraftIndex) else { return }
+        drafts[currentDraftIndex].caption = previewCaption.isEmpty ? nil : previewCaption
+        drafts[currentDraftIndex].place = pendingPlace
+    }
+
+    private func clearDraftTray() {
+        drafts = []
+        currentDraftIndex = 0
+        isCapturingMore = false
+        previewCaption = ""
+        pendingPlace = nil
+    }
+
+    /// Copies the focused draft's place onto every draft (the common
+    /// "all photos at one café" case).
+    private func applyCurrentPlaceToAll() {
+        syncWorkingCopyToCurrentDraft()
+        let place = drafts.indices.contains(currentDraftIndex) ? drafts[currentDraftIndex].place : nil
+        for i in drafts.indices { drafts[i].place = place }
+    }
+
+    private func importLibrarySelection(_ items: [PhotosPickerItem]) async {
+        for item in items {
+            guard drafts.count < maxDrafts else { break }
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let img = UIImage(data: data) {
+                appendDraft(.image(img))
+            }
+        }
+        librarySelection = []
     }
 
     private func saveCaptureToPhotoLibrary() {
@@ -771,14 +873,15 @@ struct HeroPageView: View {
         ) {
             ZStack {
                 Group {
-                    if let img = camera.capturedImage {
-                        Image(uiImage: img)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else if camera.isProcessingVideo {
-                        Color.black
-                    } else if let url = camera.capturedVideoURL {
-                        SquareVideoFillView(url: url, isPlaying: true)
+                    if drafts.indices.contains(currentDraftIndex) {
+                        switch drafts[currentDraftIndex].source {
+                        case .image(let img):
+                            Image(uiImage: img)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        case .video(let url):
+                            SquareVideoFillView(url: url, isPlaying: true)
+                        }
                     } else {
                         Color.black
                     }
@@ -828,6 +931,16 @@ struct HeroPageView: View {
         .sheet(isPresented: $showPlacePicker) {
             PlacePickerSheet { selection in
                 pendingPlace = selection
+            }
+        }
+        .contextMenu {
+            if drafts.count > 1 {
+                Button {
+                    applyCurrentPlaceToAll()
+                } label: {
+                    Label("Use this place for all \(drafts.count) photos",
+                          systemImage: "mappin.and.ellipse")
+                }
             }
         }
     }
@@ -912,13 +1025,16 @@ struct HeroPageView: View {
                 .frame(width: 320, height: 140)
 
             if isReviewingCapture {
-                VStack(spacing: 8) {
+                VStack(spacing: 6) {
                     if !postError.isEmpty {
                         Text(postError)
                             .font(.caption)
                             .foregroundStyle(AppTheme.errorRed)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 16)
+                    }
+                    if drafts.count > 1 || drafts.count < maxDrafts {
+                        draftFilmstrip
                     }
                     captureReviewActions
                 }
@@ -938,7 +1054,7 @@ struct HeroPageView: View {
     private var captureReviewActions: some View {
         let disabled = isPosting
             || camera.isProcessingVideo
-            || (camera.capturedImage == nil && camera.capturedVideoURL == nil)
+            || drafts.isEmpty
 
         return ZStack {
             HStack {
@@ -966,6 +1082,78 @@ struct HeroPageView: View {
         .highPriorityGesture(reviewPostGesture(disabled: disabled))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Post. Drag left to retake, drag right to save to library, tap to post.")
+    }
+
+    // MARK: - Draft filmstrip
+
+    private var draftFilmstrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Array(drafts.enumerated()), id: \.element.id) { index, draft in
+                    draftThumb(draft, index: index)
+                }
+                if drafts.count < maxDrafts {
+                    Menu {
+                        Button { isCapturingMore = true } label: {
+                            Label("Camera", systemImage: "camera")
+                        }
+                        Button { showPhotosPicker = true } label: {
+                            Label("Photo Library", systemImage: "photo.on.rectangle")
+                        }
+                    } label: {
+                        addDraftCell
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+        }
+        .frame(height: 44)
+    }
+
+    private func draftThumb(_ draft: MediaDraft, index: Int) -> some View {
+        let isCurrent = index == currentDraftIndex
+        return ZStack(alignment: .topTrailing) {
+            Group {
+                switch draft.source {
+                case .image(let img):
+                    Image(uiImage: img).resizable().scaledToFill()
+                case .video:
+                    ZStack {
+                        Color.black
+                        Image(systemName: "video.fill")
+                            .font(.caption2).foregroundStyle(.white)
+                    }
+                }
+            }
+            .frame(width: 36, height: 36)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(isCurrent ? AppTheme.cafeAccent : Color.white.opacity(0.3),
+                            lineWidth: isCurrent ? 2 : 1)
+            }
+            .onTapGesture { selectDraft(index) }
+
+            Button { deleteDraft(at: index) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white, .black.opacity(0.55))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 5, y: -5)
+        }
+        .frame(width: 42, height: 42)
+    }
+
+    private var addDraftCell: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .stroke(Color.white.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+            .frame(width: 36, height: 36)
+            .overlay {
+                Image(systemName: "plus")
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.75))
+            }
     }
 
     private var reviewPostOffsetX: CGFloat {
