@@ -736,27 +736,14 @@ struct HeroPageView: View {
         // Spacer absorbs the leftover space above the navbar.
         let belowCardHeight = HeroCameraLayout.viewfinderShutterSpacing + HeroCameraLayout.shutterAreaHeight
         return VStack(spacing: 0) {
-            PolaroidFrame(
-                username: "@\(post.authorUsername)",
-                date: post.createdAt,
-                placeName: post.placeName,
-                caption: post.caption,
+            FeedPolaroidCard(
+                post: post,
+                index: index,
+                isVideoActive: isVideoActive,
+                side: side,
                 tilt: Self.polaroidTilt(for: post.id),
-                photoSide: side
-            ) {
-                FeedPostCard(
-                    post: post,
-                    index: index,
-                    socialService: socialService,
-                    isVideoActive: isVideoActive,
-                    onPlaceTap: { placeId in onJumpToPlace(placeId) },
-                    hideOverlays: true
-                )
-            }
-            // Photo stays full `side`; the cream frame bleeds past this square
-            // slot. Slot size is unchanged, so the composer below doesn't move.
-            .frame(width: side, height: side)
-            .frame(maxWidth: .infinity)
+                onPlaceTap: { placeId in onJumpToPlace(placeId) }
+            )
             // Long-press surfaces moderation actions — App Store
             // Guideline 1.2 requires report + block affordances on
             // user-generated content. Hidden for your own posts.
@@ -1506,63 +1493,43 @@ struct HeroPageView: View {
     }
 }
 
-private struct FeedPostCard: View {
+/// One post in the feed: the polaroid frame wrapping a paged media carousel.
+/// Owns the carousel's `page` so the place + caption pills (polaroid overlay
+/// slots) reflect the currently-visible photo.
+private struct FeedPolaroidCard: View {
     let post: FriendPost
     let index: Int
-    var socialService: SocialService
-    /// Only the page aligned with the vertical pager should play; keeps off-screen and background posts silent.
     let isVideoActive: Bool
+    let side: CGFloat
+    let tilt: Double
     var onPlaceTap: (String) -> Void = { _ in }
-    /// When wrapped by PolaroidFrame, the frame owns the place/caption pills
-    /// and the photo border, so suppress this card's internal ones.
-    var hideOverlays: Bool = false
+
+    @State private var page = 0
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Group {
-                if post.mediaURL.isEmpty {
-                    deletedMediaPlaceholder
-                } else if post.isVideo, let u = URL(string: post.mediaURL) {
-                    SquareVideoFillView(url: u, isPlaying: isVideoActive)
-                } else if let u = URL(string: post.mediaURL) {
-                    CachedAsyncImage(url: u) { phase in
-                        switch phase {
-                        case .success(let img): img.resizable().scaledToFill()
-                        case .failure: deletedMediaPlaceholder
-                        case .empty: ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                        @unknown default: Color.gray.opacity(0.2)
-                        }
-                    }
-                } else {
-                    deletedMediaPlaceholder
-                }
+        let media = post.media
+        let current = media.indices.contains(page) ? media[page] : media.first
+        PolaroidFrame(
+            username: "@\(post.authorUsername)",
+            date: post.createdAt,
+            tilt: tilt,
+            photoSide: side
+        ) {
+            FeedMediaCarousel(media: media, page: $page, isVideoActive: isVideoActive, index: index)
+        } topLeading: {
+            if let name = current?.placeName, let pid = current?.placeId {
+                Button { onPlaceTap(pid) } label: { placePill(name: name) }
+                    .buttonStyle(.plain)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
-
-            if !hideOverlays, !post.caption.isEmpty || post.placeName != nil {
-                VStack(spacing: 6) {
-                    if let placeName = post.placeName, let placeId = post.placeId {
-                        Button {
-                            onPlaceTap(placeId)
-                        } label: {
-                            placePill(name: placeName)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if !post.caption.isEmpty {
-                        captionPill
-                    }
-                }
-                .padding(.bottom, 16)
+        } bottomCenter: {
+            if let cap = current?.caption, !cap.isEmpty {
+                captionPill(text: cap)
             }
         }
-        .overlay {
-            if !hideOverlays {
-                RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
-            }
-        }
+        // Photo stays full `side`; the cream frame bleeds past this square slot,
+        // so the composer below doesn't move.
+        .frame(width: side, height: side)
+        .frame(maxWidth: .infinity)
     }
 
     private func placePill(name: String) -> some View {
@@ -1577,11 +1544,10 @@ private struct FeedPostCard: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
         .liquidGlassChrome(in: Capsule())
-        .padding(.horizontal, 20)
     }
 
-    private var captionPill: some View {
-        Text(post.caption)
+    private func captionPill(text: String) -> some View {
+        Text(text)
             .font(.subheadline).bold()
             .foregroundStyle(.white)
             .lineLimit(2)
@@ -1589,10 +1555,53 @@ private struct FeedPostCard: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
             .liquidGlassChrome(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .padding(.horizontal, 20)
+    }
+}
+
+/// Horizontal paged carousel over a post's media. A single item renders with
+/// no page dots (identical to the old single-photo card); only the visible
+/// page's video plays.
+private struct FeedMediaCarousel: View {
+    let media: [PostMedia]
+    @Binding var page: Int
+    let isVideoActive: Bool
+    let index: Int
+
+    var body: some View {
+        TabView(selection: $page) {
+            ForEach(Array(media.enumerated()), id: \.element.id) { idx, item in
+                cell(item, isActive: isVideoActive && idx == page)
+                    .tag(idx)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: media.count > 1 ? .always : .never))
     }
 
-    private var deletedMediaPlaceholder: some View {
+    @ViewBuilder
+    private func cell(_ item: PostMedia, isActive: Bool) -> some View {
+        Group {
+            if item.url.isEmpty {
+                placeholder
+            } else if item.isVideo, let u = URL(string: item.url) {
+                SquareVideoFillView(url: u, isPlaying: isActive)
+            } else if let u = URL(string: item.url) {
+                CachedAsyncImage(url: u) { phase in
+                    switch phase {
+                    case .success(let img): img.resizable().scaledToFill()
+                    case .failure: placeholder
+                    case .empty: ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    @unknown default: Color.gray.opacity(0.2)
+                    }
+                }
+            } else {
+                placeholder
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    private var placeholder: some View {
         ZStack {
             AppTheme.gradient(for: .cafe, index: index)
             VStack(spacing: 8) {
