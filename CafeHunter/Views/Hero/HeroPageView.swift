@@ -185,7 +185,9 @@ struct HeroPageView: View {
                     // ownership of the drag and the page-switch
                     // animation stutters when the user's finger
                     // crosses the Hero region.
-                    .scrollDisabled(edgeDragActive)
+                    // Lock vertical paging while reviewing a capture so the user
+                    // can't scroll into other people's posts mid-compose.
+                    .scrollDisabled(edgeDragActive || isReviewingCapture)
                     // The composer manages its own keyboard lift via
                     // a manual `.offset(y:)` driven by the
                     // keyboardWillShow/Hide observer — so we still
@@ -901,17 +903,17 @@ struct HeroPageView: View {
         Button {
             showPlacePicker = true
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Image(systemName: pendingPlace == nil ? "mappin.and.ellipse" : "mappin.circle.fill")
-                    .font(.footnote).bold()
+                    .font(.caption2).bold()
                 Text(pendingPlace?.name ?? "Tag a place")
-                    .font(.footnote).bold()
+                    .font(.caption).bold()
                     .lineLimit(1)
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color.black.opacity(0.45), in: Capsule())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .liquidGlassChrome(in: Capsule())
         }
         .buttonStyle(.plain)
         .sheet(isPresented: $showPlacePicker) {
@@ -935,24 +937,24 @@ struct HeroPageView: View {
     private var captionPillBody: some View {
         // Invisible Text drives pill width; overlays render visual + input.
         Text(previewCaption.isEmpty ? "whats on your mind☺️?" : previewCaption)
-                    .font(.subheadline).bold()
+                    .font(.footnote).bold()
                     .foregroundStyle(.clear)
                     .fixedSize()
                     .overlay {
                         if previewCaption.isEmpty {
                             Text("whats on your mind☺️?")
-                                .font(.subheadline).bold()
+                                .font(.footnote).bold()
                                 .foregroundStyle(.white.opacity(0.55))
                                 .allowsHitTesting(false)
                         } else {
                             AnimatedWaveText(text: previewCaption,
-                                            font: .subheadline.bold())
+                                            font: .footnote.bold())
                                 .allowsHitTesting(false)
                         }
                     }
                     .overlay {
                         TextField("", text: $previewCaption)
-                            .font(.subheadline).bold()
+                            .font(.footnote).bold()
                             .tint(.white)
                             .foregroundStyle(.clear)
                             .multilineTextAlignment(.center)
@@ -972,8 +974,8 @@ struct HeroPageView: View {
                                 }
                             }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
                     .background(liquidGlassPill)
     }
 
@@ -1010,27 +1012,31 @@ struct HeroPageView: View {
                 .fill(AppTheme.cameraScrim)
                 .frame(width: 320, height: 140)
 
-            if isReviewingCapture {
-                VStack(spacing: 6) {
-                    if !postError.isEmpty {
-                        Text(postError)
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.errorRed)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 16)
-                    }
-                    if drafts.count > 1 || drafts.count < maxDrafts {
-                        draftFilmstrip
-                    }
+            VStack(spacing: 6) {
+                if isReviewingCapture, !postError.isEmpty {
+                    Text(postError)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.errorRed)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
+                // Draft thumbnails persist across review AND "add another" capture,
+                // so the user always sees what's already in the post.
+                if !drafts.isEmpty {
+                    draftFilmstrip
+                }
+                if isReviewingCapture {
                     captureReviewActions
+                } else {
+                    ZStack {
+                        // Direction hints — visible only while dragging & not yet recording
+                        if isDragging && !isHolding && !camera.isLocked {
+                            directionHints
+                        }
+                        shutterButton
+                            .highPriorityGesture(shutterGesture)
+                    }
                 }
-            } else {
-                // Direction hints — visible only while dragging & not yet recording
-                if isDragging && !isHolding && !camera.isLocked {
-                    directionHints
-                }
-                shutterButton
-                    .highPriorityGesture(shutterGesture)
             }
         }
         .frame(height: 100)
@@ -1530,28 +1536,28 @@ private struct FeedPolaroidCard: View {
     }
 
     private func placePill(name: String) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             Image(systemName: "mappin.circle.fill")
-                .font(.caption).bold()
+                .font(.caption2).bold()
             Text(name)
-                .font(.footnote).bold()
+                .font(.caption).bold()
                 .lineLimit(1)
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
         .liquidGlassChrome(in: Capsule())
     }
 
     private func captionPill(text: String) -> some View {
         Text(text)
-            .font(.subheadline).bold()
+            .font(.footnote).fontWeight(.semibold)
             .foregroundStyle(.white)
             .lineLimit(2)
             .multilineTextAlignment(.center)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-            .liquidGlassChrome(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .liquidGlassChrome(in: Capsule())
     }
 }
 
