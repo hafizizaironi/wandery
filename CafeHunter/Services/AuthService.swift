@@ -34,6 +34,13 @@ final class AuthService {
             Task { @MainActor [weak self] in
                 self?.user = user
                 self?.isLoading = false
+                // FCM's registration-token callback often fires before auth
+                // resolves at launch, so the token is dropped (no uid yet).
+                // Re-persist it once a user is present — otherwise this device
+                // never lands in users/{uid}/fcmTokens and gets no pushes.
+                if user != nil {
+                    NotificationService.shared.saveCurrentToken()
+                }
             }
         }
     }

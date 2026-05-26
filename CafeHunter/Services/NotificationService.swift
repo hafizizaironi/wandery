@@ -43,6 +43,24 @@ final class NotificationService: NSObject, ObservableObject {
         ], merge: true)
     }
 
+    /// Fetches the current FCM registration token and persists it. Needed
+    /// because `didReceiveRegistrationToken` usually fires *before* auth
+    /// resolves at launch — at that point `saveFCMToken` bails (no uid) and
+    /// nothing re-saves it, so `users/{uid}/fcmTokens` stays empty and pushes
+    /// (friend requests, posts, messages) never reach this device. Call once
+    /// a user is signed in.
+    func saveCurrentToken() {
+        Messaging.messaging().token { [weak self] token, error in
+            if let error {
+                #if DEBUG
+                print("[NotificationService] FCM token fetch failed: \(error.localizedDescription)")
+                #endif
+                return
+            }
+            self?.saveFCMToken(token)
+        }
+    }
+
     func removeAllTokensForCurrentUser() {
         guard let uid = Auth.auth().currentUser?.uid else { return }
         db.collection("users").document(uid).collection("fcmTokens").getDocuments { snap, _ in
