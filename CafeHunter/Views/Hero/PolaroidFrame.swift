@@ -51,8 +51,12 @@ struct PolaroidFrame<Content: View, TopLeading: View, BottomCenter: View>: View 
     /// Show washi tape strips at the top corners. Default true.
     var showTape: Bool = true
 
+    /// The photo's side length. The cream frame is drawn OUTSIDE this, so the
+    /// photo keeps its full size and the frame may bleed past the layout slot.
+    var photoSide: CGFloat
+
     /// The square media — typically a FeedPostCard, captured image,
-    /// or live preview. Sized to a square inside the frame.
+    /// or live preview. Sized to `photoSide`; the cream card wraps around it.
     @ViewBuilder var content: () -> Content
 
     /// Liquid-glass pill rendered on the photo's top-left corner.
@@ -82,73 +86,65 @@ struct PolaroidFrame<Content: View, TopLeading: View, BottomCenter: View>: View 
     // MARK: - Body
 
     var body: some View {
-        GeometryReader { proxy in
-            let outerW = proxy.size.width
-            let photoSide = outerW - sidePadding * 2
-            let outerH = topPadding + photoSide + bottomPadding
+        // The card is sized OUTSIDE the photo: the photo stays `photoSide`
+        // (full size) and the cream border + bottom strip extend beyond it.
+        // The whole view's intrinsic size is cardW × cardH; callers wrap it in
+        // the original square slot so it bleeds past the edges without shifting
+        // surrounding layout.
+        let cardW = photoSide + sidePadding * 2
+        let cardH = topPadding + photoSide + bottomPadding
 
-            ZStack(alignment: .top) {
-                // 1. Paper card
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(frameColor)
-                    .frame(width: outerW, height: outerH)
-                    .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 10)
-                    .shadow(color: .black.opacity(0.30), radius: 4,  x: 0, y: 2)
+        ZStack(alignment: .top) {
+            // 1. Paper card
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(frameColor)
+                .frame(width: cardW, height: cardH)
+                .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 10)
+                .shadow(color: .black.opacity(0.30), radius: 4,  x: 0, y: 2)
 
-                // 2. Photo + overlays
-                ZStack(alignment: .topLeading) {
-                    content()
-                        .frame(width: photoSide, height: photoSide)
-                        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .stroke(Color.black.opacity(0.18), lineWidth: 0.5)
-                        }
-
-                    // 2a. Location pill — top-leading
-                    topLeading()
-                        .padding(.top, pillEdgeInset)
-                        .padding(.leading, pillEdgeInset)
-
-                    // 2b. Caption pill — bottom-center
-                    VStack {
-                        Spacer(minLength: 0)
-                        HStack {
-                            Spacer(minLength: 0)
-                            bottomCenter()
-                            Spacer(minLength: 0)
-                        }
-                    }
+            // 2. Photo + overlays — full `photoSide`
+            ZStack(alignment: .topLeading) {
+                content()
                     .frame(width: photoSide, height: photoSide)
-                    .padding(.bottom, pillEdgeInset)
+                    .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .stroke(Color.black.opacity(0.18), lineWidth: 0.5)
+                    }
+
+                // 2a. Location pill — top-leading
+                topLeading()
+                    .padding(.top, pillEdgeInset)
+                    .padding(.leading, pillEdgeInset)
+
+                // 2b. Caption pill — bottom-center
+                VStack {
+                    Spacer(minLength: 0)
+                    HStack {
+                        Spacer(minLength: 0)
+                        bottomCenter()
+                        Spacer(minLength: 0)
+                    }
                 }
                 .frame(width: photoSide, height: photoSide)
-                .padding(.top, topPadding)
-
-                // 3. Bottom strip — username (left) + date (right)
-                bottomStrip(width: outerW)
-                    .frame(width: outerW, height: bottomPadding - 14)
-                    .offset(y: topPadding + photoSide + 4)
-
-                // 4. Washi tape (decorative)
-                if showTape {
-                    washiTape
-                        .accessibilityHidden(true)
-                }
+                .padding(.bottom, pillEdgeInset)
             }
-            .frame(width: outerW, height: outerH)
-            .rotationEffect(.degrees(tilt))
-        }
-        .aspectRatio(aspectRatio, contentMode: .fit)
-    }
+            .frame(width: photoSide, height: photoSide)
+            .padding(.top, topPadding)
 
-    /// Width-to-height ratio of the whole polaroid card.
-    private var aspectRatio: CGFloat {
-        // Computed from layout constants so it stays in sync.
-        let normalisedWidth: CGFloat = 1
-        let normalisedPhoto = normalisedWidth - 2 * (sidePadding / 300)
-        let normalisedHeight = (topPadding / 300) + normalisedPhoto + (bottomPadding / 300)
-        return normalisedWidth / normalisedHeight
+            // 3. Bottom strip — username (left) + date (right)
+            bottomStrip(width: cardW)
+                .frame(width: cardW, height: bottomPadding - 14)
+                .offset(y: topPadding + photoSide + 4)
+
+            // 4. Washi tape (decorative)
+            if showTape {
+                washiTape
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(width: cardW, height: cardH)
+        .rotationEffect(.degrees(tilt))
     }
 
     // MARK: - Bottom strip
@@ -243,12 +239,14 @@ extension PolaroidFrame where TopLeading == AnyView, BottomCenter == AnyView {
         caption: String?,
         tilt: Double = -1.8,
         showTape: Bool = true,
+        photoSide: CGFloat,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.username = username
         self.date = date
         self.tilt = tilt
         self.showTape = showTape
+        self.photoSide = photoSide
         self.content = content
 
         self.topLeading = {
@@ -347,14 +345,15 @@ struct PolaroidFrame_Previews: PreviewProvider {
                 username: "@feez",
                 date: Date(),
                 placeName: "Sup Kambing Ayam",
-                caption: "Its 2:44"
+                caption: "Its 2:44",
+                photoSide: 300
             ) {
                 LinearGradient(
                     colors: [.orange, .red.opacity(0.6), .black],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 )
             }
-            .frame(width: 320)
+            .frame(width: 300, height: 300)
             .padding(40)
         }
         .previewDevice("iPhone 15 Pro")

@@ -588,7 +588,8 @@ struct HeroPageView: View {
                 placeName: nil,
                 caption: nil,
                 tilt: 0,
-                showTape: false
+                showTape: false,
+                photoSide: side
             ) {
                 RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                     .fill(AppTheme.surfacePrimary)
@@ -604,7 +605,7 @@ struct HeroPageView: View {
                             .padding(24)
                     }
             }
-            .frame(height: side)
+            .frame(width: side, height: side)
             .frame(maxWidth: .infinity)
             Color.clear
                 .frame(height: HeroCameraLayout.shutterAreaHeight)
@@ -638,7 +639,8 @@ struct HeroPageView: View {
                 date: post.createdAt,
                 placeName: post.placeName,
                 caption: post.caption,
-                tilt: Self.polaroidTilt(for: post.id)
+                tilt: Self.polaroidTilt(for: post.id),
+                photoSide: side
             ) {
                 FeedPostCard(
                     post: post,
@@ -649,10 +651,9 @@ struct HeroPageView: View {
                     hideOverlays: true
                 )
             }
-            // Height-constrained so the whole polaroid occupies the square
-            // slot the camera layout budgets (≈ side tall), keeping the
-            // composer's Y position below unchanged.
-            .frame(height: side)
+            // Photo stays full `side`; the cream frame bleeds past this square
+            // slot. Slot size is unchanged, so the composer below doesn't move.
+            .frame(width: side, height: side)
             .frame(maxWidth: .infinity)
             // Long-press surfaces moderation actions — App Store
             // Guideline 1.2 requires report + block affordances on
@@ -765,7 +766,8 @@ struct HeroPageView: View {
     private func captureReviewSquare(side: CGFloat) -> some View {
         PolaroidFrame(
             username: "@\(socialService.profile?.username ?? "you")",
-            date: Date()
+            date: Date(),
+            photoSide: side
         ) {
             ZStack {
                 Group {
@@ -802,7 +804,7 @@ struct HeroPageView: View {
         } bottomCenter: {
             captionPillBody
         }
-        .frame(height: side)
+        .frame(width: side, height: side)
         .frame(maxWidth: .infinity)
     }
 
