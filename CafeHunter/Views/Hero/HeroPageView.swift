@@ -270,7 +270,16 @@ struct HeroPageView: View {
         }
         .onChange(of: camera.capturedVideoURL) { _, url in
             guard let url else { return }
-            appendDraft(.video(url))
+            // discardCapture() deletes the file at capturedVideoURL, so move it
+            // to a draft-owned temp URL first — otherwise the draft points at a
+            // deleted file and the video preview is blank. Preserve the `_sq`
+            // marker so upload doesn't needlessly re-export an already-square clip.
+            let suffix = url.lastPathComponent.contains("_sq") ? "_sq" : ""
+            let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
+            let dest = FileManager.default.temporaryDirectory
+                .appendingPathComponent("draft-\(UUID().uuidString)\(suffix).\(ext)")
+            let draftURL = (try? FileManager.default.moveItem(at: url, to: dest)) != nil ? dest : url
+            appendDraft(.video(draftURL))
             camera.discardCapture()
         }
         .task {
@@ -575,7 +584,10 @@ struct HeroPageView: View {
     }
 
     private func selectDraft(_ index: Int) {
-        guard drafts.indices.contains(index), index != currentDraftIndex else { return }
+        guard drafts.indices.contains(index) else { return }
+        // Tapping a thumbnail returns to review (out of "add another" camera mode).
+        isCapturingMore = false
+        guard index != currentDraftIndex else { return }
         syncWorkingCopyToCurrentDraft()
         currentDraftIndex = index
         loadWorkingCopyFromCurrentDraft()
