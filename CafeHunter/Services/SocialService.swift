@@ -465,81 +465,141 @@ final class SocialService {
         outgoingRequests.removeAll { $0.id == request.id }
     }
 
+    /// Back-compat shim — a single image OR video becomes a one-item draft.
     func uploadAndCreatePost(image: UIImage?,
                              videoURL: URL?,
                              caption: String,
                              place: PlaceSelection? = nil) async throws {
+        let source: MediaDraft.Source
+        if let image {
+            source = .image(image)
+        } else if let videoURL {
+            source = .video(videoURL)
+        } else {
+            throw SocialError.uploadFailed
+        }
+        let draft = MediaDraft(source: source, place: place,
+                               caption: caption.isEmpty ? nil : caption)
+        try await uploadAndCreatePost(drafts: [draft])
+    }
+
+    /// Creates a post from 1…6 ordered media drafts, each with an optional
+    /// place tag and caption. Uploads every item, mirrors item 0 to the
+    /// top-level fields (back-compat + feed filter + Discover index), writes
+    /// the `media` array, and optimistically prepends the post.
+    func uploadAndCreatePost(drafts: [MediaDraft]) async throws {
         guard let authorUid = uid else { throw SocialError.notSignedIn }
-        guard profile?.username != nil else { throw SocialError.needsUsername }
-        let cap = String(caption.prefix(25))
+        guard let username = profile?.username else { throw SocialError.needsUsername }
+        guard !drafts.isEmpty, drafts.count <= 6 else { throw SocialError.uploadFailed }
+
         let postRef = db.collection("posts").document()
         let postId = postRef.documentID
-        // Client `Timestamp` so `orderBy(createdAt)` queries include the doc immediately. `serverTimestamp()`
-        // can leave the field null until the server ack, which excludes the row from ordered queries.
+        // Client `Timestamp` so `orderBy(createdAt)` includes the doc immediately.
         let createdAt = Timestamp(date: .now)
 
-        // Resolve / dedup the place via Cloud Function before stamping the post.
-        // Bypassed for placeless posts.
-        let resolvedPlace: (id: String, name: String)? = try await {
-            guard let place else { return nil }
-            return try await resolvePlace(place)
-        }()
+        // Resolve each DISTINCT place once (sequential — usually 0-1 places;
+        // dedup means a single findOrCreatePlace call even when photos share
+        // a cafe, avoiding the concurrent-create race).
+        var resolvedByKey: [String: (id: String, name: String)] = [:]
+        for sel in dedupPlaceSelections(drafts.compactMap(\.place)) {
+            resolvedByKey[placeKey(sel)] = try await resolvePlace(sel)
+        }
+        func resolved(_ sel: PlaceSelection?) -> (id: String, name: String)? {
+            guard let sel else { return nil }
+            return resolvedByKey[placeKey(sel)]
+        }
 
-        if let image {
-            let processed = CameraCaptureProcessing.preparePhotoForUpload(image) ?? image
-            guard let data = processed.jpegData(compressionQuality: 0.82) else { throw SocialError.uploadFailed }
-            let path = "social/\(authorUid)/\(postId).jpg"
-            let ref = Storage.storage().reference().child(path)
-            // Critical waits — the post payload needs the Storage URL, so
-            // we can't optimistically render anything until both resolve.
-            _ = try await ref.putDataAsync(data)
-            let url = try await ref.downloadURL()
-            var payload: [String: Any] = [
-                "authorId": authorUid,
-                "authorUsername": profile?.username ?? "user",
-                "caption": cap,
-                "mediaType": "image",
-                "mediaURL": url.absoluteString,
-                "createdAt": createdAt,
-            ]
-            if let resolvedPlace {
-                payload["placeId"] = resolvedPlace.id
-                payload["placeName"] = resolvedPlace.name
+        // Upload each item in order → build the media array. A thrown error
+        // aborts BEFORE any doc is written, so no half-post lands (already-
+        // uploaded blobs are orphaned but harmless).
+        var media: [PostMedia] = []
+        var firstImageForClassify: UIImage?
+        for (i, draft) in drafts.enumerated() {
+            let place = resolved(draft.place)
+            let cap: String? = {
+                guard let c = draft.caption, !c.isEmpty else { return nil }
+                return String(c.prefix(25))
+            }()
+            switch draft.source {
+            case .image(let image):
+                let processed = CameraCaptureProcessing.preparePhotoForUpload(image) ?? image
+                guard let data = processed.jpegData(compressionQuality: 0.82) else { throw SocialError.uploadFailed }
+                let ref = Storage.storage().reference().child("social/\(authorUid)/\(postId)_\(i).jpg")
+                _ = try await ref.putDataAsync(data)
+                let url = try await ref.downloadURL()
+                media.append(PostMedia(type: "image", url: url.absoluteString,
+                                       placeId: place?.id, placeName: place?.name, caption: cap))
+                if firstImageForClassify == nil { firstImageForClassify = processed }
+            case .video(let videoURL):
+                let squareURL: URL = videoURL.lastPathComponent.contains("_sq")
+                    ? videoURL
+                    : ((try? await CameraCaptureProcessing.exportSquareVideo(from: videoURL)) ?? videoURL)
+                let ref = Storage.storage().reference().child("social/\(authorUid)/\(postId)_\(i).mp4")
+                _ = try await ref.putFileAsync(from: squareURL)
+                let url = try await ref.downloadURL()
+                let thumb = try? await generateVideoThumbnail(videoURL: squareURL,
+                                                              postId: "\(postId)_\(i)", authorUid: authorUid)
+                media.append(PostMedia(type: "video", url: url.absoluteString, thumbnailURL: thumb,
+                                       placeId: place?.id, placeName: place?.name, caption: cap))
             }
-            // Optimistic feed update FIRST — the post is now visible in the
-            // user's feed using the just-uploaded Storage URL. The caller's
-            // spinner can stop the moment this function returns.
-            prependOptimisticFeedPost(FriendPost(
-                id: postId,
-                authorId: authorUid,
-                authorUsername: profile?.username ?? "user",
-                caption: cap,
-                mediaType: "image",
-                mediaURL: url.absoluteString,
-                thumbnailURL: nil,
-                createdAt: createdAt.dateValue(),
-                placeId: resolvedPlace?.id,
-                placeName: resolvedPlace?.name
-            ))
-            // Fire-and-forget the Firestore write. The SDK writes to the
-            // local cache immediately and queues the server push with
-            // automatic retry on failure, so blocking the caller on the
-            // server ack is just visible latency the user can't act on.
-            postRef.setData(payload) { error in
-                #if DEBUG
-                if let error {
-                    print("[SocialService] post setData failed: \(error.localizedDescription)")
-                }
-                #endif
+        }
+        guard let first = media.first else { throw SocialError.uploadFailed }
+
+        // Firestore payload: the media[] array + mirror of item 0 to the
+        // top-level fields the feed filter / Discover index / legacy readers need.
+        let mediaPayload: [[String: Any]] = media.map { m in
+            var d: [String: Any] = ["type": m.type, "url": m.url]
+            if let t = m.thumbnailURL { d["thumbnailURL"] = t }
+            if let p = m.placeId { d["placeId"] = p }
+            if let pn = m.placeName { d["placeName"] = pn }
+            if let c = m.caption { d["caption"] = c }
+            return d
+        }
+        var payload: [String: Any] = [
+            "authorId": authorUid,
+            "authorUsername": username,
+            "caption": first.caption ?? "",
+            "mediaType": first.type,
+            "mediaURL": first.url,
+            "createdAt": createdAt,
+            "media": mediaPayload,
+        ]
+        if let t = first.thumbnailURL { payload["thumbnailURL"] = t }
+        if let pid = first.placeId {
+            payload["placeId"] = pid
+            payload["placeName"] = first.placeName ?? ""
+        }
+
+        // Optimistic feed insert (media-aware) so the caller's spinner stops now.
+        prependOptimisticFeedPost(FriendPost(
+            id: postId,
+            authorId: authorUid,
+            authorUsername: username,
+            caption: first.caption ?? "",
+            mediaType: first.type,
+            mediaURL: first.url,
+            thumbnailURL: first.thumbnailURL,
+            createdAt: createdAt.dateValue(),
+            placeId: first.placeId,
+            placeName: first.placeName,
+            media: media
+        ))
+
+        // Fire-and-forget the doc write (SDK caches locally + retries).
+        postRef.setData(payload) { error in
+            #if DEBUG
+            if let error {
+                print("[SocialService] post setData failed: \(error.localizedDescription)")
             }
-            // Background Discover-eligibility check. The processed image
-            // is what shipped to Storage, so it's exactly the bytes a
-            // stranger would see — classify *those* (not the raw camera
-            // capture). Doesn't block the caller's spinner or the post's
-            // visibility in the user's own feed.
+            #endif
+        }
+
+        // Background Discover classification on the first image (the bytes a
+        // stranger would see). Skipped for video-only posts.
+        if let img = firstImageForClassify {
             let postRefForVerdict = postRef
             Task.detached(priority: .utility) {
-                let verdict = await PostClassifier.classify(processed)
+                let verdict = await PostClassifier.classify(img)
                 #if DEBUG
                 print("[Discover] post \(postId): faces=\(verdict.containsFaces) score=\(String(format: "%.2f", verdict.aestheticScore)) discoverable=\(verdict.discoverable)")
                 #endif
@@ -549,66 +609,22 @@ final class SocialService {
                     "containsFaces": verdict.containsFaces,
                 ], merge: true)
             }
-            return
         }
+    }
 
-        if let videoURL {
-            let squareURL: URL
-            if videoURL.lastPathComponent.contains("_sq") {
-                squareURL = videoURL
-            } else {
-                squareURL = (try? await CameraCaptureProcessing.exportSquareVideo(from: videoURL)) ?? videoURL
-            }
-            // putFileAsync streams from the file URL — avoids loading the
-            // full video (often 30-50 MB) into Data on the main actor.
-            let path = "social/\(authorUid)/\(postId).mp4"
-            let ref = Storage.storage().reference().child(path)
-            _ = try await ref.putFileAsync(from: squareURL)
-            let url = try await ref.downloadURL()
-            var thumbURL: String?
-            if let t = try? await generateVideoThumbnail(videoURL: squareURL, postId: postId, authorUid: authorUid) {
-                thumbURL = t
-            }
-            var payload: [String: Any] = [
-                "authorId": authorUid,
-                "authorUsername": profile?.username ?? "user",
-                "caption": cap,
-                "mediaType": "video",
-                "mediaURL": url.absoluteString,
-                "createdAt": createdAt,
-            ]
-            if let thumbURL {
-                payload["thumbnailURL"] = thumbURL
-            }
-            if let resolvedPlace {
-                payload["placeId"] = resolvedPlace.id
-                payload["placeName"] = resolvedPlace.name
-            }
-            // Same optimistic-first / fire-and-forget-write pattern as the
-            // image path above — caller's spinner stops the moment the
-            // post is visible in the user's feed, not after server ack.
-            prependOptimisticFeedPost(FriendPost(
-                id: postId,
-                authorId: authorUid,
-                authorUsername: profile?.username ?? "user",
-                caption: cap,
-                mediaType: "video",
-                mediaURL: url.absoluteString,
-                thumbnailURL: thumbURL,
-                createdAt: createdAt.dateValue(),
-                placeId: resolvedPlace?.id,
-                placeName: resolvedPlace?.name
-            ))
-            postRef.setData(payload) { error in
-                #if DEBUG
-                if let error {
-                    print("[SocialService] post setData failed: \(error.localizedDescription)")
-                }
-                #endif
-            }
-            return
-        }
-        throw SocialError.uploadFailed
+    /// Stable dedup key for a place selection (prefer DB id, then Google id,
+    /// then name+coords) so the same place resolves once per post.
+    private func placeKey(_ sel: PlaceSelection) -> String {
+        if let id = sel.id, !sel.isNew { return "id:\(id)" }
+        if let g = sel.googlePlaceId { return "g:\(g)" }
+        return "n:\(sel.name.lowercased())|\(sel.lat),\(sel.lng)"
+    }
+
+    private func dedupPlaceSelections(_ sels: [PlaceSelection]) -> [PlaceSelection] {
+        var seen = Set<String>()
+        var out: [PlaceSelection] = []
+        for s in sels where seen.insert(placeKey(s)).inserted { out.append(s) }
+        return out
     }
 
     /// Calls the `findOrCreatePlace` Cloud Function — server-side dedup ensures
