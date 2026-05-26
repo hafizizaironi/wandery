@@ -299,14 +299,13 @@ struct HeroPageView: View {
             // so the composer doesn't follow the user into a context
             // where it shouldn't be focused.
             Self.dismissKeyboard()
+            // Leaving the page exits "add another" mode, so returning to the
+            // camera shows the review tray again rather than a stale capture state.
+            isCapturingMore = false
         }
-        .onChange(of: camera.capturedImage) { _, _ in
-            syncCameraSessionForCaptureReview()
-        }
-        .onChange(of: camera.capturedVideoURL) { _, _ in
-            syncCameraSessionForCaptureReview()
-        }
-        .onChange(of: camera.isProcessingVideo) { _, _ in
+        .onChange(of: isReviewingCapture) { _, _ in
+            // Review covers the viewfinder, so stop the session; leaving review
+            // — including tapping "+" to add another (isCapturingMore) — restarts it.
             syncCameraSessionForCaptureReview()
         }
         // Watch `.count` instead of `.map(\.id)` so SwiftUI doesn't have to
@@ -1080,16 +1079,14 @@ struct HeroPageView: View {
                     draftThumb(draft, index: index)
                 }
                 if drafts.count < maxDrafts {
-                    Menu {
-                        Button { isCapturingMore = true } label: {
-                            Label("Camera", systemImage: "camera")
-                        }
-                        Button { showPhotosPicker = true } label: {
-                            Label("Photo Library", systemImage: "photo.on.rectangle")
-                        }
+                    Button {
+                        // Straight to the live camera — the photo library is
+                        // reachable from there via the shutter's left-drag.
+                        isCapturingMore = true
                     } label: {
                         addDraftCell
                     }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 14)
