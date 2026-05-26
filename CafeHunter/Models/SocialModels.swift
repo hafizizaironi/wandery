@@ -8,6 +8,44 @@ struct UserProfile: Equatable {
     var photoURL: String?
 }
 
+/// One media item within a post. A post carries 1…6 of these in display
+/// order. Each can optionally carry its own place tag and caption.
+struct PostMedia: Identifiable, Equatable {
+    let type: String          // "image" | "video"
+    let url: String
+    let thumbnailURL: String?
+    let placeId: String?
+    let placeName: String?
+    let caption: String?
+
+    /// Stable identity for ForEach — `url` is unique within a post.
+    var id: String { url }
+    var isVideo: Bool { type == "video" }
+    /// Thumbnail for videos, the image url otherwise.
+    var displayURL: String { isVideo ? (thumbnailURL ?? url) : url }
+
+    init(type: String, url: String, thumbnailURL: String? = nil,
+         placeId: String? = nil, placeName: String? = nil, caption: String? = nil) {
+        self.type = type
+        self.url = url
+        self.thumbnailURL = thumbnailURL
+        self.placeId = placeId
+        self.placeName = placeName
+        self.caption = caption
+    }
+
+    init?(dict: [String: Any]) {
+        guard let type = dict["type"] as? String,
+              let url = dict["url"] as? String, !url.isEmpty else { return nil }
+        self.type = type
+        self.url = url
+        self.thumbnailURL = dict["thumbnailURL"] as? String
+        self.placeId = dict["placeId"] as? String
+        self.placeName = dict["placeName"] as? String
+        self.caption = dict["caption"] as? String
+    }
+}
+
 struct FriendPost: Identifiable, Equatable {
     let id: String
     let authorId: String
@@ -33,7 +71,41 @@ struct FriendPost: Identifiable, Equatable {
     /// for analytics + so a manual review surface can sort by it.
     let containsFaces: Bool?
 
-    var isVideo: Bool { mediaType == "video" }
+    /// All media items in display order (always ≥1). Legacy single-media
+    /// docs are synthesized into a one-item array from the top-level fields.
+    let media: [PostMedia]
+
+    var isVideo: Bool { media.first?.isVideo ?? (mediaType == "video") }
+    var isMultiMedia: Bool { media.count > 1 }
+
+    // Back-compat accessors — callers reading a single value get item 0;
+    // the legacy stored fields remain the source for old docs.
+    var primaryMediaURL: String { media.first?.url ?? mediaURL }
+    var primaryThumbnailURL: String? { media.first?.thumbnailURL ?? thumbnailURL }
+    var primaryPlaceName: String? {
+        media.first(where: { $0.placeName?.isEmpty == false })?.placeName ?? placeName
+    }
+    var primaryCaption: String? {
+        if let c = media.first(where: { $0.caption?.isEmpty == false })?.caption { return c }
+        return caption.isEmpty ? nil : caption
+    }
+
+    /// Distinct tagged places across all media (first-seen order) — drives the
+    /// map fan-out so a post surfaces under every place its photos tagged.
+    var distinctPlaces: [(id: String, name: String)] {
+        var seen = Set<String>()
+        var out: [(id: String, name: String)] = []
+        for m in media where m.placeId != nil {
+            if seen.insert(m.placeId!).inserted {
+                out.append((id: m.placeId!, name: m.placeName ?? ""))
+            }
+        }
+        if out.isEmpty, let pid = placeId {
+            out.append((id: pid, name: placeName ?? ""))
+        }
+        return out
+    }
+    var distinctPlaceIds: [String] { distinctPlaces.map(\.id) }
 
     /// Local / optimistic row (e.g. right after posting) — mirrors Firestore fields.
     init(
@@ -49,7 +121,8 @@ struct FriendPost: Identifiable, Equatable {
         placeName: String? = nil,
         discoverable: Bool = false,
         aestheticScore: Double? = nil,
-        containsFaces: Bool? = nil
+        containsFaces: Bool? = nil,
+        media: [PostMedia]? = nil
     ) {
         self.id = id
         self.authorId = authorId
@@ -64,6 +137,11 @@ struct FriendPost: Identifiable, Equatable {
         self.discoverable = discoverable
         self.aestheticScore = aestheticScore
         self.containsFaces = containsFaces
+        self.media = media ?? [PostMedia(
+            type: mediaType, url: mediaURL, thumbnailURL: thumbnailURL,
+            placeId: placeId, placeName: placeName,
+            caption: caption.isEmpty ? nil : caption
+        )]
     }
 
     init?(document: QueryDocumentSnapshot) {
@@ -92,6 +170,19 @@ struct FriendPost: Identifiable, Equatable {
             createdAt = ts.dateValue()
         } else {
             createdAt = Date()
+        }
+        // New docs carry a `media` array; legacy single-media docs are
+        // synthesized into a one-item array from the mirrored top-level fields.
+        let synthesized = PostMedia(
+            type: mediaType, url: mediaURL, thumbnailURL: thumbnailURL,
+            placeId: placeId, placeName: placeName,
+            caption: caption.isEmpty ? nil : caption
+        )
+        if let rawMedia = d["media"] as? [[String: Any]] {
+            let parsed = rawMedia.compactMap { PostMedia(dict: $0) }
+            media = parsed.isEmpty ? [synthesized] : parsed
+        } else {
+            media = [synthesized]
         }
     }
 }

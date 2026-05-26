@@ -582,20 +582,30 @@ struct HeroPageView: View {
         let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
         let side = HeroCameraLayout.viewfinderSide(in: geo)
         return VStack(spacing: HeroCameraLayout.viewfinderShutterSpacing) {
-            RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
-                .fill(AppTheme.surfacePrimary)
-                .overlay {
-                    RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
-                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                }
-                .frame(width: side, height: side)
-                .overlay {
-                    Text("No posts yet.\nShare a moment from the camera.")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(24)
-                }
+            PolaroidFrame(
+                username: nil,
+                date: nil,
+                placeName: nil,
+                caption: nil,
+                tilt: 0,
+                showTape: false
+            ) {
+                RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
+                    .fill(AppTheme.surfacePrimary)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
+                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                    }
+                    .overlay {
+                        Text("No posts yet.\nShare a moment from the camera.")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(24)
+                    }
+            }
+            .frame(height: side)
+            .frame(maxWidth: .infinity)
             Color.clear
                 .frame(height: HeroCameraLayout.shutterAreaHeight)
         }
@@ -603,6 +613,15 @@ struct HeroPageView: View {
         .padding(.horizontal, HeroCameraLayout.horizontalPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .padding(.bottom, bottomChrome)
+    }
+
+    /// Deterministic per-post tilt so each polaroid sits at a slightly
+    /// different angle (a scattered-pile look), stable across renders and
+    /// launches (FNV-1a over the post id) so cards never jitter on scroll.
+    private static func polaroidTilt(for id: String) -> Double {
+        var h: UInt64 = 1469598103934665603        // FNV-1a offset basis
+        for b in id.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return Double(Int(h % 121)) / 20.0 - 3.0   // -3.0 … +3.0 degrees
     }
 
     private func heroFeedPostPage(geometry geo: GeometryProxy, post: FriendPost, index: Int, isVideoActive: Bool) -> some View {
@@ -614,55 +633,59 @@ struct HeroPageView: View {
         // Spacer absorbs the leftover space above the navbar.
         let belowCardHeight = HeroCameraLayout.viewfinderShutterSpacing + HeroCameraLayout.shutterAreaHeight
         return VStack(spacing: 0) {
-            VStack(spacing: 8) {
-                Text("@\(post.authorUsername)")
-                    .font(.footnote).bold()
-                    .contrastAware(AppTheme.cream, opacity: 0.85)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 4)
-
+            PolaroidFrame(
+                username: "@\(post.authorUsername)",
+                date: post.createdAt,
+                placeName: post.placeName,
+                caption: post.caption,
+                tilt: Self.polaroidTilt(for: post.id)
+            ) {
                 FeedPostCard(
                     post: post,
                     index: index,
                     socialService: socialService,
                     isVideoActive: isVideoActive,
-                    onPlaceTap: { placeId in onJumpToPlace(placeId) }
+                    onPlaceTap: { placeId in onJumpToPlace(placeId) },
+                    hideOverlays: true
                 )
-                .frame(width: side, height: side)
-                .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
-                // Long-press surfaces moderation actions — App Store
-                // Guideline 1.2 requires report + block affordances on
-                // user-generated content. Hidden for your own posts.
-                .contextMenu {
-                    if post.authorId != myUid {
-                        Button {
-                            reportTarget = ReportTarget(type: .post, targetId: post.id)
-                        } label: {
-                            Label("Report post", systemImage: "exclamationmark.triangle")
+            }
+            // Height-constrained so the whole polaroid occupies the square
+            // slot the camera layout budgets (≈ side tall), keeping the
+            // composer's Y position below unchanged.
+            .frame(height: side)
+            .frame(maxWidth: .infinity)
+            // Long-press surfaces moderation actions — App Store
+            // Guideline 1.2 requires report + block affordances on
+            // user-generated content. Hidden for your own posts.
+            .contextMenu {
+                if post.authorId != myUid {
+                    Button {
+                        reportTarget = ReportTarget(type: .post, targetId: post.id)
+                    } label: {
+                        Label("Report post", systemImage: "exclamationmark.triangle")
+                    }
+                    Button {
+                        reportTarget = ReportTarget(type: .user, targetId: post.authorId)
+                    } label: {
+                        Label("Report user", systemImage: "person.crop.circle.badge.exclamationmark")
+                    }
+                    Button(role: .destructive) {
+                        pendingBlockUid = post.authorId
+                        pendingBlockTitle = post.authorUsername
+                    } label: {
+                        Label("Block \(post.authorUsername)", systemImage: "hand.raised")
+                    }
+                } else if post.discoverable {
+                    // Own post that the classifier marked safe — let
+                    // the author retract it from Discover without
+                    // deleting the post. Sets discoverable=false; the
+                    // post stays visible to friends.
+                    Button(role: .destructive) {
+                        Task {
+                            try? await socialService.setDiscoverable(postId: post.id, false)
                         }
-                        Button {
-                            reportTarget = ReportTarget(type: .user, targetId: post.authorId)
-                        } label: {
-                            Label("Report user", systemImage: "person.crop.circle.badge.exclamationmark")
-                        }
-                        Button(role: .destructive) {
-                            pendingBlockUid = post.authorId
-                            pendingBlockTitle = post.authorUsername
-                        } label: {
-                            Label("Block \(post.authorUsername)", systemImage: "hand.raised")
-                        }
-                    } else if post.discoverable {
-                        // Own post that the classifier marked safe — let
-                        // the author retract it from Discover without
-                        // deleting the post. Sets discoverable=false; the
-                        // post stays visible to friends.
-                        Button(role: .destructive) {
-                            Task {
-                                try? await socialService.setDiscoverable(postId: post.id, false)
-                            }
-                        } label: {
-                            Label("Hide from Discover", systemImage: "eye.slash")
-                        }
+                    } label: {
+                        Label("Hide from Discover", systemImage: "eye.slash")
                     }
                 }
             }
@@ -740,58 +763,47 @@ struct HeroPageView: View {
     }
 
     private func captureReviewSquare(side: CGFloat) -> some View {
-        ZStack(alignment: .bottom) {
-            Group {
-                if let img = camera.capturedImage {
-                    Image(uiImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: side, height: side)
-                } else if camera.isProcessingVideo {
-                    Color.black
-                } else if let url = camera.capturedVideoURL {
-                    SquareVideoFillView(url: url, isPlaying: true)
-                        .frame(width: side, height: side)
-                } else {
-                    Color.black
+        PolaroidFrame(
+            username: "@\(socialService.profile?.username ?? "you")",
+            date: Date()
+        ) {
+            ZStack {
+                Group {
+                    if let img = camera.capturedImage {
+                        Image(uiImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else if camera.isProcessingVideo {
+                        Color.black
+                    } else if let url = camera.capturedVideoURL {
+                        SquareVideoFillView(url: url, isPlaying: true)
+                    } else {
+                        Color.black
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Tap-to-dismiss layer: only active while keyboard is up so
+                // it doesn't block normal interaction.
+                if captionFocused {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { captionFocused = false }
+                }
+
+                if camera.isProcessingVideo {
+                    ProgressView()
+                        .tint(.white)
+                        .scaleEffect(1.15)
                 }
             }
-            .frame(width: side, height: side)
-            .clipped()
-
-            // Tap-to-dismiss layer: sits above media but below the pill.
-            // Only active while keyboard is up so it doesn't block normal interaction.
-            if captionFocused {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { captionFocused = false }
-            }
-
-            VStack(spacing: 8) {
-                Spacer(minLength: 0)
-                placeTagPill
-                HStack(alignment: .bottom) {
-                    Spacer(minLength: 0)
-                    captionPillBody
-                    Spacer(minLength: 0)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
+        } topLeading: {
+            placeTagPill
+        } bottomCenter: {
+            captionPillBody
         }
-        .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        }
-        .overlay {
-            if camera.isProcessingVideo {
-                ProgressView()
-                    .tint(.white)
-                    .scaleEffect(1.15)
-            }
-        }
+        .frame(height: side)
+        .frame(maxWidth: .infinity)
     }
 
     private var placeTagPill: some View {
@@ -1311,6 +1323,9 @@ private struct FeedPostCard: View {
     /// Only the page aligned with the vertical pager should play; keeps off-screen and background posts silent.
     let isVideoActive: Bool
     var onPlaceTap: (String) -> Void = { _ in }
+    /// When wrapped by PolaroidFrame, the frame owns the place/caption pills
+    /// and the photo border, so suppress this card's internal ones.
+    var hideOverlays: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -1335,7 +1350,7 @@ private struct FeedPostCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
 
-            if !post.caption.isEmpty || post.placeName != nil {
+            if !hideOverlays, !post.caption.isEmpty || post.placeName != nil {
                 VStack(spacing: 6) {
                     if let placeName = post.placeName, let placeId = post.placeId {
                         Button {
@@ -1353,8 +1368,10 @@ private struct FeedPostCard: View {
             }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
-                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+            if !hideOverlays {
+                RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+            }
         }
     }
 
