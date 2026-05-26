@@ -816,7 +816,7 @@ struct MainMapView: View {
             let doc = try await db.collection("places")
                 .document(placeId)
                 .getDocument(as: Place.self)
-            let postsAtPlace = socialService.feedPosts.filter { $0.placeId == placeId }
+            let postsAtPlace = socialService.feedPosts.filter { $0.distinctPlaceIds.contains(placeId) }
             let synthesized = FriendPlace(
                 id: placeId,
                 name: doc.name,

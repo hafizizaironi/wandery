@@ -110,23 +110,32 @@ exports.onPostCreatePlaceVisit = functions.firestore
       placeId: d && d.placeId,
       authorId: d && d.authorId,
     });
-    if (!d || !d.placeId || !d.authorId) {
-      logger.warn("[VISIT] aborted — missing placeId or authorId", { postId });
+    if (!d || !d.authorId) {
+      logger.warn("[VISIT] aborted — missing authorId", { postId });
       return;
     }
-    const placeId = d.placeId;
     const uid = d.authorId;
+    // A post can tag several photos at different places; open/refresh a visit
+    // for EACH distinct place. Legacy single-place posts fall back to d.placeId.
+    const placeIds = Array.isArray(d.media)
+      ? [...new Set(d.media.map((m) => m && m.placeId).filter(Boolean))]
+      : (d.placeId ? [d.placeId] : []);
+    if (placeIds.length === 0) {
+      logger.warn("[VISIT] aborted — no placeId(s)", { postId });
+      return;
+    }
     const db = admin.firestore();
-    const placeRef = db.collection("places").doc(placeId);
-    const visitRef = db.collection("users").doc(uid)
-      .collection("visits").doc(placeId);
+    const userRef = db.collection("users").doc(uid);
 
-    try {
+    for (const placeId of placeIds) {
+      const placeRef = db.collection("places").doc(placeId);
+      const visitRef = db.collection("users").doc(uid)
+        .collection("visits").doc(placeId);
+      try {
       // Wrap in a transaction so two posts firing back-to-back can't both
       // observe "no visit doc yet" and double-bump the global counter.
       // Firestore retries the txn on conflict, so the second invocation
       // re-reads the visit doc the first one just wrote.
-      const userRef = db.collection("users").doc(uid);
       let txnAttempt = 0;
       const result = await db.runTransaction(async (tx) => {
         txnAttempt += 1;
@@ -223,14 +232,15 @@ exports.onPostCreatePlaceVisit = functions.firestore
         attempts: txnAttempt,
         result,
       });
-    } catch (err) {
-      logger.error("[VISIT] failed", {
-        postId,
-        placeId,
-        uid,
-        message: err && err.message,
-        stack: err && err.stack,
-      });
+      } catch (err) {
+        logger.error("[VISIT] failed", {
+          postId,
+          placeId,
+          uid,
+          message: err && err.message,
+          stack: err && err.stack,
+        });
+      }
     }
   });
 

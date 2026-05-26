@@ -60,10 +60,16 @@ final class FriendPlacesService {
     /// since last call (so counters refresh after activity). Cheap when
     /// nothing's changed.
     func refresh(from posts: [FriendPost]) async {
-        let byPlace: [String: [FriendPost]] = Dictionary(
-            grouping: posts.filter { $0.placeId != nil },
-            by: { $0.placeId! }
-        )
+        // A post can carry several photos tagged at different places; surface
+        // it under EACH distinct tagged place (not just the primary), so every
+        // café a post touches shows it. Legacy single-place posts contribute
+        // exactly one entry via `distinctPlaceIds`.
+        var byPlace: [String: [FriendPost]] = [:]
+        for post in posts {
+            for placeId in post.distinctPlaceIds {
+                byPlace[placeId, default: []].append(post)
+            }
+        }
 
         // Refetch criteria:
         //   1. Place is uncached (first time we've seen it), OR
