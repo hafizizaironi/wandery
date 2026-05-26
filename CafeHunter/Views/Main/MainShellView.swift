@@ -250,10 +250,10 @@ struct MainShellView: View {
     // MARK: - Edge-drag page switching
 
     /// Distance from either screen edge within which a drag start is
-    /// considered an edge-swipe. 24pt matches the system's own back-
-    /// gesture region — small enough to not collide with normal taps
-    /// near the edge of the post card / map controls.
-    private static let edgeDragGutter: CGFloat = 24
+    /// considered an edge-swipe. 12pt is a tighter hot zone than the
+    /// system back-gesture region — small enough to not collide with
+    /// normal taps near the edge of the post card / map controls.
+    private static let edgeDragGutter: CGFloat = 12
 
     /// Captures left/right edge drags and translates them into
     /// `pageProgress` changes. Vertical scrolls inside Hero / Profile
