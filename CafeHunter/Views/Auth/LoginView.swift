@@ -86,12 +86,15 @@ struct LoginView: View {
                             Task { await signInWithGoogle() }
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: "globe")
-                                    .font(.callout)
+                                Image("GoogleLogo")
+                                    .renderingMode(.original)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 18, height: 18)
                                 Text("Continue with Google")
                                     .font(.subheadline).bold()
+                                    .foregroundStyle(AppTheme.textPrimary)
                             }
-                            .foregroundStyle(AppTheme.textPrimary)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                             .background(Color.white)
