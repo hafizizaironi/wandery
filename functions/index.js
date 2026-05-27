@@ -83,6 +83,93 @@ exports.onNewPost = functions.firestore
     }
   });
 
+// Delete a Firestore collection in batches (Firestore has no cascade, so a
+// deleted post leaves its `reactions` subcollection orphaned). Paginated so
+// it stays under the 500-write batch limit on busy posts.
+async function deleteCollection(ref) {
+  let snap = await ref.limit(400).get();
+  while (!snap.empty) {
+    const batch = admin.firestore().batch();
+    snap.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+    if (snap.size < 400) return;
+    snap = await ref.limit(400).get();
+  }
+}
+
+// Tidy up after a post is deleted. The client `deletePost` removes the post
+// doc + its first media object, but it can't reach:
+//   1. the `reactions` subcollection (Firestore doesn't cascade-delete),
+//   2. extra Storage objects on multi-media posts ({postId}_1, _2, … and the
+//      *_thumb.jpg variants), and
+//   3. the chat mirror messages (reply/reaction) that snapshotted the post's
+//      thumbnail — we strip the dead image so DMs don't show a now-deleted
+//      post. The reply TEXT is left intact (it's the sender's own message);
+//      only `postMediaURL` is removed and `postDeleted: true` is stamped so
+//      the bubble renders "post no longer available".
+// Still NOT touched: aggregate place counters (a past visit/engagement
+// genuinely happened).
+exports.onPostDelete = functions.firestore
+  .document("posts/{postId}")
+  .onDelete(async (snap, context) => {
+    const postId = context.params.postId;
+    const d = snap.data() || {};
+    const authorId = d.authorId;
+
+    try {
+      await deleteCollection(
+        admin.firestore().collection("posts").doc(postId).collection("reactions"),
+      );
+    } catch (e) {
+      logger.warn("[POST DELETE] reactions cleanup failed", {
+        postId,
+        error: String(e),
+      });
+    }
+
+    // Wipe every Storage object for this post. Post ids are fixed-length
+    // Firestore auto-ids, so `{postId}` can't be a prefix of another post's
+    // id — the prefix match is safe and catches all media + thumbnails.
+    if (authorId) {
+      try {
+        await admin.storage().bucket().deleteFiles({
+          prefix: `social/${authorId}/${postId}`,
+        });
+      } catch (e) {
+        logger.warn("[POST DELETE] storage cleanup failed", {
+          postId,
+          error: String(e),
+        });
+      }
+    }
+
+    // Scrub the post's image from every chat mirror that referenced it (a
+    // collection-group query over all conversations' messages). Single-field
+    // equality on `postId` uses the automatic index — no custom index needed.
+    try {
+      const mirrors = await admin.firestore()
+        .collectionGroup("messages")
+        .where("postId", "==", postId)
+        .get();
+      const docs = mirrors.docs;
+      for (let i = 0; i < docs.length; i += 400) {
+        const batch = admin.firestore().batch();
+        for (const doc of docs.slice(i, i + 400)) {
+          batch.update(doc.ref, {
+            postDeleted: true,
+            postMediaURL: admin.firestore.FieldValue.delete(),
+          });
+        }
+        await batch.commit();
+      }
+    } catch (e) {
+      logger.warn("[POST DELETE] chat mirror scrub failed", {
+        postId,
+        error: String(e),
+      });
+    }
+  });
+
 // Phase 3 — Session-aware visit counting. Every tagged post might be a
 // fresh visit OR a continuation of one already in progress (5 photos at
 // the same cafe in one sitting = 1 visit, not 5). We track per-user-per-
@@ -788,8 +875,13 @@ exports.findOrCreatePlace = onCall(
       throw new HttpsError("unauthenticated", "Sign in to tag a place.");
     }
 
-    const { name, type, lat, lng, googlePlaceId } = request.data || {};
+    const { name, type, lat, lng, googlePlaceId, address } = request.data || {};
     const cleanName = String(name || "").trim();
+    // Optional formatted address (from Google Places) — stored so the client
+    // can derive a city label without reverse-geocoding.
+    const cleanAddress = typeof address === "string"
+      ? address.trim().slice(0, 300)
+      : null;
     if (cleanName.length < 1 || cleanName.length > 120) {
       throw new HttpsError("invalid-argument", "Place name required (1–120 chars).");
     }
@@ -864,6 +956,7 @@ exports.findOrCreatePlace = onCall(
           geohash,
           source: googlePlaceId ? "google" : "user",
           googlePlaceId: googlePlaceId || null,
+          address: cleanAddress || null,
           createdBy: uid,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           globalVisitCount: 0,

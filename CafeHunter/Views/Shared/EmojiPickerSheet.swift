@@ -8,7 +8,7 @@ import SwiftUI
 /// `title` defaults to "Pick an emoji" so the sheet reads naturally
 /// for both the reply composer and any future caller. Pass `myEmoji`
 /// to highlight a previously-selected cell (used by the picker that
-/// surfaces from `MessageActionsSheet` in chat threads).
+/// surfaces from a bubble's "More reactions…" action in chat threads).
 struct EmojiPickerSheet: View {
     var title: String = "Pick an emoji"
     var myEmoji: String? = nil

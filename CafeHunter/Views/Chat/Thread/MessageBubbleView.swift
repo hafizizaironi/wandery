@@ -16,10 +16,10 @@ struct MessageBubbleView: View {
     /// If true, draw a red stroke and add the "Tap to retry" caption.
     /// Used by `PendingMessageQueue`'s failed-bubble state.
     var hasFailed: Bool = false
-    /// Long-press handler. When provided, replaces the old `.contextMenu`
-    /// Copy action — ChatThreadView opens its `MessageActionsSheet`
-    /// which carries Copy + reactions inside one surface.
-    var onLongPress: (() -> Void)? = nil
+    /// Per-message action menu (reactions / copy / report). Nil for
+    /// optimistic bubbles — no Firestore doc id to act on yet. Presented
+    /// via `.messageActions(_:)` — today a native context menu.
+    var menu: MessageMenuModel? = nil
     /// Re-tap on my reaction chip removes it. Forwarded up to
     /// ChatThreadView which calls the service.
     var onRemoveMyReaction: (() -> Void)? = nil
@@ -32,7 +32,7 @@ struct MessageBubbleView: View {
 
             VStack(alignment: isMe ? .trailing : .leading, spacing: 0) {
                 bubble
-                if !message.reactions.isEmpty {
+                if !message.deleted, !message.reactions.isEmpty {
                     MessageReactionStrip(
                         reactions: message.reactions,
                         myUid: myUid,
@@ -50,6 +50,7 @@ struct MessageBubbleView: View {
                 }
             }
             .animation(Motion.iosDrawer(duration: 0.22), value: message.reactions)
+            .swipeToReply(isMe: isMe, onReply: menu?.onReply)
 
             if !isMe { Spacer(minLength: 48) }
         }
@@ -61,25 +62,79 @@ struct MessageBubbleView: View {
 
     @ViewBuilder
     private var bubble: some View {
-        Text(LinkifiedText.attributed(message.text))
-            .font(.body)
-            .foregroundStyle(AppTheme.textPrimary)
-            .tint(AppTheme.accentAction)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(bubbleShape.fill(fillColor))
-            .overlay {
-                if hasFailed {
-                    bubbleShape.stroke(AppTheme.errorRed, lineWidth: 1.5)
-                }
+        bubbleContent
+            .messageActions(menu, preview: AnyView(bubbleContent))
+    }
+
+    /// The bubble's visual, split out so a fresh copy can be lifted in the
+    /// long-press overlay (a real view re-hosts crisply; the modifier's
+    /// `content` proxy would render blank).
+    @ViewBuilder
+    private var bubbleContent: some View {
+        if message.deleted {
+            deletedContent
+        } else {
+            normalContent
+        }
+    }
+
+    private var normalContent: some View {
+        VStack(alignment: isMe ? .trailing : .leading, spacing: 5) {
+            if message.isMessageReply, let quote = message.replyToText {
+                replyQuote(quote)
             }
-            .opacity(isPending ? 0.55 : 1)
-            .onLongPressGesture(minimumDuration: 0.35) {
-                guard let onLongPress else { return }
-                let g = UIImpactFeedbackGenerator(style: .medium)
-                g.impactOccurred()
-                onLongPress()
+            Text(LinkifiedText.attributed(message.text))
+                .font(.body)
+                .foregroundStyle(AppTheme.textPrimary)
+                .tint(AppTheme.accentAction)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(bubbleShape.fill(fillColor))
+        .overlay {
+            if hasFailed {
+                bubbleShape.stroke(AppTheme.errorRed, lineWidth: 1.5)
             }
+        }
+        .opacity(isPending ? 0.55 : 1)
+    }
+
+    /// Tombstone placeholder for an unsent message — muted italic text in a
+    /// faint outlined bubble. No actions attach (the row passes no menu).
+    private var deletedContent: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "slash.circle")
+                .font(.caption)
+            Text(isMe ? "You deleted this message" : "This message was deleted")
+                .font(.subheadline.italic())
+        }
+        .foregroundStyle(AppTheme.textSecondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(bubbleShape.fill(AppTheme.textPrimary.opacity(0.05)))
+        .overlay {
+            bubbleShape.stroke(AppTheme.borderSubtle, lineWidth: 1)
+        }
+    }
+
+    /// The quoted snippet of the message this bubble is replying to,
+    /// rendered as a muted header inside the bubble (accent bar + text).
+    private func replyQuote(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(AppTheme.accentAction.opacity(0.8))
+                .frame(width: 2.5)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(AppTheme.textSecondary)
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            AppTheme.textPrimary.opacity(0.05),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
     }
 
     /// iMessage-style bubble shape: the corner closest to the sender's

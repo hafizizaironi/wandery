@@ -113,6 +113,60 @@ struct PinAvatarBubble: View {
     }
 }
 
+// MARK: - User Location Marker
+
+/// The signed-in user's own position on the map: their profile picture ringed
+/// in white, sitting over a soft accent halo that pulses outward forever to
+/// draw the eye. Replaces MapKit's default blue user-location dot.
+struct UserLocationAvatar: View {
+    let photoURL: String?
+    @State private var pulsing = false
+
+    var body: some View {
+        ZStack {
+            // Pulsing halo — grows + fades on a loop. The animation is keyed to
+            // `pulsing`, flipped once on appear, so it runs continuously.
+            Circle()
+                .fill(AppTheme.accentAction.opacity(0.35))
+                .frame(width: 40, height: 40)
+                .scaleEffect(pulsing ? 2.4 : 1.0)
+                .opacity(pulsing ? 0.0 : 0.7)
+
+            // Avatar
+            Group {
+                if let s = photoURL, let url = URL(string: s) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        default: fallback
+                        }
+                    }
+                } else {
+                    fallback
+                }
+            }
+            .frame(width: 36, height: 36)
+            .clipShape(Circle())
+            .overlay(Circle().stroke(Color.white, lineWidth: 2.5))
+            .shadow(color: .black.opacity(0.3), radius: 3, x: 0, y: 1)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.8).repeatForever(autoreverses: false)) {
+                pulsing = true
+            }
+        }
+    }
+
+    private var fallback: some View {
+        ZStack {
+            AppTheme.accentAction
+            Image(systemName: "person.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.white)
+        }
+    }
+}
+
 // MARK: - Location Manager
 
 @MainActor @Observable
@@ -218,6 +272,10 @@ struct CafeMapView: View {
     @Binding var centerOnUser: Bool
     @Binding var targetCoordinate: CLLocationCoordinate2D?
     var locationManager: LocationManager
+    /// The signed-in user's profile photo, used to render their own location
+    /// marker as their avatar (with a pulsing halo) instead of the default
+    /// MapKit blue dot. nil → a generic person glyph.
+    var userPhotoURL: String?
 
     /// Tracks current map zoom so we can shrink the cluster threshold as the
     /// user zooms in. Updated via `.onMapCameraChange`. Default matches the
@@ -302,7 +360,12 @@ struct CafeMapView: View {
                     }
                 }
             }
-            UserAnnotation()
+            // The user's own location, drawn as their profile picture with a
+            // pulsing halo instead of the stock blue dot. MapKit positions and
+            // updates this for us as long as location authorization is granted.
+            UserAnnotation { _ in
+                UserLocationAvatar(photoURL: userPhotoURL)
+            }
         }
         .mapStyle(.standard(elevation: .realistic))
         .ignoresSafeArea()

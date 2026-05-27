@@ -241,7 +241,8 @@ final class CameraService: NSObject {
             guard let self else { return }
             self.addAudioInputIfNeeded()
             self.applyNaturalVideoMirroringToOutputs()
-            self.reapplyDevice60fpsFrameDuration()
+            self.reapplyDeviceRecordingFrameDuration()
+            self.applyVideoStabilization()
         }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".mov")
@@ -305,16 +306,19 @@ final class CameraService: NSObject {
                session.canAddInput(input) {
                 session.addInput(input)
                 currentInput = input
+                Self.applyHD60VideoRecordingSettings(device: device, session: session)
             } else if let device = Self.videoDevice(position: newPos, lensSlot: .primary),
                       let input = try? AVCaptureDeviceInput(device: device),
                       session.canAddInput(input) {
                 session.addInput(input)
                 currentInput = input
                 outLensSlot = .primary
+                Self.applyHD60VideoRecordingSettings(device: device, session: session)
             }
 
             session.commitConfiguration()
             applyNaturalVideoMirroringToOutputs()
+            applyVideoStabilization()
             let lensForMainActor = outLensSlot
             applyRearZoom(slot: lensForMainActor, animated: false, effectivePosition: newPos)
             Task { @MainActor in
@@ -392,6 +396,7 @@ final class CameraService: NSObject {
         // output finishes. See `audioInput` declaration for the BT-HFP rationale.
 
         Self.applyHD60VideoRecordingSettings(device: device, session: session)
+        applyVideoStabilization()
 
         // Zoom is applied in `startSession` after `startRunning()` so fused devices honor factors.
     }
@@ -409,9 +414,11 @@ final class CameraService: NSObject {
                 session.sessionPreset = .hd1920x1080
             }
 
-            let fps60 = CMTime(value: 1, timescale: 60)
-            device.activeVideoMinFrameDuration = fps60
-            device.activeVideoMaxFrameDuration = fps60
+            // Clamp to what the (now-active) format supports — front cameras that
+            // don't expose a 60 fps 1080p format would otherwise crash here.
+            let duration = supportedFrameDuration(maxFPS: 60, for: device.activeFormat)
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
         } catch {
             session.sessionPreset = .hd1920x1080
         }
@@ -431,6 +438,27 @@ final class CameraService: NSObject {
             if supports60 { return format }
         }
         return nil
+    }
+
+    /// The fastest constant frame duration ≤ `target` fps that `format` actually
+    /// advertises. Front cameras (and many formats) top out at 30 fps; assigning
+    /// an unsupported `activeVideoMin/MaxFrameDuration` raises an *uncaught*
+    /// `NSInvalidArgumentException` — an ObjC exception that Swift `do/catch` can't
+    /// trap — which is exactly the selfie-record crash. Always clamp to a value
+    /// the active format supports.
+    private static func supportedFrameDuration(maxFPS target: Double,
+                                               for format: AVCaptureDevice.Format) -> CMTime {
+        let ranges = format.videoSupportedFrameRateRanges
+        // If some range brackets the target, lock to a clean 1/target duration.
+        if ranges.contains(where: { $0.minFrameRate <= target && target <= $0.maxFrameRate }) {
+            return CMTime(value: 1, timescale: CMTimeScale(target.rounded()))
+        }
+        // Otherwise use the fastest duration the format genuinely advertises
+        // (its smallest `minFrameDuration`), which is always valid to assign.
+        let fastest = ranges.min {
+            CMTimeGetSeconds($0.minFrameDuration) < CMTimeGetSeconds($1.minFrameDuration)
+        }
+        return fastest?.minFrameDuration ?? CMTime(value: 1, timescale: 30)
     }
 
     /// Add the audio capture input. Call from `sessionQueue`.
@@ -465,15 +493,33 @@ final class CameraService: NSObject {
     }
 
     /// iOS removed frame-rate APIs on `AVCaptureConnection`; match capture rate on the device instead.
-    private func reapplyDevice60fpsFrameDuration() {
+    /// Targets 60 fps but clamps to the active format's real ceiling (the front camera commonly
+    /// caps at 30) — forcing an unsupported duration raises an uncaught NSException.
+    private func reapplyDeviceRecordingFrameDuration() {
         guard let device = currentInput?.device else { return }
-        let fps60 = CMTime(value: 1, timescale: 60)
+        let duration = Self.supportedFrameDuration(maxFPS: 60, for: device.activeFormat)
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
-            device.activeVideoMinFrameDuration = fps60
-            device.activeVideoMaxFrameDuration = fps60
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
         } catch {}
+    }
+
+    /// Turn on the strongest video stabilization the *current* camera's active
+    /// format supports, on the movie-recording connection. Front and rear
+    /// formats advertise different modes (front cameras typically top out at
+    /// `.standard`, rear wide/virtual cameras support `.cinematicExtended`), so
+    /// we probe the active format and fall down the list. Re-applied on every
+    /// input / format change because the connection's capabilities follow the
+    /// device. Setting an unsupported mode is a no-op, so `.auto` is a safe
+    /// floor. Call from `sessionQueue`.
+    private func applyVideoStabilization() {
+        guard let connection = movieOutput.connection(with: .video) else { return }
+        let format = currentInput?.device.activeFormat
+        let preferred: [AVCaptureVideoStabilizationMode] = [.cinematicExtended, .cinematic, .standard]
+        let chosen = preferred.first { format?.isVideoStabilizationModeSupported($0) == true } ?? .auto
+        connection.preferredVideoStabilizationMode = chosen
     }
 
     /// Uses neutral EV bias (0) so exposure follows automatic metering without a baked-in offset.
@@ -495,6 +541,7 @@ final class CameraService: NSObject {
         defer {
             session.commitConfiguration()
             applyNaturalVideoMirroringToOutputs()
+            applyVideoStabilization()
             applyRearZoom(slot: lensSlot, animated: false, effectivePosition: .back)
         }
 

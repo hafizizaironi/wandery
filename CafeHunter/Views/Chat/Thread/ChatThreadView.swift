@@ -30,10 +30,23 @@ struct ChatThreadView: View {
     @State private var pendingNewMessageFromOther: Bool = false
     @State private var convError: String? = nil
     @State private var lastSeenMessageId: String? = nil
-    /// Set when the user long-presses a bubble. Drives the
-    /// MessageActionsSheet via `.sheet(item:)` — Identifiable so each
-    /// long-press is a distinct presentation.
-    @State private var actionTarget: MessageActionTarget? = nil
+    /// Set when the user picks "More reactions…" from a bubble's action
+    /// menu — drives the full emoji picker sheet for that message.
+    @State private var emojiPickerTarget: MessageActionTarget? = nil
+    /// Set when the user picks "Report" from a bubble's action menu —
+    /// drives the shared ReportSheet (`targetType: .message`).
+    @State private var reportTarget: ReportTarget? = nil
+    /// Drives the iMessage-style long-press overlay (lifted bubble +
+    /// reaction bar + action card). Injected into the environment so each
+    /// bubble's `.messageActions(_:)` can publish into it.
+    @State private var actionPresenter = MessageActionPresenter()
+    /// The message currently being replied to (composer shows a banner;
+    /// the next send stamps `replyToId`/`replyToText`). Nil = not replying.
+    @State private var replyTarget: ChatMessage? = nil
+    /// Composer focus, owned here so "Reply" can focus the field.
+    @FocusState private var composerFocused: Bool
+    /// Message id pending an unsend confirmation (drives the Delete alert).
+    @State private var deleteConfirmId: String? = nil
 
     /// Per-conversation last-read stamp. Bumped on appear + whenever a
     /// new message arrives while the thread is visible.
@@ -82,8 +95,11 @@ struct ChatThreadView: View {
                 text: $composerText,
                 retryBanner: sendQueue.hasFailed ? AnyView(retryBanner) : nil,
                 toast: sendQueue.toast,
+                replyPreview: replyTarget.map { replyPreviewText(for: $0) },
+                onCancelReply: { replyTarget = nil },
                 onSend: sendCurrentDraft,
-                onDismissToast: { sendQueue.toast = nil }
+                onDismissToast: { sendQueue.toast = nil },
+                focused: $composerFocused
             )
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -115,15 +131,43 @@ struct ChatThreadView: View {
         } message: { msg in
             Text(msg)
         }
-        .sheet(item: $actionTarget) { target in
-            MessageActionsSheet(
-                message:  target.message,
-                myUid:    myUid,
-                canReact: target.canReact,
-                onReact:  { emoji in performReact(on: target.message, emoji: emoji) },
-                onCopy:   { UIPasteboard.general.string = target.message.text }
+        .alert("Delete message?", isPresented: Binding(
+            get: { deleteConfirmId != nil },
+            set: { if !$0 { deleteConfirmId = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { deleteConfirmId = nil }
+            Button("Delete", role: .destructive) {
+                if let id = deleteConfirmId { performDelete(messageId: id) }
+                deleteConfirmId = nil
+            }
+        } message: {
+            Text("This removes the message for everyone in the chat. This can't be undone.")
+        }
+        .sheet(item: $emojiPickerTarget) { target in
+            EmojiPickerSheetWrapper(
+                myEmoji: target.message.reactions[myUid],
+                onSelect: { emoji in
+                    performReact(on: target.message, emoji: emoji)
+                    emojiPickerTarget = nil
+                }
+            )
+            .presentationDetents([.fraction(0.55)])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(24)
+        }
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                targetType: target.type,
+                targetId:   target.targetId,
+                socialService: socialService
             )
         }
+        // The long-press menu overlay. Layered above everything (messages +
+        // composer) and fed by the same presenter the bubbles publish into.
+        .overlay {
+            MessageActionOverlay()
+        }
+        .environment(actionPresenter)
     }
 
     // MARK: - Messages list
@@ -201,13 +245,17 @@ struct ChatThreadView: View {
         case .daySeparator(_, let label):
             DaySeparatorView(label: label)
         case .message(let msg, let position):
-            if msg.referencesPost {
+            if msg.deleted {
+                // Tombstoned (unsent) — a plain placeholder with no menu,
+                // swipe, or reactions.
+                MessageBubbleView(message: msg, myUid: myUid, position: position)
+            } else if msg.referencesPost {
                 PostReferenceBubbleView(
                     message: msg,
                     myUid: myUid,
                     position: position,
                     onTap: postTapAction(for: msg),
-                    onLongPress: longPressAction(for: msg, canReact: true),
+                    menu: menuModel(for: msg, canReact: true),
                     onRemoveMyReaction: removeReactionAction(for: msg)
                 )
             } else {
@@ -215,7 +263,7 @@ struct ChatThreadView: View {
                     message: msg,
                     myUid: myUid,
                     position: position,
-                    onLongPress: longPressAction(for: msg, canReact: true),
+                    menu: menuModel(for: msg, canReact: true),
                     onRemoveMyReaction: removeReactionAction(for: msg)
                 )
             }
@@ -237,24 +285,66 @@ struct ChatThreadView: View {
         }
     }
 
-    /// Long-press handler factory — gates reactions so pending bubbles
-    /// (no Firestore doc id yet) can't accept reaction writes.
-    private func longPressAction(for msg: ChatMessage, canReact: Bool) -> () -> Void {
-        return {
-            actionTarget = MessageActionTarget(
-                id: msg.id,
-                message: msg,
-                canReact: canReact
-            )
-        }
+    /// Builds the per-message action menu (reactions / copy / report) for a
+    /// bubble. `canReact` is false for pending bubbles (no doc id yet), which
+    /// hides the reaction rows. The closures route back into this view's
+    /// service calls + sheet state.
+    private func menuModel(for msg: ChatMessage, canReact: Bool) -> MessageMenuModel {
+        MessageMenuModel(
+            message:  msg,
+            myUid:    myUid,
+            canReact: canReact,
+            onReact:  { emoji in performReact(on: msg, emoji: emoji) },
+            onMoreReactions: {
+                emojiPickerTarget = MessageActionTarget(id: msg.id, message: msg, canReact: canReact)
+            },
+            onReply:  { beginReply(to: msg) },
+            onCopy:   { UIPasteboard.general.string = msg.text },
+            onDelete: { deleteConfirmId = msg.id },
+            onReport: { reportTarget = ReportTarget(type: .message, targetId: msg.id) }
+        )
+    }
+
+    /// Start replying to `msg`: stash it (the composer shows a banner) and
+    /// focus the input so the user can type straight away.
+    private func beginReply(to msg: ChatMessage) {
+        replyTarget = msg
+        composerFocused = true
+    }
+
+    /// Short snippet of `msg` for the reply banner + the stored
+    /// `replyToText` snapshot. Falls back to a post/reaction description
+    /// when the target has no plain text body.
+    private func replyPreviewText(for msg: ChatMessage) -> String {
+        let trimmed = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return String(trimmed.prefix(120)) }
+        if msg.isPostReaction { return "Reacted \(msg.emoji ?? "")".trimmingCharacters(in: .whitespaces) }
+        if let preview = msg.postPreview, !preview.isEmpty { return preview }
+        if msg.referencesPost { return "a post" }
+        return "a message"
     }
 
     private func removeReactionAction(for msg: ChatMessage) -> () -> Void {
         return { performReact(on: msg, emoji: nil) }
     }
 
+    private func performDelete(messageId: String) {
+        guard let convId else { return }
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        Task {
+            do {
+                try await conversationService.deleteMessage(convId: convId, messageId: messageId)
+            } catch {
+                #if DEBUG
+                print("[ChatThreadView] deleteMessage failed: \(error)")
+                #endif
+            }
+        }
+    }
+
     private func performReact(on msg: ChatMessage, emoji: String?) {
         guard let convId else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         Task {
             do {
                 try await conversationService.reactToMessage(
@@ -399,6 +489,10 @@ struct ChatThreadView: View {
         guard !trimmed.isEmpty else { return }
         composerText = ""
 
+        // Snapshot + clear the reply target so the banner dismisses with the send.
+        let reply = replyTarget
+        replyTarget = nil
+
         // Light haptic mirroring the rest of the app's vocabulary.
         let g = UIImpactFeedbackGenerator(style: .light)
         g.impactOccurred()
@@ -410,7 +504,9 @@ struct ChatThreadView: View {
                     convId:   id,
                     text:     trimmed,
                     senderId: myUid,
-                    service:  conversationService
+                    service:  conversationService,
+                    replyToId:   reply?.id,
+                    replyToText: reply.map { replyPreviewText(for: $0) }
                 )
             } catch {
                 convError = error.localizedDescription

@@ -224,6 +224,10 @@ struct MainMapView: View {
     var authService: AuthService
     var firestoreService: FirestoreService
     var socialService: SocialService
+    /// True while the Map is the visible page (`selectedPage == .map`).
+    /// Driven by MainShellView; on the rising edge we recenter on the user
+    /// (unless they're searching or arriving via a place-jump).
+    var isActive: Bool
     /// Set externally (e.g. from a feed pill tap) to fly to a place + open
     /// the detail sheet. Cleared once consumed.
     @Binding var pendingPlaceJumpId: String?
@@ -312,7 +316,8 @@ struct MainMapView: View {
                 onClusterTap: { places in clusterSelection = ClusterSelection(places: places) },
                 centerOnUser: $centerOnUser,
                 targetCoordinate: $targetCoordinate,
-                locationManager: locationManager
+                locationManager: locationManager,
+                userPhotoURL: socialService.profile?.photoURL
             )
             .task(id: socialService.feedPosts.map(\.id)) {
                 await friendPlacesService.refresh(from: socialService.feedPosts)
@@ -385,6 +390,16 @@ struct MainMapView: View {
             .onChange(of: pendingPlaceJumpId) { _, newId in
                 guard let placeId = newId else { return }
                 Task { await consumePlaceJump(placeId: placeId) }
+            }
+            // Recenter on the user whenever the Map becomes the active page,
+            // *unless* they're searching (Discover open) or arriving via a
+            // place-jump — those flows own the camera and should win. The
+            // place-jump check works because pendingPlaceJumpId is set before
+            // the page swap, so it's still non-nil on this rising edge and
+            // gets consumed by the handler above.
+            .onChange(of: isActive) { _, active in
+                guard active, !showDiscover, pendingPlaceJumpId == nil else { return }
+                centerOnUser = true
             }
 
             // Top-right HUD buttons
@@ -775,10 +790,16 @@ struct MainMapView: View {
     private func visitsLabel(_ place: FriendPlace) -> String {
         let visits = max(place.globalVisitCount, 0)
         let displayed = visits > 0 ? visits : place.posts.count
-        let friendCount = Set(place.posts.map(\.authorId)).count
-        if displayed == 1 { return "1 visit" }
-        if friendCount <= 1 { return "\(displayed) visits" }
-        return "\(displayed) visits · \(friendCount) friends"
+        // `displayed` is the GLOBAL visit count — anyone, friend or not. The
+        // posts here come from your feed (friends + you), so that subset is
+        // the people you actually know who've been.
+        let circleCount = Set(place.posts.map(\.authorId)).count
+        let peopleWord = displayed == 1 ? "person" : "people"
+        var label = "\(displayed) \(peopleWord) visited"
+        if circleCount > 1 {
+            label += " · \(circleCount) from your circle"
+        }
+        return label
     }
 
     private var filterCounts: (all: Int, cafe: Int, restaurant: Int, stall: Int) {
@@ -1104,10 +1125,16 @@ struct ClusterPickerSheet: View {
         // whose counter hasn't been hydrated yet — better than showing 0.
         let visits = max(place.globalVisitCount, 0)
         let displayed = visits > 0 ? visits : place.posts.count
-        let friendCount = Set(place.posts.map(\.authorId)).count
-        if displayed == 1 { return "1 visit" }
-        if friendCount <= 1 { return "\(displayed) visits" }
-        return "\(displayed) visits · \(friendCount) friends"
+        // `displayed` is the GLOBAL visit count — anyone, friend or not. The
+        // posts here come from your feed (friends + you), so that subset is
+        // the people you actually know who've been.
+        let circleCount = Set(place.posts.map(\.authorId)).count
+        let peopleWord = displayed == 1 ? "person" : "people"
+        var label = "\(displayed) \(peopleWord) visited"
+        if circleCount > 1 {
+            label += " · \(circleCount) from your circle"
+        }
+        return label
     }
 }
 
@@ -1136,9 +1163,14 @@ struct FilterTabBar: View {
         }
     }
 
+    /// `.all` always shows; a type chip only appears when it has ≥ 1 place.
+    private var visibleTypes: [FilterType] {
+        FilterType.allCases.filter { $0 == .all || count(for: $0) > 0 }
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(FilterType.allCases, id: \.self) { type in
+            ForEach(visibleTypes, id: \.self) { type in
                 let count = count(for: type)
                 let isActive = active == type
                 let chipAccent = chipAccent(for: type)

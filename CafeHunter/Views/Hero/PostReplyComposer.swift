@@ -14,10 +14,12 @@ import UIKit
 /// button has room to land.
 ///
 /// Behavior:
-///   - Tap quick emoji  → optimistic `mirrorReply(text: emoji)` → light
-///                        haptic → terracotta pill outline flashes ~600ms
-///   - Type + tap send  → `mirrorReply(text: trimmed)` → medium haptic
-///                        → text clears → flash
+///   - Tap quick emoji  → optimistic `mirrorReaction(emoji:)` → light
+///                        haptic → terracotta pill outline flashes ~600ms.
+///                        One reaction per post: re-reacting overwrites the
+///                        single reaction bubble rather than re-notifying.
+///   - Type + tap send  → emoji-only text is a reaction (above); mixed text
+///                        is `mirrorReply(text:)` → medium haptic → clears
 ///   - Tap "+"          → presents shared `EmojiPickerSheet` → tap an
 ///                        emoji → composer prefills with it, user can
 ///                        add text or tap send-as-is
@@ -45,8 +47,8 @@ struct PostReplyComposer: View {
     @State private var burstOpacity:  Double  = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Three CafeHunter-flavored quick reactions. Mapped to one-emoji
-    /// `mirrorReply` writes — they aren't public reactions.
+    /// Three CafeHunter-flavored quick reactions. Each writes a single
+    /// overwriting reaction bubble into the DM thread via `mirrorReaction`.
     private let quickEmojis = ["❤️", "🔥", "☕"]
 
     private var canSend: Bool {
@@ -218,7 +220,10 @@ struct PostReplyComposer: View {
         // the same burst animation as the quick-emoji buttons. Light
         // haptic (matches the quick-tap vocabulary). Mixed text
         // sends keep the medium "I just sent words" haptic, no burst.
-        if trimmed.isAllEmoji {
+        // Emoji-only sends are reactions (one per post, overwriting); mixed
+        // text is a reply (a real, appendable message).
+        let asReaction = trimmed.isAllEmoji
+        if asReaction {
             let g = UIImpactFeedbackGenerator(style: .light)
             g.impactOccurred()
             playBurst(emoji: trimmed)
@@ -226,7 +231,7 @@ struct PostReplyComposer: View {
             let g = UIImpactFeedbackGenerator(style: .medium)
             g.impactOccurred()
         }
-        await send(payload: trimmed, restoreOnError: restore)
+        await send(payload: trimmed, restoreOnError: restore, asReaction: asReaction)
     }
 
     private func sendQuick(emoji: String) async {
@@ -234,7 +239,7 @@ struct PostReplyComposer: View {
         let g = UIImpactFeedbackGenerator(style: .light)
         g.impactOccurred()
         playBurst(emoji: emoji)
-        await send(payload: emoji, restoreOnError: nil)
+        await send(payload: emoji, restoreOnError: nil, asReaction: true)
     }
 
     /// 3-phase reaction animation:
@@ -304,19 +309,31 @@ struct PostReplyComposer: View {
         }
     }
 
-    private func send(payload: String, restoreOnError: String?) async {
+    private func send(payload: String, restoreOnError: String?, asReaction: Bool) async {
         isSending = true
         defer { isSending = false }
         errorMessage = nil
         do {
-            try await conversationService.mirrorReply(
-                toAuthor:     post.authorId,
-                text:         payload,
-                postId:       post.id,
-                postPreview:  post.caption,
-                postMediaURL: post.thumbnailURL ?? post.mediaURL,
-                postIsVideo:  post.isVideo
-            )
+            if asReaction {
+                // One overwriting reaction per post — see mirrorReaction.
+                try await conversationService.mirrorReaction(
+                    toAuthor:     post.authorId,
+                    emoji:        payload,
+                    postId:       post.id,
+                    postPreview:  post.caption,
+                    postMediaURL: post.thumbnailURL ?? post.mediaURL,
+                    postIsVideo:  post.isVideo
+                )
+            } else {
+                try await conversationService.mirrorReply(
+                    toAuthor:     post.authorId,
+                    text:         payload,
+                    postId:       post.id,
+                    postPreview:  post.caption,
+                    postMediaURL: post.thumbnailURL ?? post.mediaURL,
+                    postIsVideo:  post.isVideo
+                )
+            }
             flashSuccess()
         } catch {
             errorMessage = "Couldn't send"

@@ -39,6 +39,9 @@ final class PendingMessageQueue {
         var emoji: String?
         var postMediaURL: String?
         var postIsVideo: Bool = false
+        /// In-thread reply snapshot (see ChatMessage.replyToId/replyToText).
+        var replyToId: String?
+        var replyToText: String?
 
         /// Convert into a `ChatMessage` for rendering. The id is a UUID
         /// (not a Firestore doc id) so it doesn't collide with anything
@@ -54,7 +57,9 @@ final class PendingMessageQueue {
                 emoji: emoji,
                 postMediaURL: postMediaURL,
                 postIsVideo: postIsVideo,
-                createdAt: createdAt
+                createdAt: createdAt,
+                replyToId: replyToId,
+                replyToText: replyToText
             )
         }
     }
@@ -80,7 +85,9 @@ final class PendingMessageQueue {
         postPreview: String? = nil,
         emoji:    String? = nil,
         postMediaURL: String? = nil,
-        postIsVideo: Bool = false
+        postIsVideo: Bool = false,
+        replyToId: String? = nil,
+        replyToText: String? = nil
     ) {
         let p = Pending(
             id: UUID().uuidString,
@@ -92,7 +99,9 @@ final class PendingMessageQueue {
             postPreview: postPreview,
             emoji: emoji,
             postMediaURL: postMediaURL,
-            postIsVideo: postIsVideo
+            postIsVideo: postIsVideo,
+            replyToId: replyToId,
+            replyToText: replyToText
         )
         pending.append(p)
         Task { await sendWithRetries(pendingId: p.id, convId: convId, service: service) }
@@ -134,7 +143,9 @@ final class PendingMessageQueue {
                     postPreview:  snapshot.postPreview,
                     emoji:        snapshot.emoji,
                     postMediaURL: snapshot.postMediaURL,
-                    postIsVideo:  snapshot.postIsVideo
+                    postIsVideo:  snapshot.postIsVideo,
+                    replyToId:    snapshot.replyToId,
+                    replyToText:  snapshot.replyToText
                 )
                 pending.removeAll(where: { $0.id == pendingId })
                 // Clear the toast on first success after a failure.
@@ -175,7 +186,11 @@ extension ChatMessage {
         postMediaURL: String?,
         postIsVideo: Bool,
         createdAt: Date,
-        reactions: [String: String] = [:]
+        reactions: [String: String] = [:],
+        replyToId: String? = nil,
+        replyToText: String? = nil,
+        deleted: Bool = false,
+        postDeleted: Bool = false
     ) {
         self.id = id
         self.senderId = senderId
@@ -188,5 +203,9 @@ extension ChatMessage {
         self.postIsVideo = postIsVideo
         self.createdAt = createdAt
         self.reactions = reactions
+        self.replyToId = replyToId
+        self.replyToText = replyToText
+        self.deleted = deleted
+        self.postDeleted = postDeleted
     }
 }

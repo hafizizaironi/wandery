@@ -156,7 +156,9 @@ final class ConversationService {
         postPreview: String? = nil,
         emoji: String? = nil,
         postMediaURL: String? = nil,
-        postIsVideo: Bool = false
+        postIsVideo: Bool = false,
+        replyToId: String? = nil,
+        replyToText: String? = nil
     ) async throws {
         guard let me = uid else { throw ConversationError.notSignedIn }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -187,6 +189,8 @@ final class ConversationService {
         if let emoji { msgData["emoji"] = emoji }
         if let postMediaURL { msgData["postMediaURL"] = postMediaURL }
         if postIsVideo { msgData["postIsVideo"] = true }
+        if let replyToId { msgData["replyToId"] = replyToId }
+        if let replyToText { msgData["replyToText"] = replyToText }
 
         let batch = db.batch()
         batch.setData(msgData, forDocument: msgRef)
@@ -198,9 +202,15 @@ final class ConversationService {
         try await batch.commit()
     }
 
-    /// Convenience: ensures a conv exists with `otherUid`, then writes a
-    /// reaction-mirror message into it. No-op if `otherUid` is the caller
-    /// (you can't react-to-yourself in the conv sense).
+    /// Ensures a conv exists with `otherUid`, then writes (or quietly
+    /// updates) a single reaction-mirror message for this post. No-op if
+    /// `otherUid` is the caller.
+    ///
+    /// The message id is **deterministic** per (post, reactor) so re-reacting
+    /// OVERWRITES instead of appending: the thread shows exactly one reaction
+    /// bubble, and because `onNewMessage` fires on *create* only, the author
+    /// is notified just once — switching emoji is a silent in-place edit. This
+    /// is what keeps a tap-happy reactor from spamming the author's inbox.
     func mirrorReaction(
         toAuthor otherUid: String,
         emoji: String,
@@ -211,16 +221,43 @@ final class ConversationService {
     ) async throws {
         guard let me = uid, me != otherUid else { return }
         let convId = try await findOrCreateConversation(with: otherUid)
-        try await sendMessage(
-            convId: convId,
-            text: "",
-            kind: "reaction",
-            postId: postId,
-            postPreview: postPreview,
-            emoji: emoji,
-            postMediaURL: postMediaURL,
-            postIsVideo: postIsVideo
-        )
+        let convRef = db.collection("conversations").document(convId)
+        let msgRef = convRef.collection("messages").document("rxn_\(postId)_\(me)")
+
+        // Already reacted to this post → change just the emoji, in place.
+        // createdAt and the conversation recency are left untouched, so the
+        // bubble keeps its position and the inbox isn't re-surfaced; no push
+        // goes out (the rules permit a reactor to edit `emoji` on their own
+        // reaction message).
+        let existing = try await msgRef.getDocument()
+        if existing.exists {
+            try await msgRef.updateData(["emoji": emoji])
+            return
+        }
+
+        // First reaction to this post — create the bubble + bump recency so
+        // the author receives exactly one notification.
+        let preview = "Reacted \(emoji) to your post"
+        var msgData: [String: Any] = [
+            "senderId": me,
+            "text": "",
+            "kind": "reaction",
+            "emoji": emoji,
+            "postId": postId,
+            "createdAt": FieldValue.serverTimestamp(),
+        ]
+        if let postPreview { msgData["postPreview"] = postPreview }
+        if let postMediaURL { msgData["postMediaURL"] = postMediaURL }
+        if postIsVideo { msgData["postIsVideo"] = true }
+
+        let batch = db.batch()
+        batch.setData(msgData, forDocument: msgRef)
+        batch.updateData([
+            "lastMessage": preview,
+            "lastMessageSenderId": me,
+            "lastMessageAt": FieldValue.serverTimestamp(),
+        ], forDocument: convRef)
+        try await batch.commit()
     }
 
     /// Stamp `lastReadAt.<me> = now` on the conversation doc so the
@@ -259,6 +296,27 @@ final class ConversationService {
             try await ref.updateData([
                 "reactions.\(me)": FieldValue.delete(),
             ])
+        }
+    }
+
+    /// Soft-delete (unsend) one of MY messages. Hard deletes are disabled in
+    /// the rules (message immutability), so we flip a `deleted` tombstone and
+    /// blank the text; the bubble renders a "message deleted" placeholder.
+    /// If it was the conversation's latest message, the inbox preview is
+    /// refreshed too (without bumping recency).
+    func deleteMessage(convId: String, messageId: String) async throws {
+        guard uid != nil else { throw ConversationError.notSignedIn }
+        let convRef = db.collection("conversations").document(convId)
+        let msgRef = convRef.collection("messages").document(messageId)
+        try await msgRef.updateData([
+            "deleted": true,
+            "text": "",
+        ])
+        // Keep the inbox preview honest when the unsent message was the last
+        // one. Only touch `lastMessage` — leaving `lastMessageAt` alone so the
+        // conversation doesn't jump to the top of the inbox.
+        if activeMessages.last?.id == messageId {
+            try? await convRef.updateData(["lastMessage": "Message deleted"])
         }
     }
 

@@ -12,6 +12,10 @@ struct ProfileHomeView: View {
     var userPrivateService:  UserPrivateService
     /// True while this shell page is the visible tab (Map / Hero / Profile pager).
     var isTabActive: Bool
+    /// Map data + My Hunt open-state, owned by MainShellView so the overlay
+    /// can be hosted above the navbar.
+    var friendPlacesService: FriendPlacesService
+    @Binding var showMyHunt: Bool
     /// Fired when the user taps the per-row chat icon in the friends
     /// floating panel. MainShellView responds by presenting the chat
     /// fullScreenCover already opened to this friend's thread.
@@ -46,6 +50,11 @@ struct ProfileHomeView: View {
     /// under the Add Friend input. Owned at the view level so the
     /// suggestions survive across re-renders triggered by other state.
     @State private var friendSearch = FriendSearchModel()
+
+    /// Feed display style. Off = plain cards (default); on = polaroid frames.
+    /// Read by HeroPageView's feed + capture-review via the same key.
+    @AppStorage("feed.usePolaroidFrame") private var usePolaroidFrame = false
+
 
     // Long-press-on-avatar moderation surface state. The .contextMenu on
     // each FriendAvatarChip routes through these.
@@ -155,7 +164,6 @@ struct ProfileHomeView: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
                     heroHeader
-                    statsRow
                     if !socialService.incomingRequests.isEmpty {
                         friendRequestsSection
                     }
@@ -163,7 +171,17 @@ struct ProfileHomeView: View {
                         sentRequestsSection
                     }
                     friendsSection
-                    storySection
+                    // YOUR MAP — rolls up the old statsRow + storySection into a
+                    // tappable map that opens MyHunt.
+                    HuntingMapSection(
+                        myUid: authService.user?.uid ?? "",
+                        friendPlacesService: friendPlacesService,
+                        onTap: {
+                            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                                showMyHunt = true
+                            }
+                        }
+                    )
                     achievementsSection
                     settingsSection
                 }
@@ -1008,6 +1026,39 @@ struct ProfileHomeView: View {
             // server-side. The backfillMyStats Cloud Function is kept on
             // the server for support emergencies but no longer surfaced
             // in the UI.)
+
+            // Display preference: polaroid frames vs. plain feed cards.
+            // Local-only (@AppStorage); read by HeroPageView's feed +
+            // capture-review under the same "feed.usePolaroidFrame" key.
+            HStack(spacing: 10) {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.accentAction)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Polaroid frames")
+                        .font(.subheadline).bold()
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text("Frame feed photos like printed prints")
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+                Spacer()
+                Toggle("", isOn: $usePolaroidFrame)
+                    .labelsHidden()
+                    .tint(AppTheme.accentAction)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(AppTheme.textPrimary.opacity(0.04))
+            .clipShape(.rect(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Polaroid frames")
+            .accessibilityValue(usePolaroidFrame ? "On" : "Off")
 
             // Reviewer-required legal + support surfaces. App Store
             // Guideline 1.2 expects users to reach the developer from

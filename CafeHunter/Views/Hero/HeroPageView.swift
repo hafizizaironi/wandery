@@ -143,6 +143,11 @@ struct HeroPageView: View {
     @State private var reportTarget: ReportTarget?
     @State private var pendingBlockUid: String?
     @State private var pendingBlockTitle: String = ""
+    /// Long-press focus menu on a feed post (blurred backdrop + lifted post +
+    /// action card). Nil = not focused.
+    @State private var postFocus: PostFocus? = nil
+    /// Post pending a delete confirmation (own posts only).
+    @State private var pendingDeletePost: FriendPost? = nil
 
     // MARK: - Body
 
@@ -168,7 +173,8 @@ struct HeroPageView: View {
                             } else {
                                 ForEach(Array(socialService.feedPosts.enumerated()), id: \.element.id) { idx, post in
                                     heroFeedPostPage(geometry: geo, post: post, index: idx,
-                                                       isVideoActive: isActive && scenePhase == .active && heroCardID == .post(post.id))
+                                                       isVideoActive: isActive && scenePhase == .active && heroCardID == .post(post.id),
+                                                       videoLive: abs(idx - (currentFeedIndex ?? 0)) <= 1)
                                         .frame(height: pageH)
                                         .frame(maxWidth: .infinity)
                                         .id(HeroCardID.post(post.id))
@@ -313,6 +319,9 @@ struct HeroPageView: View {
             // Leaving the page exits "add another" mode, so returning to the
             // camera shows the review tray again rather than a stale capture state.
             isCapturingMore = false
+            // Warm the disk cache for the post we're on + the next couple, so
+            // the upcoming video is local (instant) by the time it's swiped to.
+            prefetchFeedVideos()
         }
         .onChange(of: isReviewingCapture) { _, _ in
             // Review covers the viewfinder, so stop the session; leaving review
@@ -331,10 +340,15 @@ struct HeroPageView: View {
         .modifier(FeedModerationModifier(
             reportTarget: $reportTarget,
             pendingBlockUid: $pendingBlockUid,
-            pendingBlockTitle: pendingBlockTitle,
+            pendingBlockTitle: $pendingBlockTitle,
+            postFocus: $postFocus,
+            pendingDeletePost: $pendingDeletePost,
             socialService: socialService
         ))
         .onChange(of: socialService.feedPosts.count) { _, _ in
+            // Feed (re)loaded — prefetch the first videos so the top of the
+            // feed is ready before the user scrolls into it.
+            prefetchFeedVideos()
             guard let current = heroCardID else { return }
             switch current {
             case .post(let id) where !socialService.feedPosts.contains(where: { $0.id == id }):
@@ -360,6 +374,11 @@ struct HeroPageView: View {
             }
             // Clear the binding so the same id can fire again later.
             pendingPostJumpId = nil
+        }
+        .task {
+            // Initial warm-up in case the feed was already loaded before this
+            // view appeared (listener delivered posts while on another tab).
+            prefetchFeedVideos()
         }
     }
 
@@ -697,28 +716,28 @@ struct HeroPageView: View {
         let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
         let side = HeroCameraLayout.viewfinderSide(in: geo)
         return VStack(spacing: HeroCameraLayout.viewfinderShutterSpacing) {
-            PolaroidFrame(
-                username: nil,
-                date: nil,
-                placeName: nil,
-                caption: nil,
-                tilt: 0,
-                showTape: false,
-                photoSide: side
-            ) {
-                RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
-                    .fill(AppTheme.surfacePrimary)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
-                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            Group {
+                if usePolaroidFrame {
+                    PolaroidFrame(
+                        username: nil,
+                        date: nil,
+                        placeName: nil,
+                        caption: nil,
+                        tilt: 0,
+                        showTape: false,
+                        photoSide: side
+                    ) {
+                        emptyFeedPlaceholder
                     }
-                    .overlay {
-                        Text("No posts yet.\nShare a moment from the camera.")
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .multilineTextAlignment(.center)
-                            .padding(24)
+                } else {
+                    PlainFeedFrame(username: nil, photoSide: side) {
+                        emptyFeedPlaceholder
+                    } topLeading: {
+                        EmptyView()
+                    } bottomCenter: {
+                        EmptyView()
                     }
+                }
             }
             .frame(width: side, height: side)
             .frame(maxWidth: .infinity)
@@ -731,7 +750,47 @@ struct HeroPageView: View {
         .padding(.bottom, bottomChrome)
     }
 
-    private func heroFeedPostPage(geometry geo: GeometryProxy, post: FriendPost, index: Int, isVideoActive: Bool) -> some View {
+    /// Empty-feed placeholder square, shared by both card styles.
+    private var emptyFeedPlaceholder: some View {
+        RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
+            .fill(AppTheme.surfacePrimary)
+            .overlay {
+                RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            }
+            .overlay {
+                Text("No posts yet.\nShare a moment from the camera.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(24)
+            }
+    }
+
+    /// Index of the currently-shown feed post (nil while on camera / empty).
+    private var currentFeedIndex: Int? {
+        guard case .post(let id)? = heroCardID else { return nil }
+        return socialService.feedPosts.firstIndex(where: { $0.id == id })
+    }
+
+    /// Warm the on-disk `VideoCache` for the current + next two posts' videos
+    /// so they play from local disk (instant) by the time they're swiped to.
+    /// Already-cached / in-flight URLs are no-ops (deduped in the cache).
+    private func prefetchFeedVideos() {
+        let posts = socialService.feedPosts
+        guard !posts.isEmpty else { return }
+        let start = currentFeedIndex ?? 0
+        let end = min(start + 2, posts.count - 1)
+        guard start <= end else { return }
+        for i in start...end {
+            for media in posts[i].media where media.isVideo {
+                guard let url = URL(string: media.url) else { continue }
+                Task.detached(priority: .utility) { await VideoCache.shared.prefetch(url) }
+            }
+        }
+    }
+
+    private func heroFeedPostPage(geometry geo: GeometryProxy, post: FriendPost, index: Int, isVideoActive: Bool, videoLive: Bool) -> some View {
         let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
         let side = HeroCameraLayout.viewfinderSide(in: geo)
         // Total reserved height below the card stays identical to the camera layout
@@ -745,41 +804,27 @@ struct HeroPageView: View {
                 index: index,
                 isVideoActive: isVideoActive,
                 side: side,
-                onPlaceTap: { placeId in onJumpToPlace(placeId) }
+                onPlaceTap: { placeId in onJumpToPlace(placeId) },
+                // Off-window posts show the poster (no live player) so only the
+                // current ±1 cards spin up AVPlayers — caps memory/bandwidth and
+                // lets the prefetch actually win.
+                staticPreview: !videoLive
             )
-            // Long-press surfaces moderation actions — App Store
-            // Guideline 1.2 requires report + block affordances on
-            // user-generated content. Hidden for your own posts.
-            .contextMenu {
-                if post.authorId != myUid {
-                    Button {
-                        reportTarget = ReportTarget(type: .post, targetId: post.id)
-                    } label: {
-                        Label("Report post", systemImage: "exclamationmark.triangle")
-                    }
-                    Button {
-                        reportTarget = ReportTarget(type: .user, targetId: post.authorId)
-                    } label: {
-                        Label("Report user", systemImage: "person.crop.circle.badge.exclamationmark")
-                    }
-                    Button(role: .destructive) {
-                        pendingBlockUid = post.authorId
-                        pendingBlockTitle = post.authorUsername
-                    } label: {
-                        Label("Block \(post.authorUsername)", systemImage: "hand.raised")
-                    }
-                } else if post.discoverable {
-                    // Own post that the classifier marked safe — let
-                    // the author retract it from Discover without
-                    // deleting the post. Sets discoverable=false; the
-                    // post stays visible to friends.
-                    Button(role: .destructive) {
-                        Task {
-                            try? await socialService.setDiscoverable(postId: post.id, false)
-                        }
-                    } label: {
-                        Label("Hide from Discover", systemImage: "eye.slash")
-                    }
+            // Long-press → focus menu (blurred backdrop + lifted post +
+            // action card). Report/Block for others' posts (App Store
+            // Guideline 1.2), Delete + Hide-from-Discover for your own.
+            .postFocusLongPress { frame in
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                // Low damping → the post overshoots and settles, giving a
+                // springy "bounce" that lands with the haptic.
+                withAnimation(.spring(response: 0.38, dampingFraction: 0.58)) {
+                    postFocus = PostFocus(
+                        post: post,
+                        index: index,
+                        side: side,
+                        anchor: frame,
+                        isMine: post.authorId == myUid
+                    )
                 }
             }
 
@@ -855,50 +900,71 @@ struct HeroPageView: View {
         }
     }
 
+    /// Display preference (Profile → "Polaroid frames"). Off = plain cards.
+    /// Shared across the feed + this review screen via the same AppStorage key.
+    @AppStorage("feed.usePolaroidFrame") private var usePolaroidFrame = false
+
+    @ViewBuilder
     private func captureReviewSquare(side: CGFloat) -> some View {
-        PolaroidFrame(
-            username: "@\(socialService.profile?.username ?? "you")",
-            date: Date(),
-            photoSide: side
-        ) {
-            ZStack {
-                Group {
-                    if drafts.indices.contains(currentDraftIndex) {
-                        switch drafts[currentDraftIndex].source {
-                        case .image(let img):
-                            Image(uiImage: img)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        case .video(let url):
-                            SquareVideoFillView(url: url, isPlaying: true)
-                        }
-                    } else {
-                        Color.black
+        let username = "@\(socialService.profile?.username ?? "you")"
+        if usePolaroidFrame {
+            PolaroidFrame(username: username, date: Date(), photoSide: side) {
+                captureReviewMedia
+            } topLeading: {
+                placeTagPill
+            } bottomCenter: {
+                captionPillBody
+            }
+            .frame(width: side, height: side)
+            .frame(maxWidth: .infinity)
+        } else {
+            PlainFeedFrame(username: username, photoSide: side) {
+                captureReviewMedia
+            } topLeading: {
+                placeTagPill
+            } bottomCenter: {
+                captionPillBody
+            }
+            .frame(width: side, height: side)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// The captured photo/video preview (+ tap-to-dismiss + processing
+    /// spinner). Shared by both card styles in `captureReviewSquare`.
+    @ViewBuilder
+    private var captureReviewMedia: some View {
+        ZStack {
+            Group {
+                if drafts.indices.contains(currentDraftIndex) {
+                    switch drafts[currentDraftIndex].source {
+                    case .image(let img):
+                        Image(uiImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    case .video(let url):
+                        SquareVideoFillView(url: url, isPlaying: true)
                     }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                // Tap-to-dismiss layer: only active while keyboard is up so
-                // it doesn't block normal interaction.
-                if captionFocused {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { captionFocused = false }
-                }
-
-                if camera.isProcessingVideo {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(1.15)
+                } else {
+                    Color.black
                 }
             }
-        } topLeading: {
-            placeTagPill
-        } bottomCenter: {
-            captionPillBody
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // Tap-to-dismiss layer: only active while keyboard is up so
+            // it doesn't block normal interaction.
+            if captionFocused {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { captionFocused = false }
+            }
+
+            if camera.isProcessingVideo {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.15)
+            }
         }
-        .frame(width: side, height: side)
-        .frame(maxWidth: .infinity)
     }
 
     private var placeTagPill: some View {
@@ -1510,6 +1576,16 @@ private struct FeedPolaroidCard: View {
     let isVideoActive: Bool
     let side: CGFloat
     var onPlaceTap: (String) -> Void = { _ in }
+    /// Static rendering (e.g. the long-press focus overlay): videos show their
+    /// poster thumbnail + a play badge instead of a live player, which would
+    /// otherwise sit blank until the first frame decodes.
+    var staticPreview: Bool = false
+
+    /// Display preference (Profile → "Polaroid frames"). Off = plain cards.
+    @AppStorage("feed.usePolaroidFrame") private var usePolaroidFrame = false
+    /// Global feed-video mute, shared across all posts (like IG/TikTok).
+    /// Defaults to muted/silent; the speaker button toggles it.
+    @AppStorage("feed.videoMuted") private var videoMuted = true
 
     @State private var topIndex = 0
     @State private var dragOffset: CGSize = .zero
@@ -1556,36 +1632,65 @@ private struct FeedPolaroidCard: View {
     @ViewBuilder
     private func polaroid(for item: PostMedia?, rel: Int) -> some View {
         let isTop = rel == 0
-        PolaroidFrame(
-            username: "@\(post.authorUsername)",
-            date: post.createdAt,
-            tilt: Self.tilt(seed: item?.url ?? post.id),
-            photoSide: side
-        ) {
-            mediaCell(item, isActive: isVideoActive && isTop)
-        } topLeading: {
-            if let name = item?.placeName, let pid = item?.placeId {
-                Button {
-                    if isTop, !dragHappened { onPlaceTap(pid) }
-                } label: {
-                    placePill(name: name)
-                }
-                .buttonStyle(.plain)
-                .allowsHitTesting(isTop)
+        if usePolaroidFrame {
+            PolaroidFrame(
+                username: "@\(post.authorUsername)",
+                date: post.createdAt,
+                tilt: Self.tilt(seed: item?.url ?? post.id),
+                photoSide: side
+            ) {
+                mediaCell(item, isActive: isVideoActive && isTop)
+            } topLeading: {
+                placeOverlay(for: item, isTop: isTop)
+            } bottomCenter: {
+                captionOverlay(for: item)
             }
-        } bottomCenter: {
-            if let cap = item?.caption, !cap.isEmpty {
-                captionPill(text: cap)
+        } else {
+            PlainFeedFrame(
+                username: "@\(post.authorUsername)",
+                photoSide: side
+            ) {
+                mediaCell(item, isActive: isVideoActive && isTop)
+            } topLeading: {
+                placeOverlay(for: item, isTop: isTop)
+            } bottomCenter: {
+                captionOverlay(for: item)
             }
+        }
+    }
+
+    /// Tappable location pill — shared by both card styles. Only the top
+    /// card in a multi-media stack accepts the tap (jump-to-place).
+    @ViewBuilder
+    private func placeOverlay(for item: PostMedia?, isTop: Bool) -> some View {
+        if let name = item?.placeName, let pid = item?.placeId {
+            Button {
+                if isTop, !dragHappened { onPlaceTap(pid) }
+            } label: {
+                placePill(name: name)
+            }
+            .buttonStyle(.plain)
+            .allowsHitTesting(isTop)
+        }
+    }
+
+    /// Caption pill — shared by both card styles.
+    @ViewBuilder
+    private func captionOverlay(for item: PostMedia?) -> some View {
+        if let cap = item?.caption, !cap.isEmpty {
+            captionPill(text: cap)
         }
     }
 
     @ViewBuilder
     private func mediaCell(_ item: PostMedia?, isActive: Bool) -> some View {
         Group {
-            if let item, !item.url.isEmpty, item.isVideo, let u = URL(string: item.url) {
-                SquareVideoFillView(url: u, isPlaying: isActive)
-            } else if let item, !item.url.isEmpty, let u = URL(string: item.url) {
+            if let item, !item.url.isEmpty, item.isVideo, !staticPreview, let u = URL(string: item.url) {
+                SquareVideoFillView(url: u, isPlaying: isActive, muted: videoMuted)
+                    .overlay(alignment: .bottomTrailing) { muteButton.padding(10) }
+            } else if let item, !item.displayURL.isEmpty, let u = URL(string: item.displayURL) {
+                // `displayURL` is the image URL for photos and the poster
+                // thumbnail for videos — so static video previews show a frame.
                 CachedAsyncImage(url: u) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
@@ -1594,12 +1699,44 @@ private struct FeedPolaroidCard: View {
                     @unknown default: Color.gray.opacity(0.2)
                     }
                 }
+                .overlay {
+                    if staticPreview, item.isVideo { videoBadge }
+                }
             } else {
                 placeholder
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Opaque backing in preview mode so a not-yet-loaded poster can't let
+        // the focus blur show through the photo area.
+        .background(staticPreview ? AppTheme.surfacePrimary : Color.clear)
         .clipped()
+    }
+
+    private var videoBadge: some View {
+        Image(systemName: "play.fill")
+            .font(.title2).bold()
+            .foregroundStyle(.white)
+            .padding(12)
+            .background(Color.black.opacity(0.5), in: Circle())
+    }
+
+    /// Mute/unmute toggle for feed videos. Flips the shared `videoMuted`
+    /// preference, so all videos follow it. A Button so its tap is consumed
+    /// and doesn't trip the card's swipe / long-press gestures.
+    private var muteButton: some View {
+        Button {
+            videoMuted.toggle()
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } label: {
+            Image(systemName: videoMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Color.black.opacity(0.45), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(videoMuted ? "Unmute video" : "Mute video")
     }
 
     private var placeholder: some View {
@@ -1627,20 +1764,25 @@ private struct FeedPolaroidCard: View {
                 .lineLimit(1)
         }
         .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
-        .liquidGlassChrome(in: Capsule())
+        // Thin frosted glass — sizes to the content at its frame, so it stays
+        // uniform across posts. (`.glassEffect` renders inconsistently inside
+        // the polaroid's per-post tilt, which is what made some pills balloon.)
+        .background(.ultraThinMaterial, in: Capsule())
     }
 
     private func captionPill(text: String) -> some View {
         Text(text)
             .font(.footnote).fontWeight(.semibold)
             .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
             .lineLimit(2)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .liquidGlassChrome(in: Capsule())
+            .background(.ultraThinMaterial, in: Capsule())
     }
 
     private var swipeGesture: some Gesture {
@@ -1747,11 +1889,28 @@ private struct PolaroidExitTransform: ViewModifier {
 private struct FeedModerationModifier: ViewModifier {
     @Binding var reportTarget: ReportTarget?
     @Binding var pendingBlockUid: String?
-    let pendingBlockTitle: String
+    @Binding var pendingBlockTitle: String
+    @Binding var postFocus: PostFocus?
+    @Binding var pendingDeletePost: FriendPost?
     var socialService: SocialService
 
     func body(content: Content) -> some View {
         content
+            .overlay {
+                if let focus = postFocus {
+                    PostFocusOverlay(
+                        focus: focus,
+                        onDismiss: dismissFocus,
+                        onReportPost: { withFocusedPost { reportTarget = ReportTarget(type: .post, targetId: $0.id) } },
+                        onReportUser: { withFocusedPost { reportTarget = ReportTarget(type: .user, targetId: $0.authorId) } },
+                        onBlock: { withFocusedPost { pendingBlockUid = $0.authorId; pendingBlockTitle = $0.authorUsername } },
+                        onDelete: { withFocusedPost { pendingDeletePost = $0 } },
+                        onHideDiscover: { withFocusedPost { p in
+                            Task { try? await socialService.setDiscoverable(postId: p.id, false) }
+                        } }
+                    )
+                }
+            }
             .alert(
                 "Block \(pendingBlockTitle)?",
                 isPresented: Binding(
@@ -1770,6 +1929,22 @@ private struct FeedModerationModifier: ViewModifier {
             } message: { _ in
                 Text("They'll be removed from your friends, can't message you, and won't appear in your feed.")
             }
+            .alert(
+                "Delete post?",
+                isPresented: Binding(
+                    get: { pendingDeletePost != nil },
+                    set: { if !$0 { pendingDeletePost = nil } }
+                ),
+                presenting: pendingDeletePost
+            ) { post in
+                Button("Cancel", role: .cancel) { pendingDeletePost = nil }
+                Button("Delete", role: .destructive) {
+                    Task { try? await socialService.deletePost(post) }
+                    pendingDeletePost = nil
+                }
+            } message: { _ in
+                Text("This permanently deletes the post and its photo or video. This can't be undone.")
+            }
             .sheet(item: $reportTarget) { target in
                 ReportSheet(
                     targetType: target.type,
@@ -1778,6 +1953,165 @@ private struct FeedModerationModifier: ViewModifier {
                 )
                 .presentationDetents([.medium, .large])
             }
+    }
+
+    /// Runs `action` with the focused post, then closes the focus overlay.
+    /// Centralizes the "act + dismiss" pattern every menu row needs.
+    private func withFocusedPost(_ action: (FriendPost) -> Void) {
+        guard let post = postFocus?.post else { return }
+        action(post)
+        dismissFocus()
+    }
+
+    private func dismissFocus() {
+        withAnimation(.easeOut(duration: 0.18)) { postFocus = nil }
+    }
+}
+
+// MARK: - Post focus (long-press) menu
+
+/// Captured state for the long-press focus overlay on a feed post.
+struct PostFocus: Identifiable {
+    let id = UUID()
+    let post:   FriendPost
+    let index:  Int
+    let side:   CGFloat
+    let anchor: CGRect   // the post card's frame in global coordinates
+    let isMine: Bool
+}
+
+extension View {
+    /// Long-press a feed post to open the focus menu. Tracks the card's
+    /// global frame so the overlay can lift it in place, then fires
+    /// `onActivate(frame)` on a long hold. Simultaneous so it coexists with
+    /// the card's multi-media swipe and vertical paging.
+    func postFocusLongPress(onActivate: @escaping (CGRect) -> Void) -> some View {
+        modifier(PostFocusLongPressModifier(onActivate: onActivate))
+    }
+}
+
+private struct PostFocusLongPressModifier: ViewModifier {
+    var onActivate: (CGRect) -> Void
+    @State private var frame: CGRect = .zero
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+                    onActivate(frame)
+                }
+            )
+    }
+}
+
+/// Full-screen focus overlay: blurs the feed, lifts the pressed post in
+/// place (crisp, over the blur), and shows the action card below it. Mirrors
+/// the chat long-press menu. Hosted by `FeedModerationModifier`.
+private struct PostFocusOverlay: View {
+    let focus: PostFocus
+    var onDismiss:      () -> Void
+    var onReportPost:   () -> Void
+    var onReportUser:   () -> Void
+    var onBlock:        () -> Void
+    var onDelete:       () -> Void
+    var onHideDiscover: () -> Void
+
+    @State private var cardSize: CGSize = .zero
+    /// Drives the lift "pop": 1.0 → overshoot → settle, so the post bounces
+    /// when it appears (staying ≥ 1.0 the whole time, so it never shrinks
+    /// below the original and lets the blur peek around the edges).
+    @State private var pop: CGFloat = 1.0
+    private let gap: CGFloat = 14
+    private let bottomSafe: CGFloat = 44
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .overlay(Color.black.opacity(0.1))
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { onDismiss() }
+                    .transition(.opacity)
+
+                // The pressed post, kept crisp over the blur. Cache-seeded so
+                // it's opaque from frame 1, and inserted with `.identity` (no
+                // fade) so it covers the original instantly — the blur can't
+                // bleed through. `onAppear` then springs a visible pop via
+                // `scaleEffect`, kept ≥ 1.0 so the post never shrinks below the
+                // original. Removal fades as the blur clears.
+                FeedPolaroidCard(post: focus.post, index: focus.index, isVideoActive: false, side: focus.side, staticPreview: true)
+                    .frame(width: focus.side, height: focus.side)
+                    .scaleEffect(pop)
+                    .position(x: focus.anchor.midX, y: focus.anchor.midY)
+                    .allowsHitTesting(false)
+                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
+                    .onAppear {
+                        withAnimation(.spring(response: 0.16, dampingFraction: 0.6)) { pop = 1.06 }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            withAnimation(.spring(response: 0.36, dampingFraction: 0.45)) { pop = 1.0 }
+                        }
+                    }
+
+                actionCard
+                    .fixedSize()
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { cardSize = $0 }
+                    .position(cardPosition(in: geo.size))
+                    .opacity(cardSize == .zero ? 0 : 1)
+                    .transition(.scale(scale: 0.85, anchor: .top).combined(with: .opacity))
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    /// Centered horizontally, just below the post; clamped above the bottom.
+    private func cardPosition(in screen: CGSize) -> CGPoint {
+        let y = focus.anchor.maxY + gap + cardSize.height / 2
+        let maxY = screen.height - bottomSafe - cardSize.height / 2
+        return CGPoint(x: screen.width / 2, y: min(y, maxY))
+    }
+
+    private var actionCard: some View {
+        VStack(spacing: 0) {
+            if focus.isMine {
+                cardRow("Delete post", "trash", destructive: true, action: onDelete)
+                if focus.post.discoverable {
+                    Divider().opacity(0.5)
+                    cardRow("Hide from Discover", "eye.slash", destructive: false, action: onHideDiscover)
+                }
+            } else {
+                cardRow("Report post", "exclamationmark.triangle", destructive: false, action: onReportPost)
+                Divider().opacity(0.5)
+                cardRow("Report user", "person.crop.circle.badge.exclamationmark", destructive: false, action: onReportUser)
+                Divider().opacity(0.5)
+                cardRow("Block @\(focus.post.authorUsername)", "hand.raised", destructive: true, action: onBlock)
+            }
+        }
+        .frame(width: 260)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 16, y: 6)
+    }
+
+    private func cardRow(_ label: String, _ icon: String, destructive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(label).font(.body).lineLimit(1)
+                Spacer(minLength: 12)
+                Image(systemName: icon).font(.body)
+            }
+            .foregroundStyle(destructive ? AppTheme.errorRed : AppTheme.textPrimary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 }
 

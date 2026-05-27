@@ -261,10 +261,27 @@ struct ChatMessage: Identifiable, Equatable {
     /// for any message older than 2026-05; new messages also start
     /// empty and only materialise the field after a first reaction.
     let reactions: [String: String]
+    /// In-thread reply ("swipe/long-press → Reply"). `replyToId` is the
+    /// replied-to message's doc id; `replyToText` is a snippet snapshot
+    /// stamped at write time so the quoted header renders without a fetch.
+    /// Both nil for non-reply messages.
+    let replyToId: String?
+    let replyToText: String?
+    /// Soft-delete tombstone (unsend). The sender flips this true; the
+    /// bubble then renders a "message deleted" placeholder. Hard deletes
+    /// stay disabled in the rules, so this is the only unsend path.
+    let deleted: Bool
+    /// True once the referenced post has been deleted by its author — the
+    /// `onPostDelete` function sets this (and strips `postMediaURL`) on every
+    /// reply/reaction mirror, so the chat stops showing the dead image. The
+    /// reply text stays; only the post preview becomes "no longer available".
+    let postDeleted: Bool
 
     var isPostReaction: Bool { kind == "reaction" }
     var isPostReply: Bool { kind == "reply" }
     var referencesPost: Bool { postId != nil && (isPostReaction || isPostReply) }
+    /// True for an in-thread message reply (distinct from a post mirror).
+    var isMessageReply: Bool { replyToId != nil }
 
     init?(document: QueryDocumentSnapshot) {
         let d = document.data()
@@ -280,6 +297,10 @@ struct ChatMessage: Identifiable, Equatable {
         postMediaURL = d["postMediaURL"] as? String
         postIsVideo = d["postIsVideo"] as? Bool ?? false
         reactions = d["reactions"] as? [String: String] ?? [:]
+        replyToId = d["replyToId"] as? String
+        replyToText = d["replyToText"] as? String
+        deleted = d["deleted"] as? Bool ?? false
+        postDeleted = d["postDeleted"] as? Bool ?? false
         if let ts = d["createdAt"] as? Timestamp {
             createdAt = ts.dateValue()
         } else {

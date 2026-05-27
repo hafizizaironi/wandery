@@ -1,5 +1,7 @@
 import Foundation
 import FirebaseFirestore
+import CoreLocation
+import MapKit
 
 /// Aggregated representation of one tagged place + all the friend posts at it.
 /// Drives both the map annotation layer and the place-detail card stack.
@@ -17,6 +19,13 @@ struct FriendPlace: Identifiable, Equatable {
     var globalVisitCount: Int = 0
     /// Total engagement (reactions + replies) on tagged posts at this place.
     var globalEngagementCount: Int = 0
+    /// Formatted address snapshot (newer places store this at creation); nil
+    /// for older places, which get a reverse-geocoded `cityName` instead.
+    var address: String? = nil
+    /// City/locality for the My Hunt legend, counts, and place rows. Derived
+    /// from `address` when present, otherwise reverse-geocoded from lat/lng
+    /// and filled in progressively (see `resolveMissingCities`).
+    var cityName: String? = nil
 
     var mostRecent: FriendPost? { posts.first }
 }
@@ -32,6 +41,7 @@ private struct FetchedPlaceFields: Sendable {
     let geohash: String
     let source: String
     let googlePlaceId: String?
+    let address: String?
     let globalVisitCount: Int
     let globalEngagementCount: Int
     let lastVisitedAt: Date?
@@ -52,6 +62,10 @@ final class FriendPlacesService {
     /// (`globalVisitCount`, `globalEngagementCount`) without re-fetching
     /// every place on every call.
     private var lastSeenPostByPlace: [String: String] = [:]
+    /// Reverse-geocoded city per place id, so we geocode each place at most
+    /// once per session. Places whose doc carries an `address` skip this.
+    private var cityCache: [String: String] = [:]
+    private var cityResolveTask: Task<Void, Never>?
 
     private let db = Firestore.firestore()
 
@@ -144,6 +158,7 @@ final class FriendPlacesService {
                                 geohash: (data["geohash"] as? String) ?? "",
                                 source: (data["source"] as? String) ?? "google",
                                 googlePlaceId: data["googlePlaceId"] as? String,
+                                address: data["address"] as? String,
                                 globalVisitCount: (data["globalVisitCount"] as? Int) ?? 0,
                                 globalEngagementCount: (data["globalEngagementCount"] as? Int) ?? 0,
                                 lastVisitedAt: (data["lastVisitedAt"] as? Timestamp)?.dateValue(),
@@ -170,6 +185,7 @@ final class FriendPlacesService {
                         place.geohash = fields.geohash
                         place.source = fields.source
                         place.googlePlaceId = fields.googlePlaceId
+                        place.address = fields.address
                         place.globalVisitCount = fields.globalVisitCount
                         place.globalEngagementCount = fields.globalEngagementCount
                         place.lastVisitedAt = fields.lastVisitedAt
@@ -198,6 +214,9 @@ final class FriendPlacesService {
                 return nil
             }
             let sorted = postsAtPlace.sorted { $0.createdAt > $1.createdAt }
+            // City: parse the stored address when present (no network),
+            // else use a previously reverse-geocoded result if we have one.
+            let city = p.address.flatMap { Self.city(fromAddress: $0) } ?? cityCache[placeId]
             return FriendPlace(
                 id: placeId,
                 name: p.name,
@@ -206,7 +225,9 @@ final class FriendPlacesService {
                 lng: p.lng,
                 posts: sorted,
                 globalVisitCount: p.globalVisitCount,
-                globalEngagementCount: p.globalEngagementCount
+                globalEngagementCount: p.globalEngagementCount,
+                address: p.address,
+                cityName: city
             )
         }
         #if DEBUG
@@ -217,5 +238,64 @@ final class FriendPlacesService {
         places = assembled.sorted {
             ($0.mostRecent?.createdAt ?? .distantPast) > ($1.mostRecent?.createdAt ?? .distantPast)
         }
+
+        // Fill in any still-missing city labels by reverse-geocoding lat/lng.
+        resolveMissingCities()
+    }
+
+    // MARK: - City resolution
+
+    /// Reverse-geocode places that still have no `cityName` (older places with
+    /// no stored address), one at a time and cached, then patch them into
+    /// `places` so the UI updates progressively. Reuses the same
+    /// `MKReverseGeocodingRequest` path as `LoginView.refreshLocalityHint`.
+    private func resolveMissingCities() {
+        let pending = places.compactMap { place -> (id: String, lat: Double, lng: Double)? in
+            guard place.cityName == nil, cityCache[place.id] == nil else { return nil }
+            return (place.id, place.lat, place.lng)
+        }
+        guard !pending.isEmpty else { return }
+
+        cityResolveTask?.cancel()
+        cityResolveTask = Task { @MainActor [weak self] in
+            for item in pending {
+                if Task.isCancelled { return }
+                guard let city = await Self.reverseGeocodeCity(lat: item.lat, lng: item.lng) else {
+                    try? await Task.sleep(for: .milliseconds(120))
+                    continue
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.cityCache[item.id] = city
+                if let i = self.places.firstIndex(where: { $0.id == item.id }) {
+                    self.places[i].cityName = city
+                }
+                // Gentle throttle to stay under MapKit's geocoding rate limit.
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+        }
+    }
+
+    private static func reverseGeocodeCity(lat: Double, lng: Double) async -> String? {
+        let location = CLLocation(latitude: lat, longitude: lng)
+        guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
+        let items = (try? await request.mapItems) ?? []
+        let city = items.first?.addressRepresentations?.cityName
+        return (city?.isEmpty == false) ? city : nil
+    }
+
+    /// Locality from a comma-separated address. Tuned for the common
+    /// "…, <postal> <City>, <State>, <Country>" shape: take the
+    /// third-from-last component and strip a leading postal code. Returns nil
+    /// for short/ambiguous addresses so the caller reverse-geocodes instead.
+    static func city(fromAddress address: String) -> String? {
+        let parts = address
+            .components(separatedBy: ", ")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard parts.count >= 3 else { return nil }
+        let candidate = parts[parts.count - 3]
+        let city = candidate.drop(while: { $0.isNumber || $0 == " " })
+            .trimmingCharacters(in: .whitespaces)
+        return city.isEmpty ? nil : city
     }
 }

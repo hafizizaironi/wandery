@@ -1,4 +1,5 @@
 import SwiftUI
+import FirebaseAuth
 
 // Page order matches the arc's left-to-right tab positions:
 //   Map (t=0.15, left) | Hero (t=0.50, center) | Profile (t=0.85, right)
@@ -61,6 +62,13 @@ struct MainShellView: View {
     @State private var showFriendFindSheet = false
     @State private var didEvaluateContactsThisLaunch = false
 
+    /// "My Hunt" pop-out. Owned here (above the arc navbar) so the overlay
+    /// covers the whole screen — it scale-pops in from the profile via the
+    /// transition below. `friendPlacesService` also lives here so both the
+    /// profile card and the overlay read the same data.
+    @State private var showMyHunt = false
+    @State private var friendPlacesService = FriendPlacesService()
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -74,6 +82,7 @@ struct MainShellView: View {
                         authService: authService,
                         firestoreService: firestoreService,
                         socialService: socialService,
+                        isActive: selectedPage == .map,
                         pendingPlaceJumpId: $pendingMapJumpPlaceId
                     )
                         .frame(width: geo.size.width, height: geo.size.height)
@@ -100,6 +109,8 @@ struct MainShellView: View {
                         socialService:       socialService,
                         userPrivateService:  userPrivateService,
                         isTabActive:         abs(pageProgress - 2) < 0.5,
+                        friendPlacesService: friendPlacesService,
+                        showMyHunt:          $showMyHunt,
                         onMessageFriend:     { row in
                             chatPresentation = .thread(
                                 otherUid: row.id,
@@ -111,6 +122,12 @@ struct MainShellView: View {
                     .frame(width: geo.size.width, height: geo.size.height)
                     .offset(x: (2 - pageProgress) * geo.size.width)
                     .allowsHitTesting(abs(pageProgress - 2) < 0.5)
+                    // Push the profile back while My Hunt is open (iOS depth).
+                    // No `.animation(value:)` here — that breaks the profile's
+                    // ScrollView gestures. The toggles run inside `withAnimation`
+                    // (onTap / onClose), so these still animate.
+                    .scaleEffect(showMyHunt ? 0.96 : 1)
+                    .brightness(showMyHunt ? -0.08 : 0)
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
@@ -122,6 +139,25 @@ struct MainShellView: View {
                 // each page keep working. Uses `simultaneousGesture`
                 // so it runs alongside (not instead of) child gestures.
                 .simultaneousGesture(edgeDragGesture(in: geo.size))
+
+                // ── My Hunt overlay ── zIndex above the navbar so it covers
+                // everything; scale-pops in via the transition below.
+                if showMyHunt {
+                    MyHuntView(
+                        myUid: authService.user?.uid ?? "",
+                        friendPlacesService: friendPlacesService,
+                        username: socialService.profile?.username,
+                        joinedAt: authService.user?.metadata.creationDate,
+                        topInset: geo.safeAreaInsets.top,
+                        onClose: {
+                            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                                showMyHunt = false
+                            }
+                        }
+                    )
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
+                    .zIndex(20)
+                }
 
                 // ── Arc navbar ──
                 // Height = arc region + bottom safe area (home indicator).
@@ -135,6 +171,10 @@ struct MainShellView: View {
             }
         }
         .ignoresSafeArea()
+        // Hydrate the My Hunt map from the same feed posts the Map tab uses.
+        .task(id: socialService.feedPosts.map(\.id)) {
+            await friendPlacesService.refresh(from: socialService.feedPosts)
+        }
         .onChange(of: pageProgress) { _, value in
             let snapped = ShellPage(rawValue: Int(value.rounded())) ?? .hero
             if snapped != selectedPage { selectedPage = snapped }

@@ -1,154 +1,220 @@
 import SwiftUI
 import UIKit
 
-/// Bubble shape for messages that mirror a feed-post interaction —
-/// `kind == "reaction"` or `kind == "reply"`. Renders the post thumbnail +
-/// preview text snapshot stamped at write time, then the reaction emoji
-/// or reply body underneath.
-///
-/// Post-tap-to-jump is a Phase 2 hook; v1 leaves the thumbnail visually
-/// correct but non-interactive (the post-detail route isn't wired into
-/// this navigation stack yet).
+/// A mirrored feed-post interaction (`kind == "reaction"` / `"reply"`),
+/// rendered as TWO stacked items so tapping and swiping never fight over a
+/// single element:
+///   1. an enlarged, tappable post preview — tap → jump to the post; and
+///   2. a separate content bubble (the reply comment, or "Reacted 🔥") that
+///      is the ONLY part carrying the long-press menu, reactions, and
+///      swipe-to-reply.
 struct PostReferenceBubbleView: View {
     let message:  ChatMessage
     let myUid:    String
     let position: BubblePosition
     var isPending: Bool = false
     var hasFailed: Bool = false
-    /// Optional: when provided, the card becomes tappable and calls
-    /// this closure (e.g. to dismiss chat + scroll the feed to the
-    /// referenced post). Nil = card is visual-only.
+    /// Jump-to-post hook on the preview image. Nil = preview is non-tappable.
     var onTap: (() -> Void)? = nil
-    /// Long-press handler — surfaces the message-actions sheet
-    /// (reactions + copy). Same pattern as MessageBubbleView.
-    var onLongPress: (() -> Void)? = nil
+    /// Per-message action menu — attached to the CONTENT bubble only, so the
+    /// big preview stays a clean tap-to-open target.
+    var menu: MessageMenuModel? = nil
     var onRemoveMyReaction: (() -> Void)? = nil
 
     private var isMe: Bool { message.senderId == myUid }
+    private let previewSide: CGFloat = 220
+    /// Bumped to force a fresh image load when the user taps "retry" on a
+    /// preview that failed even after the cached loader's auto-retries.
+    @State private var imageRetry = 0
 
     var body: some View {
         HStack(spacing: 0) {
             if isMe { Spacer(minLength: 36) }
-            VStack(alignment: isMe ? .trailing : .leading, spacing: 0) {
-                tappableCard
-                if !message.reactions.isEmpty {
-                    MessageReactionStrip(
-                        reactions: message.reactions,
-                        myUid: myUid,
-                        onRemoveMine: { onRemoveMyReaction?() }
-                    )
-                    .padding(.top, -6)
-                    .padding(isMe ? .trailing : .leading, 6)
-                    .transition(.scale(scale: 0.85).combined(with: .opacity))
-                }
+            VStack(alignment: isMe ? .trailing : .leading, spacing: 6) {
+                Text(headerText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .padding(.horizontal, 4)
+
+                postPreview
+                contentColumn
             }
-            .animation(Motion.iosDrawer(duration: 0.22), value: message.reactions)
             if !isMe { Spacer(minLength: 36) }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, position.trailingSpacing)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(onTap != nil ? .isButton : [])
+        .accessibilityElement(children: .contain)
+    }
+
+    // MARK: - Enlarged post preview (tap → jump)
+
+    @ViewBuilder
+    private var postPreview: some View {
+        if message.postDeleted {
+            deletedPreview
+        } else {
+            standardPreview
+        }
+    }
+
+    /// Compact placeholder shown once the author deleted the referenced post.
+    /// Replaces the (now-gone) image and isn't tappable.
+    private var deletedPreview: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo")
+                .symbolVariant(.slash)
+                .font(.subheadline)
+            Text("Post no longer available")
+                .font(.footnote)
+        }
+        .foregroundStyle(AppTheme.textSecondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: previewSide, alignment: .leading)
+        .background(
+            AppTheme.textPrimary.opacity(0.05),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .accessibilityLabel("The referenced post is no longer available")
     }
 
     @ViewBuilder
-    private var tappableCard: some View {
-        let cardView = card
-            .onLongPressGesture(minimumDuration: 0.35) {
-                guard let onLongPress else { return }
-                let g = UIImpactFeedbackGenerator(style: .medium)
-                g.impactOccurred()
-                onLongPress()
+    private var standardPreview: some View {
+        let image = previewImage
+            .frame(width: previewSide, height: previewSide)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
             }
+            .overlay(alignment: .bottomTrailing) {
+                if message.postIsVideo {
+                    Image(systemName: "play.fill")
+                        .font(.callout).bold()
+                        .foregroundStyle(.white)
+                        .padding(7)
+                        .background(Color.black.opacity(0.55), in: Circle())
+                        .padding(8)
+                }
+            }
+            .opacity(isPending ? 0.55 : 1)
+            .accessibilityLabel(previewAccessibilityLabel)
 
         if let onTap {
-            Button(action: onTap) {
-                cardView
-            }
-            .buttonStyle(.scalePress)
+            image
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .onTapGesture { onTap() }
+                .accessibilityAddTraits(.isButton)
         } else {
-            cardView
+            image
         }
     }
 
-    private var card: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 10) {
-                thumbnail
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(headerText)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.textSecondary)
-                    Text(message.postPreview ?? "")
-                        .font(.footnote)
-                        .foregroundStyle(AppTheme.textPrimary.opacity(0.75))
-                        .lineLimit(2)
+    @ViewBuilder
+    private var previewImage: some View {
+        if let urlString = message.postMediaURL, let url = URL(string: urlString) {
+            // CachedAsyncImage caches + auto-retries transient failures; the
+            // tap-to-retry placeholder covers the rare case all retries fail.
+            CachedAsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img):
+                    img.resizable().scaledToFill()
+                case .empty:
+                    ZStack {
+                        AppTheme.accentAction.opacity(0.12)
+                        ProgressView()
+                    }
+                case .failure:
+                    retryablePlaceholder
+                @unknown default:
+                    previewPlaceholder
                 }
             }
-            Divider().opacity(0.5)
-            body(for: message)
+            .id(imageRetry)
+        } else {
+            previewPlaceholder
         }
-        .padding(12)
+    }
+
+    private var previewPlaceholder: some View {
+        ZStack {
+            AppTheme.accentAction.opacity(0.15)
+            Image(systemName: "photo")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(AppTheme.accentAction.opacity(0.6))
+        }
+    }
+
+    /// Shown when a preview fails to load even after auto-retries. Tapping it
+    /// recreates the loader (via `.id`) for a fresh attempt — and this tap is
+    /// consumed here, so it doesn't also trigger jump-to-post.
+    private var retryablePlaceholder: some View {
+        ZStack {
+            AppTheme.accentAction.opacity(0.15)
+            VStack(spacing: 6) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 26, weight: .regular))
+                Text("Tap to retry")
+                    .font(.caption2)
+            }
+            .foregroundStyle(AppTheme.accentAction)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { imageRetry += 1 }
+        .accessibilityLabel("Preview failed to load. Tap to retry.")
+    }
+
+    // MARK: - Content bubble (comment / reaction) — menu + swipe + reactions
+
+    private var contentColumn: some View {
+        VStack(alignment: isMe ? .trailing : .leading, spacing: 0) {
+            contentBubble
+                .messageActions(menu, preview: AnyView(contentBubble))
+            if !message.reactions.isEmpty {
+                MessageReactionStrip(
+                    reactions: message.reactions,
+                    myUid: myUid,
+                    onRemoveMine: { onRemoveMyReaction?() }
+                )
+                .padding(.top, -6)
+                .padding(isMe ? .trailing : .leading, 6)
+                .transition(.scale(scale: 0.85).combined(with: .opacity))
+            }
+        }
+        .animation(Motion.iosDrawer(duration: 0.22), value: message.reactions)
+        .swipeToReply(isMe: isMe, onReply: menu?.onReply)
+    }
+
+    @ViewBuilder
+    private var contentBubble: some View {
+        Group {
+            if message.isPostReaction {
+                HStack(spacing: 6) {
+                    Text(message.emoji ?? "•").font(.title3)
+                    Text(isMe ? "You reacted" : "Reacted")
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+            } else {
+                Text(LinkifiedText.attributed(message.text))
+                    .font(.body)
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .tint(AppTheme.accentAction)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
         .background(bubbleShape.fill(fillColor))
         .overlay {
             if hasFailed {
                 bubbleShape.stroke(AppTheme.errorRed, lineWidth: 1.5)
             }
         }
-        .frame(maxWidth: 260, alignment: .leading)
         .opacity(isPending ? 0.55 : 1)
+        .accessibilityLabel(contentAccessibilityLabel)
     }
 
-    @ViewBuilder
-    private var thumbnail: some View {
-        let placeholder = RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(AppTheme.accentAction.opacity(0.18))
-            .frame(width: 48, height: 48)
-
-        if let urlString = message.postMediaURL, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img):
-                    img.resizable().scaledToFill()
-                        .frame(width: 48, height: 48)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(alignment: .bottomTrailing) {
-                            if message.postIsVideo {
-                                Image(systemName: "play.fill")
-                                    .font(.caption2).bold()
-                                    .foregroundStyle(.white)
-                                    .padding(3)
-                                    .background(Color.black.opacity(0.55), in: Circle())
-                                    .padding(3)
-                            }
-                        }
-                default:
-                    placeholder
-                }
-            }
-        } else {
-            placeholder
-        }
-    }
-
-    @ViewBuilder
-    private func body(for message: ChatMessage) -> some View {
-        if message.isPostReaction {
-            HStack(spacing: 6) {
-                Text(message.emoji ?? "•")
-                    .font(.title2)
-                Text(isMe ? "You reacted" : "Reacted")
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.textSecondary)
-            }
-        } else if message.isPostReply {
-            Text(LinkifiedText.attributed(message.text))
-                .font(.body)
-                .foregroundStyle(AppTheme.textPrimary)
-                .tint(AppTheme.accentAction)
-        }
-    }
+    // MARK: - Shape / styling
 
     private var bubbleShape: some Shape {
         let r: CGFloat = 18
@@ -178,14 +244,21 @@ struct PostReferenceBubbleView: View {
         return ""
     }
 
-    private var accessibilityLabel: String {
+    // MARK: - Accessibility
+
+    private var previewAccessibilityLabel: String {
         let who = isMe ? "You" : "They"
+        let verb = message.isPostReaction ? "reacted to" : "replied to"
+        let media = message.postIsVideo ? "a video post" : "a photo post"
+        return onTap != nil
+            ? "\(who) \(verb) \(media). Double-tap to open."
+            : "\(who) \(verb) \(media)."
+    }
+
+    private var contentAccessibilityLabel: String {
         if message.isPostReaction {
-            return "\(who) reacted with \(message.emoji ?? "an emoji") to a post"
+            return "Reaction: \(message.emoji ?? "emoji")"
         }
-        if message.isPostReply {
-            return "\(who) replied to a post: \(message.text)"
-        }
-        return "\(who) referenced a post"
+        return "Reply: \(message.text)"
     }
 }

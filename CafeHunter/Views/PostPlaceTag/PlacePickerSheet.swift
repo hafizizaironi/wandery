@@ -13,6 +13,9 @@ struct PlaceSelection: Equatable, Hashable {
     var lng: Double
     /// True when the user is creating a new place (not picking an existing one).
     var isNew: Bool
+    /// Google formatted address, carried through so `findOrCreatePlace` can
+    /// store it on a newly-created place doc (nil for DB picks / by-name adds).
+    var address: String? = nil
 }
 
 /// Candidate row shown in the picker — sourced from Google Places nearby/autocomplete
@@ -422,7 +425,8 @@ struct PlacePickerSheet: View {
             name: c.name,
             type: resolvedType,
             lat: lat, lng: lng,
-            isNew: c.source == .google
+            isNew: c.source == .google,
+            address: c.address
         ))
         dismiss()
     }

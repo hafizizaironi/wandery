@@ -12,10 +12,16 @@ struct ChatComposerView: View {
     /// Transient one-liner ("Couldn't send — retrying…") shown above
     /// the input. Nil to hide.
     var toast: String?
+    /// Snippet of the message being replied to. Non-nil shows the
+    /// "Replying to …" banner above the input; nil hides it.
+    var replyPreview: String?
+    var onCancelReply: () -> Void = {}
     var onSend: () -> Void
     var onDismissToast: () -> Void
 
-    @FocusState private var focused: Bool
+    /// Focus is owned by `ChatThreadView` so tapping "Reply" can focus the
+    /// field programmatically.
+    var focused: FocusState<Bool>.Binding
 
     private var canSend: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -49,6 +55,37 @@ struct ChatComposerView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
+            if let replyPreview {
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(AppTheme.accentAction)
+                        .frame(width: 3, height: 32)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Replying to")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.textSecondary)
+                        Text(replyPreview)
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.textPrimary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Button {
+                        onCancelReply()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel reply")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             Divider().opacity(0.5)
 
             HStack(alignment: .bottom, spacing: 10) {
@@ -59,6 +96,7 @@ struct ChatComposerView: View {
             .padding(.top, 8)
             .padding(.bottom, 8)
         }
+        .animation(Motion.iosDrawer(duration: 0.22), value: replyPreview)
         // Don't use `.regularMaterial` here — it adapts to system color
         // scheme and goes dark when the user is in dark mode, which
         // fights the AppTheme's fixed-light palette and makes inverted
@@ -78,7 +116,7 @@ struct ChatComposerView: View {
             .tint(AppTheme.accentAction)
             .lineLimit(1...5)
             .textInputAutocapitalization(.sentences)
-            .focused($focused)
+            .focused(focused)
             .padding(.vertical, 9)
             .padding(.horizontal, 14)
             // Project-wide Liquid Glass chrome — matches the navbar, sheet

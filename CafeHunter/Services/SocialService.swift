@@ -657,6 +657,11 @@ final class SocialService {
         if let gid = sel.googlePlaceId {
             payload["googlePlaceId"] = gid
         }
+        // Pass the Google formatted address so the place doc can store it
+        // (used later to derive a city label without reverse-geocoding).
+        if let address = sel.address, !address.isEmpty {
+            payload["address"] = address
+        }
         let callable = Functions.functions().httpsCallable("findOrCreatePlace")
         let result = try await callable.call(payload)
         guard let dict = result.data as? [String: Any],

@@ -162,14 +162,31 @@ service cloud.firestore {
         allow create: if signedIn()
           && request.resource.data.senderId == request.auth.uid
           && request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds;
-        // Messages are otherwise immutable — only the `reactions` map
-        // may be added/changed by any conversation participant.
-        // `.diff(...).affectedKeys().hasOnly(['reactions'])` blocks any
-        // attempt to edit `text`, `senderId`, `createdAt`, etc. while
-        // still allowing iMessage-style reaction toggles.
+        // Messages are otherwise immutable, with three narrow exceptions:
+        //  1. the `reactions` map — iMessage-style per-uid reaction toggles,
+        //     editable by any conversation participant;
+        //  2. the `emoji` field on a *reaction-mirror* message, editable only
+        //     by its own sender (one reaction per post — see mirrorReaction); and
+        //  3. a sender soft-deleting (unsending) their OWN message: setting
+        //     `deleted: true` and blanking `text`. Hard deletes stay disabled
+        //     below, so this tombstone is the only unsend path; `deleted` can
+        //     only ever be set true, never reverted.
+        // Everything else (`senderId`, `createdAt`, `kind`, …) stays locked.
         allow update: if signedIn()
           && request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']);
+          && (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions'])
+            || (
+              resource.data.kind == 'reaction'
+              && resource.data.senderId == request.auth.uid
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['emoji'])
+            )
+            || (
+              resource.data.senderId == request.auth.uid
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deleted', 'text'])
+              && request.resource.data.deleted == true
+            )
+          );
         allow delete: if false;
       }
     }

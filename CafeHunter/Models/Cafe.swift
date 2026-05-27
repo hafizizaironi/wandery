@@ -52,6 +52,10 @@ struct Place: Identifiable, Codable {
     var source: String = "google"
     /// Google Places place_id, when available — used for dedup.
     var googlePlaceId: String?
+    /// Formatted address captured at creation (newer "google" places).
+    /// Used to derive a city label without reverse-geocoding. Nil on older
+    /// places — those fall back to reverse-geocoding from lat/lng.
+    var address: String?
     var globalVisitCount: Int = 0
     /// Total reactions + replies on tagged posts at this place. Aggregated
     /// server-side by `onReactionEngagement` / `onReplyEngagement`.
