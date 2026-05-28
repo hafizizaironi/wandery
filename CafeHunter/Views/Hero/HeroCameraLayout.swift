@@ -8,9 +8,18 @@ enum HeroCameraLayout {
     }
 
     static let horizontalPadding: CGFloat = 8
-    static let shutterAreaHeight: CGFloat = 100
-    static let viewfinderShutterSpacing: CGFloat = 60
+    /// Height of the bottom control stack (mode swiper · library/shutter/flip
+    /// row · feed hint). Flash + zoom dial overlay the viewfinder itself, so
+    /// this stays compact and the square keeps its original size — together
+    /// these reserve the same ~160pt below the card as the legacy shutter.
+    static let controlStackHeight: CGFloat = 150
+    static let viewfinderShutterSpacing: CGFloat = 10
     static let viewfinderCornerRadius: CGFloat = 24
+
+    /// Total vertical space reserved BELOW the square card. Used by the camera
+    /// page (for the control stack) AND the feed/empty pages (as a matching
+    /// spacer) so the square never shifts position when paging between them.
+    static var belowCardHeight: CGFloat { controlStackHeight + viewfinderShutterSpacing }
 
     /// One full-screen page for vertical paging (camera card + feed cards share the same viewport height).
     static func pageHeight(in geo: GeometryProxy) -> CGFloat {
@@ -22,7 +31,7 @@ enum HeroCameraLayout {
         let bottomChrome = bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
         let pad = horizontalPadding
         let usableW = max(0, geo.size.width - pad * 2)
-        let availableH = geo.size.height - geo.safeAreaInsets.top - bottomChrome - shutterAreaHeight - viewfinderShutterSpacing
+        let availableH = geo.size.height - geo.safeAreaInsets.top - bottomChrome - belowCardHeight
         return max(120, min(usableW, availableH))
     }
 }

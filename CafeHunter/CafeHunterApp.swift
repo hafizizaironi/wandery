@@ -1,6 +1,7 @@
 import SwiftUI
 import GoogleSignIn
 import GooglePlacesSwift
+import FirebaseAuth
 
 @main
 struct CafeHunterApp: App {
@@ -29,7 +30,12 @@ struct CafeHunterApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                // Scene-aware URL handling (iOS 26 deprecated the
+                // AppDelegate `application(_:open:options:)` path). Both
+                // Firebase Auth's reCAPTCHA return AND Google Sign-In's
+                // callback land here.
                 .onOpenURL { url in
+                    if Auth.auth().canHandle(url) { return }
                     GIDSignIn.sharedInstance.handle(url)
                 }
         }

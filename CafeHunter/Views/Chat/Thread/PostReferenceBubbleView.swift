@@ -26,6 +26,11 @@ struct PostReferenceBubbleView: View {
     /// Bumped to force a fresh image load when the user taps "retry" on a
     /// preview that failed even after the cached loader's auto-retries.
     @State private var imageRetry = 0
+    /// Set when the preview image comes back 404/410 — the referenced post's
+    /// media is permanently gone (owner deleted it), so we collapse to the
+    /// "deleted" placeholder even if the server never stamped `postDeleted`
+    /// (e.g. posts removed before the scrub function existed).
+    @State private var detectedGone = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -48,13 +53,31 @@ struct PostReferenceBubbleView: View {
 
     // MARK: - Enlarged post preview (tap → jump)
 
-    @ViewBuilder
     private var postPreview: some View {
-        if message.postDeleted {
-            deletedPreview
-        } else {
-            standardPreview
+        Group {
+            if message.postDeleted || detectedGone {
+                deletedPreview
+            } else {
+                standardPreview
+            }
         }
+        // The image may render instantly from the on-disk/memory cache and so
+        // never touch the network — which means a post the friend has since
+        // deleted keeps showing its (now-orphaned) cached picture. Probe the
+        // live blob once; if it's gone, collapse to the deleted placeholder
+        // even though the cached image would still display.
+        .task(id: message.postMediaURL) { await verifyPostStillExists() }
+    }
+
+    /// Confirms the referenced post's media still exists on the server, so a
+    /// cached reference doesn't outlive a deletion. Skipped when we already
+    /// know it's gone (server flag or a prior probe). Transient/network
+    /// failures are treated as "still there" — only a hard 404/410 collapses.
+    private func verifyPostStillExists() async {
+        guard !message.postDeleted, !detectedGone,
+              let url = message.postMediaURL, !url.isEmpty else { return }
+        let exists = await PostMediaExistence.shared.verify(url)
+        if !exists { detectedGone = true }
     }
 
     /// Compact placeholder shown once the author deleted the referenced post.
@@ -64,7 +87,7 @@ struct PostReferenceBubbleView: View {
             Image(systemName: "photo")
                 .symbolVariant(.slash)
                 .font(.subheadline)
-            Text("Post no longer available")
+            Text("This post was deleted")
                 .font(.footnote)
         }
         .foregroundStyle(AppTheme.textSecondary)
@@ -75,7 +98,7 @@ struct PostReferenceBubbleView: View {
             AppTheme.textPrimary.opacity(0.05),
             in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
-        .accessibilityLabel("The referenced post is no longer available")
+        .accessibilityLabel("The author deleted this post")
     }
 
     @ViewBuilder
@@ -124,8 +147,15 @@ struct PostReferenceBubbleView: View {
                         AppTheme.accentAction.opacity(0.12)
                         ProgressView()
                     }
-                case .failure:
-                    retryablePlaceholder
+                case .failure(let error):
+                    if isNotFound(error) {
+                        // Blob is gone — treat as a deleted post. Flip state so
+                        // the whole preview collapses to `deletedPreview` rather
+                        // than offering a retry that can never succeed.
+                        Color.clear.onAppear { detectedGone = true }
+                    } else {
+                        retryablePlaceholder
+                    }
                 @unknown default:
                     previewPlaceholder
                 }
@@ -134,6 +164,12 @@ struct PostReferenceBubbleView: View {
         } else {
             previewPlaceholder
         }
+    }
+
+    /// A 404/410 surfaced by `CachedAsyncImage` as `.fileDoesNotExist` — the
+    /// referenced media no longer exists, i.e. the post was deleted.
+    private func isNotFound(_ error: Error) -> Bool {
+        (error as? URLError)?.code == .fileDoesNotExist
     }
 
     private var previewPlaceholder: some View {
@@ -260,5 +296,54 @@ struct PostReferenceBubbleView: View {
             return "Reaction: \(message.emoji ?? "emoji")"
         }
         return "Reply: \(message.text)"
+    }
+}
+
+// MARK: - Post media existence probe
+
+/// Checks whether a referenced post's media blob still exists on the server,
+/// so chat references to a deleted post collapse even when the image is still
+/// in the local cache (the loader would serve the cached copy and never see
+/// the 404). Results are memoised per URL and in-flight probes coalesced, so
+/// many bubbles pointing at the same post cost at most one tiny request per
+/// session.
+actor PostMediaExistence {
+    static let shared = PostMediaExistence()
+
+    private var known: [String: Bool] = [:]
+    private var inFlight: [String: Task<Bool, Never>] = [:]
+
+    /// `true` if the blob is present (or we couldn't tell). `false` only on a
+    /// definitive 404/410 — a hard "this object is gone".
+    func verify(_ urlString: String) async -> Bool {
+        if let cached = known[urlString] { return cached }
+        if let task = inFlight[urlString] { return await task.value }
+
+        let task = Task<Bool, Never> { await Self.probe(urlString) }
+        inFlight[urlString] = task
+        let result = await task.value
+        known[urlString] = result
+        inFlight[urlString] = nil
+        return result
+    }
+
+    /// One-byte ranged GET — cheaper than fetching the object, and Firebase
+    /// Storage download URLs honour Range (unlike HEAD, which they may reject).
+    private static func probe(_ urlString: String) async -> Bool {
+        guard let url = URL(string: urlString) else { return true }
+        var req = URLRequest(url: url)
+        req.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        req.timeoutInterval = 12
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse,
+               http.statusCode == 404 || http.statusCode == 410 {
+                return false
+            }
+            return true
+        } catch {
+            // Offline / transient — don't falsely declare the post deleted.
+            return true
+        }
     }
 }

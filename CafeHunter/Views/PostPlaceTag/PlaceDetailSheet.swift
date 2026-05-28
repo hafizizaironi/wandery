@@ -153,6 +153,9 @@ struct PlaceDetailSheet: View {
         let n = visits > 0 ? visits : place.posts.count
         let friendCount = Set(place.posts.map(\.authorId)).count
         if n == 1 { return "1 visit" }
+        // No friend posts here (came in from Trending or a synthesized fallback)
+        // — drop the "by N friends" tail rather than reporting "by 0 friends".
+        if friendCount == 0 { return "\(n) visits" }
         if friendCount == 1 { return "\(n) visits by 1 friend" }
         return "\(n) visits by \(friendCount) friends"
     }

@@ -231,6 +231,10 @@ struct MainMapView: View {
     /// Set externally (e.g. from a feed pill tap) to fly to a place + open
     /// the detail sheet. Cleared once consumed.
     @Binding var pendingPlaceJumpId: String?
+    /// Pulse-binding from the WhatsNew "Show me the map →" jump. When set
+    /// true by the host, the view opens the Trending sheet and resets the
+    /// flag. No-op when already showing or when there's no friend pin to land on.
+    @Binding var pendingShowTrending: Bool
 
     @State private var friendPlacesService = FriendPlacesService()
     @State private var activeFriendPlace: FriendPlace?
@@ -253,6 +257,21 @@ struct MainMapView: View {
     @State private var locationManager = LocationManager()
     /// Drives the Discover overlay sheet.
     @State private var showDiscover = false
+
+    // MARK: - Circle (friend-of-friend) discovery
+    /// Network-aware Discover state. Loads `circle` + `trending` from the
+    /// `discoverFeed` Cloud Function and caches in-memory for 5 min.
+    @State private var circleService = CircleDiscoverService()
+    /// The tapped circle pin (drives the floating `CirclePlaceCard`). Floating
+    /// card, not a sheet — the user keeps map context.
+    @State private var activeCirclePlace: CirclePlace?
+    /// Map toggle for the FoF pin layer. Persists per-user via @AppStorage so
+    /// turning it off survives relaunches. Force-OFF when the user has opted
+    /// out of contributing — "if you don't share, you don't consume."
+    @AppStorage("discover.showCircle") private var showCirclePref: Bool = true
+    private var circleLayerEnabled: Bool {
+        showCirclePref && !(socialService.profile?.optedOutOfDiscovery ?? false)
+    }
 
     // Show List pill idle animation — periodic "happy jump".
     @State private var showListJumpOffset: CGFloat = 0
@@ -310,6 +329,12 @@ struct MainMapView: View {
             CafeMapView(
                 cafes: mapCafes,
                 friendPlaces: friendPlacesService.places,
+                circlePlaces: circleLayerEnabled ? circleService.circle : [],
+                onCirclePinClick: { place in
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+                        activeCirclePlace = place
+                    }
+                },
                 activeCafeId: nil,
                 onPinClick: { id in centerOnLegacyCafe(id: id) },
                 onFriendPinClick: { place in activeFriendPlace = place },
@@ -321,6 +346,17 @@ struct MainMapView: View {
             )
             .task(id: socialService.feedPosts.map(\.id)) {
                 await friendPlacesService.refresh(from: socialService.feedPosts)
+            }
+            // Load the discoverFeed on appear. The server caches for 6h and
+            // the service throttles to once per 5 min on the client, so this
+            // is cheap to re-run on every map appear.
+            .task { await circleService.load() }
+            // After the user posts (`feedPosts.count` changes), give the
+            // `onPostCreatePlaceVisit` trigger a moment to commit, then nudge
+            // the cache so a fresh visit by a friend can start contributing.
+            .task(id: socialService.feedPosts.count) {
+                try? await Task.sleep(for: .seconds(30))
+                await circleService.load(force: true)
             }
             // Reshuffle the carousel order whenever the filter or the
             // visible places change. Runs on first appearance + every
@@ -345,18 +381,14 @@ struct MainMapView: View {
                 }
             }
             .sheet(isPresented: $showDiscover) {
-                DiscoverView(
-                    locationManager: locationManager,
-                    onSelect: { place in
-                        showDiscover = false
-                        // Centre the map on the picked place using the
-                        // same upper-quarter bias we use elsewhere so the
-                        // pin sits where the eye lands, not buried under
-                        // a UI panel.
-                        targetCoordinate = CLLocationCoordinate2D(
-                            latitude: place.lat - 0.00375,
-                            longitude: place.lng
-                        )
+                TrendingDiscoverView(
+                    service: circleService,
+                    onSelect: { placeId in
+                        // Driving the existing place-jump binding centres the
+                        // map AND opens PlaceDetailSheet via the synthesized-
+                        // FriendPlace fallback for places the user has no
+                        // friend posts at.
+                        pendingPlaceJumpId = placeId
                     },
                     onClose: { showDiscover = false }
                 )
@@ -391,6 +423,12 @@ struct MainMapView: View {
                 guard let placeId = newId else { return }
                 Task { await consumePlaceJump(placeId: placeId) }
             }
+            // External "open Trending" trigger from the WhatsNew sheet.
+            .onChange(of: pendingShowTrending) { _, new in
+                guard new else { return }
+                pendingShowTrending = false
+                showDiscover = true
+            }
             // Recenter on the user whenever the Map becomes the active page,
             // *unless* they're searching (Discover open) or arriving via a
             // place-jump — those flows own the camera and should win. The
@@ -405,6 +443,30 @@ struct MainMapView: View {
             // Top-right HUD buttons
             topButtons
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+
+            // Floating "Circle" detail card (tapped a FoF pin). Sits above
+            // the navbar; tapping outside dismisses, matching the existing
+            // overlay pattern from DiscoverView's place card.
+            if let place = activeCirclePlace {
+                Color.black.opacity(0.001)   // catch-all dismiss tap
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeOut(duration: 0.18)) { activeCirclePlace = nil }
+                    }
+                VStack {
+                    Spacer()
+                    CirclePlaceCard(
+                        place: place,
+                        userLocation: locationManager.userLocation,
+                        onDismiss: {
+                            withAnimation(.easeOut(duration: 0.18)) { activeCirclePlace = nil }
+                        }
+                    )
+                    .padding(.bottom, 110)   // clearance above the arc navbar
+                }
+                .transition(.opacity)
+                .zIndex(5)
+            }
 
             // "Show list" — floats just above the arc's top peak; hidden while sheet is open
             if !showListOverlay {
@@ -483,7 +545,28 @@ struct MainMapView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Discover creator's pick places")
+            .accessibilityLabel("Discover trending places")
+
+            // Toggle the friend-of-friend ("Circle") pin layer on the map.
+            // Hidden entirely for users who've opted out of contributing —
+            // if you don't share, you don't consume.
+            if !(socialService.profile?.optedOutOfDiscovery ?? false) {
+                Button {
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    showCirclePref.toggle()
+                } label: {
+                    Image(systemName: showCirclePref ? "person.2.fill" : "person.2")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(showCirclePref ? AppTheme.cafeAccent : AppTheme.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .liquidGlassHUD()
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showCirclePref
+                                    ? "Hide circle pins on the map"
+                                    : "Show circle pins on the map")
+            }
         }
         .padding(.trailing, 16)
         .padding(.top, 60)
@@ -844,7 +927,13 @@ struct MainMapView: View {
                 type: doc.type,
                 lat: doc.lat,
                 lng: doc.lng,
-                posts: postsAtPlace.sorted { $0.createdAt > $1.createdAt }
+                posts: postsAtPlace.sorted { $0.createdAt > $1.createdAt },
+                // Pass through the global counters so the detail sheet shows
+                // "N visits" instead of "0 visits by 0 friends" when the user
+                // landed here from a non-friend surface (e.g. Trending).
+                globalVisitCount: doc.globalVisitCount,
+                globalEngagementCount: doc.globalEngagementCount,
+                address: doc.address
             )
             targetCoordinate = CLLocationCoordinate2D(
                 latitude: doc.lat - 0.00375,

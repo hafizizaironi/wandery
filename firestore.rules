@@ -91,6 +91,15 @@ service cloud.firestore {
         allow read: if isSelf(uid);
         allow write: if false;
       }
+
+      // Server-written Discover cache (friend-of-friend + trending). The
+      // `discoverFeed` callable uses the admin SDK to write payload+expiresAt
+      // here; the owner can read it as a diagnostic affordance, but the
+      // client normally just calls the callable and consumes the response.
+      match /discover/{docId} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
     }
 
     // Owner-only private profile fields — birthdate, ToS/Privacy consent

@@ -2,10 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleDisplayName</key>
-	<string>Wandery</string>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 	<key>ADMIN_UID</key>
 	<string>A7waeoywDgdauEvQk3SsjPRYzPg2</string>
 	<key>CFBundleURLTypes</key>
@@ -18,12 +14,6 @@
 				<string>com.googleusercontent.apps.948965115871-q2m7h9odo34k3d8d0uln9j9kvj2qe7g5</string>
 			</array>
 		</dict>
-		<!-- Firebase Auth Phone reCAPTCHA return scheme. Derived from
-		     GOOGLE_APP_ID `1:948965115871:ios:88d8fdabe55ef8d896266a`
-		     by replacing colons with dashes and prefixing `app-`. The
-		     iOS Phone Auth docs list this as a required setup step;
-		     without it, reCAPTCHA cannot return to the app after the
-		     user completes verification. -->
 		<dict>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
@@ -33,14 +23,10 @@
 			</array>
 		</dict>
 	</array>
+	<key>FirebaseAppDelegateProxyEnabled</key>
+	<false/>
 	<key>GIDClientID</key>
 	<string>948965115871-q2m7h9odo34k3d8d0uln9j9kvj2qe7g5.apps.googleusercontent.com</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Save photos and videos you capture to your library.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>Find friends already on the app by matching against your contacts. Your contacts stay on this device — only hashed phone numbers are checked, and only your matches are shown.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Used to find nearby places to tag your post</string>
 	<key>GMSPlacesAPIKey</key>
 	<string>$(GMS_PLACES_API_KEY)</string>
 	<key>UIBackgroundModes</key>
@@ -48,12 +34,5 @@
 		<string>fetch</string>
 		<string>remote-notification</string>
 	</array>
-	<!-- Disable Firebase's automatic app-delegate swizzling. Required
-	     for SwiftUI's @UIApplicationDelegateAdaptor to play nicely with
-	     Firebase Phone Auth — see Peter Friese's Stack Overflow answer
-	     (stackoverflow.com/q/65409563). AppDelegate.swift forwards APNs
-	     token + remote notifications + URLs to Auth and FCM manually. -->
-	<key>FirebaseAppDelegateProxyEnabled</key>
-	<false/>
 </dict>
 </plist>

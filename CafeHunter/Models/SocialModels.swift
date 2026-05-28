@@ -6,6 +6,9 @@ struct UserProfile: Equatable {
     var usernameLower: String?
     var displayName: String?
     var photoURL: String?
+    /// When true, this user's visits do NOT contribute to other users'
+    /// friend-of-friend Discover. Default false (treat absent as opted in).
+    var optedOutOfDiscovery: Bool = false
 }
 
 /// One media item within a post. A post carries 1…6 of these in display

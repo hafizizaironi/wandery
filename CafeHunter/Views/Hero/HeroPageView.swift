@@ -4,55 +4,10 @@ import SwiftUI
 import PhotosUI
 import UIKit
 
-// MARK: - Drag direction
+// MARK: - Hero card identity
 
-private enum DragDir { case up, down, left, right }
-
-// MARK: - Shutter haptics
-
-private enum HeroShutterHaptics {
-    static func photoShutter() {
-        let g = UIImpactFeedbackGenerator(style: .medium)
-        g.prepare()
-        g.impactOccurred()
-    }
-
-    static func recordStart() {
-        let g = UIImpactFeedbackGenerator(style: .heavy)
-        g.prepare()
-        g.impactOccurred(intensity: 1.0)
-    }
-
-    static func recordStop() {
-        let g = UIImpactFeedbackGenerator(style: .medium)
-        g.prepare()
-        g.impactOccurred(intensity: 0.85)
-    }
-
-    static func scrollToFeed() {
-        let g = UISelectionFeedbackGenerator()
-        g.prepare()
-        g.selectionChanged()
-    }
-
-    static func flipCamera() {
-        let g = UIImpactFeedbackGenerator(style: .light)
-        g.prepare()
-        g.impactOccurred()
-    }
-
-    static func openPhotoLibrary() {
-        let g = UIImpactFeedbackGenerator(style: .soft)
-        g.prepare()
-        g.impactOccurred()
-    }
-
-    static func lockRecordingMode() {
-        let g = UIImpactFeedbackGenerator(style: .rigid)
-        g.prepare()
-        g.impactOccurred()
-    }
-}
+// The shutter UI, its gesture state machine, haptics and `ShutterDirection`
+// live in `ShutterControl.swift`.
 
 /// Vertical pager targets: camera first, then timeline posts (or one empty placeholder).
 private enum HeroCardID: Hashable {
@@ -110,11 +65,13 @@ struct HeroPageView: View {
 
     private let maxCaptionLength = 25
 
-    // Shutter gesture state
-    @State private var isDragging     = false
-    @State private var isHolding      = false   // hold timer fired → recording
-    @State private var translation    = CGSize.zero
-    @State private var holdTask: Task<Void, Never>?
+    // Shutter gesture state now lives inside the camera control stack.
+
+    /// Capture mode (Polaroid = photo · Video = record). Drives the new shutter.
+    @State private var cameraMode: HeroCameraMode = .polaroid
+    /// Most-recent Photos thumbnails for the library button (front-most first;
+    /// rendered as a small stack). Empty = placeholder.
+    @State private var libraryImages: [UIImage] = []
 
     /// Post-preview: drag the centered post control (left = retake, right = save to library).
     @State private var isDraggingReviewPost = false
@@ -192,8 +149,11 @@ struct HeroPageView: View {
                     // animation stutters when the user's finger
                     // crosses the Hero region.
                     // Lock vertical paging while reviewing a capture so the user
-                    // can't scroll into other people's posts mid-compose.
-                    .scrollDisabled(edgeDragActive || isReviewingCapture)
+                    // can't scroll into other people's posts mid-compose — and
+                    // while recording (esp. locked recording, where the finger
+                    // is off the button) so a swipe can't leave the camera with
+                    // a clip still rolling.
+                    .scrollDisabled(edgeDragActive || isReviewingCapture || camera.isRecording)
                     // The composer manages its own keyboard lift via
                     // a manual `.offset(y:)` driven by the
                     // keyboardWillShow/Hide observer — so we still
@@ -295,6 +255,7 @@ struct HeroPageView: View {
             if isActive && camera.isAuthorized {
                 camera.startSession()
             }
+            loadLatestLibraryThumbnail()
         }
         .onChange(of: isActive) { _, active in
             if active {
@@ -327,6 +288,12 @@ struct HeroPageView: View {
             // Review covers the viewfinder, so stop the session; leaving review
             // — including tapping "+" to add another (isCapturingMore) — restarts it.
             syncCameraSessionForCaptureReview()
+        }
+        .onChange(of: cameraMode) { _, mode in
+            // Entering Video mode warms the recording path so the first tap
+            // starts instantly; leaving discards the unused warm-up.
+            if mode == .video { camera.prepareForRecording() }
+            else { camera.discardRecordingPreparation() }
         }
         // Watch `.count` instead of `.map(\.id)` so SwiftUI doesn't have to
         // allocate + compare a new id-array on every parent re-render. The
@@ -558,6 +525,7 @@ struct HeroPageView: View {
             reviewPostTranslation = .zero
             camera.discardCapture()
             syncCameraSessionForCaptureReview()
+            loadLatestLibraryThumbnail()
         } catch {
             postError = friendlyPostError(error)
         }
@@ -690,8 +658,57 @@ struct HeroPageView: View {
                 } else {
                     return
                 }
+                await MainActor.run { loadLatestLibraryThumbnail() }
             } catch {
                 await MainActor.run { postError = error.localizedDescription }
+            }
+        }
+    }
+
+    /// Pull the most-recent Photos images (up to 3) for the library button's
+    /// stacked preview. Reads only if access is ALREADY granted — never
+    /// triggers a Photos prompt on the camera screen (the picker and
+    /// save-to-library flows handle their own auth).
+    private func loadLatestLibraryThumbnail() {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        switch status {
+        case .authorized, .limited:
+            fetchRecentLibraryImages()
+        case .notDetermined:
+            // First run: ask for read access so the recent-photos stack can show.
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { newStatus in
+                guard newStatus == .authorized || newStatus == .limited else { return }
+                Task { @MainActor in self.fetchRecentLibraryImages() }
+            }
+        default:
+            break  // denied/restricted — placeholder stays; user grants in Settings
+        }
+    }
+
+    private func fetchRecentLibraryImages() {
+        let opts = PHFetchOptions()
+        opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        opts.fetchLimit = 3
+        let assets = PHAsset.fetchAssets(with: .image, options: opts)
+        guard assets.count > 0 else { return }
+        let count = min(3, assets.count)
+        let req = PHImageRequestOptions()
+        req.deliveryMode = .opportunistic
+        req.isNetworkAccessAllowed = true
+        let manager = PHImageManager.default()
+        // Assemble in order as each request resolves (opportunistic may call back twice).
+        var resolved: [Int: UIImage] = [:]
+        for i in 0..<count {
+            manager.requestImage(
+                for: assets.object(at: i),
+                targetSize: CGSize(width: 132, height: 108),
+                contentMode: .aspectFill, options: req
+            ) { image, _ in
+                guard let image else { return }
+                Task { @MainActor in
+                    resolved[i] = image
+                    self.libraryImages = (0..<count).compactMap { resolved[$0] }
+                }
             }
         }
     }
@@ -741,8 +758,10 @@ struct HeroPageView: View {
             }
             .frame(width: side, height: side)
             .frame(maxWidth: .infinity)
+            // Matches the camera page's control-stack height so the square
+            // doesn't shift when paging between camera and feed.
             Color.clear
-                .frame(height: HeroCameraLayout.shutterAreaHeight)
+                .frame(height: HeroCameraLayout.controlStackHeight)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, HeroCameraLayout.horizontalPadding)
@@ -794,10 +813,10 @@ struct HeroPageView: View {
         let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
         let side = HeroCameraLayout.viewfinderSide(in: geo)
         // Total reserved height below the card stays identical to the camera layout
-        // (viewfinderShutterSpacing + shutterAreaHeight) so the card Y doesn't shift.
-        // Within that block reactions float to the top (hugging the card) and a
-        // Spacer absorbs the leftover space above the navbar.
-        let belowCardHeight = HeroCameraLayout.viewfinderShutterSpacing + HeroCameraLayout.shutterAreaHeight
+        // so the card Y doesn't shift when paging between camera and feed.
+        // Within that block the composer pins to the bottom and a Color.clear
+        // absorbs the leftover space above the navbar.
+        let belowCardHeight = HeroCameraLayout.belowCardHeight
         return VStack(spacing: 0) {
             FeedPolaroidCard(
                 post: post,
@@ -876,6 +895,7 @@ struct HeroPageView: View {
             if isReviewingCapture {
                 captureReviewSquare(side: side)
             } else {
+                let cam = Bindable(camera)
                 CameraPreviewView(session: camera.session, isRunning: camera.isSessionRunning,
                                   lensSwitchToken: camera.lensSwitchToken)
                     .frame(width: side, height: side)
@@ -890,11 +910,34 @@ struct HeroPageView: View {
                             .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
                                        value: camera.isRecording)
                     }
+                    // Flash top-centre, recording timer beside it while filming.
                     .overlay(alignment: .top) {
-                        if camera.hasLensToggleForCurrentCamera {
-                            lensToggleButton
-                                .padding(.top, 10)
+                        ZStack {
+                            if camera.isRecording || camera.isLocked {
+                                HeroRecordingTimer(elapsed: camera.recordingProgress * 5,
+                                                   isLocked: camera.isLocked)
+                            }
+                            HStack {
+                                HeroFlashButton(
+                                    flashMode: cam.flashMode,
+                                    enabled: cameraMode != .video || camera.hasTorchForCurrentCamera
+                                )
+                                if camera.isRecording || camera.isLocked { Spacer() }
+                            }
                         }
+                        .padding(.horizontal, 14)
+                        .padding(.top, 12)
+                    }
+                    // Zoom dial floats over the bottom of the square (iOS-style).
+                    .overlay(alignment: .bottom) {
+                        HeroZoomDial(
+                            zoom: cam.displayedZoom,
+                            minZoom: camera.minDisplayedZoom,
+                            maxZoom: camera.maxDisplayedZoom,
+                            showsHalf: camera.supportsHalfZoom,
+                            onZoomChange: { camera.setZoom(displayed: $0) }
+                        )
+                        .padding(.bottom, 12)
                     }
             }
         }
@@ -1047,38 +1090,17 @@ struct HeroPageView: View {
                     .background(liquidGlassPill)
     }
 
-    /// Rear only: **1** ↔ **0.5** (smooth zoom on supported devices).
-    private var lensToggleButton: some View {
-        Button {
-            camera.toggleLens()
-        } label: {
-            Text(lensToggleLabel)
-                .font(.footnote).bold()
-                .foregroundStyle(.black)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(Color.white.opacity(0.92))
-                .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(lensAccessibilityLabel)
-    }
+    // (The on-viewfinder lens-toggle button was removed — the zoom dial in the
+    // control stack now owns lens/zoom.)
 
-    private var lensToggleLabel: String {
-        camera.lensSlot == .wide ? "0.5" : "1"
-    }
-
-    private var lensAccessibilityLabel: String {
-        camera.lensSlot == .wide ? "Half x zoom, tap for one x" : "One x zoom, tap for half x"
-    }
-
-    // MARK: - Shutter area (button + directional hints)
+    // MARK: - Shutter area (control stack + capture review)
 
     private var shutterArea: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .fill(AppTheme.cameraScrim)
-                .frame(width: 320, height: 140)
+                .frame(maxWidth: 360)
+                .frame(height: HeroCameraLayout.controlStackHeight)
 
             VStack(spacing: 6) {
                 if isReviewingCapture, !postError.isEmpty {
@@ -1096,18 +1118,17 @@ struct HeroPageView: View {
                 if isReviewingCapture {
                     captureReviewActions
                 } else {
-                    ZStack {
-                        // Direction hints — visible only while dragging & not yet recording
-                        if isDragging && !isHolding && !camera.isLocked {
-                            directionHints
-                        }
-                        shutterButton
-                            .highPriorityGesture(shutterGesture)
-                    }
+                    HeroCameraControlStack(
+                        camera: camera,
+                        mode: $cameraMode,
+                        libraryImages: libraryImages,
+                        onTapLibrary: { showPhotosPicker = true },
+                        onScrollToFeed: { scrollToFeedFromCamera() }
+                    )
                 }
             }
         }
-        .frame(height: 100)
+        .frame(height: HeroCameraLayout.controlStackHeight)
     }
 
     /// Centered post control: **tap** = post, **drag left** = retake, **drag right** = save to Photos.
@@ -1339,196 +1360,8 @@ struct HeroPageView: View {
             }
     }
 
-    // MARK: - Direction hints
-
-    private var directionHints: some View {
-        ZStack {
-            hint(dir: .up,    icon: "rectangle.stack.person.crop.fill", label: "Feed")
-                .offset(y: -62)
-            hint(dir: .down,  icon: "camera.rotate.fill",               label: "Flip")
-                .offset(y:  62)
-            hint(dir: .left,  icon: "photo.on.rectangle",               label: "Library")
-                .offset(x: -84)
-            hint(dir: .right, icon: "lock.fill",                        label: "Lock")
-                .offset(x:  84)
-        }
-    }
-
-    private func hint(dir: DragDir, icon: String, label: String) -> some View {
-        let op    = hintOpacity(dir)
-        let past  = isPastThreshold(dir)
-        return VStack(spacing: 3) {
-            Image(systemName: icon)
-                .font(.subheadline).bold()
-            Text(label)
-                .font(.caption2)
-        }
-        .foregroundStyle(past ? AppTheme.cafeAccent : .white)
-        .opacity(op)
-        .animation(.easeOut(duration: 0.1), value: op)
-    }
-
-    // MARK: - Shutter button
-
-    private var shutterButton: some View {
-        ZStack {
-            // Progress ring (recording)
-            Circle()
-                .trim(from: 0, to: camera.recordingProgress)
-                .stroke(
-                    camera.isLocked ? AppTheme.cafeAccent : Color.red,
-                    style: StrokeStyle(lineWidth: 4, lineCap: .round)
-                )
-                .frame(width: 84, height: 84)
-                .rotationEffect(.degrees(-90))
-                .animation(.linear(duration: 0.05), value: camera.recordingProgress)
-
-            // Outer ring
-            Circle()
-                .stroke(ringColor, lineWidth: 3)
-                .frame(width: 70, height: 70)
-
-            // Inner fill
-            Circle()
-                .fill(fillColor)
-                .frame(width: 60, height: 60)
-
-            // Icon overlay
-            if camera.isLocked {
-                Image(systemName: "lock.fill")
-                    .font(.title3).bold()
-                    .foregroundStyle(.white)
-            } else if isHolding || camera.isRecording {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.white)
-                    .frame(width: 18, height: 18)
-            }
-        }
-        .scaleEffect(isDragging ? 1.08 : 1.0)
-        .animation(.spring(response: 0.22, dampingFraction: 0.5), value: isDragging)
-    }
-
-    private var ringColor: Color {
-        if camera.isLocked    { return AppTheme.cafeAccent }
-        if camera.isRecording { return .red }
-        return .white.opacity(0.85)
-    }
-
-    private var fillColor: Color {
-        if camera.isLocked    { return AppTheme.cafeAccent.opacity(0.3) }
-        if camera.isRecording { return Color.red.opacity(0.3) }
-        return Color.white.opacity(0.15)
-    }
-
-    // MARK: - Gesture
-
-    private var shutterGesture: some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { value in
-                translation = value.translation
-
-                guard !isDragging else { return }
-                isDragging = true
-
-                // If locked recording, any touch will stop it on release —
-                // don't start another hold timer.
-                guard !camera.isLocked else { return }
-
-                holdTask = Task {
-                    try? await Task.sleep(for: .seconds(0.35))
-                    guard !Task.isCancelled else { return }
-                    let t = translation
-                    if abs(t.width) < 20 && abs(t.height) < 20 {
-                        await MainActor.run {
-                            isHolding = true
-                            camera.startRecording()
-                            HeroShutterHaptics.recordStart()
-                        }
-                    }
-                }
-            }
-            .onEnded { value in
-                holdTask?.cancel()
-                holdTask = nil
-
-                let t    = value.translation
-                let tiny = abs(t.width) < 30 && abs(t.height) < 30
-
-                defer {
-                    isDragging  = false
-                    isHolding   = false
-                    translation = .zero
-                }
-
-                // Tap on locked button → stop
-                if camera.isLocked {
-                    HeroShutterHaptics.recordStop()
-                    camera.stopRecording()
-                    return
-                }
-
-                // Release during hold recording → stop
-                if camera.isRecording {
-                    HeroShutterHaptics.recordStop()
-                    camera.stopRecording()
-                    return
-                }
-
-                // Tap (no movement) → photo
-                if tiny {
-                    HeroShutterHaptics.photoShutter()
-                    camera.capture()
-                    return
-                }
-
-                // Directional commit (> 80pt in dominant axis)
-                switch dominantDir(t) {
-                case .left:
-                    HeroShutterHaptics.openPhotoLibrary()
-                    showPhotosPicker = true
-                case .right:
-                    HeroShutterHaptics.lockRecordingMode()
-                    camera.lockRecording()
-                case .down:
-                    HeroShutterHaptics.flipCamera()
-                    camera.switchCamera()
-                case .up:
-                    HeroShutterHaptics.scrollToFeed()
-                    scrollToFeedFromCamera()
-                case nil:
-                    HeroShutterHaptics.photoShutter()
-                    camera.capture()
-                }
-            }
-    }
-
-    // MARK: - Gesture helpers
-
-    private func magnitude(for dir: DragDir) -> CGFloat {
-        switch dir {
-        case .left:  return max(0, -translation.width)
-        case .right: return max(0,  translation.width)
-        case .up:    return max(0, -translation.height)
-        case .down:  return max(0,  translation.height)
-        }
-    }
-
-    private func hintOpacity(_ dir: DragDir) -> Double {
-        Double(max(0, min(1, (magnitude(for: dir) - 20) / 60)))
-    }
-
-    private func isPastThreshold(_ dir: DragDir) -> Bool {
-        magnitude(for: dir) > 80
-    }
-
-    /// Returns nil when translation is too small to commit.
-    private func dominantDir(_ t: CGSize) -> DragDir? {
-        let threshold: CGFloat = 80
-        let ax = abs(t.width), ay = abs(t.height)
-        guard max(ax, ay) >= threshold else { return nil }
-        if ax > ay { return t.width  < 0 ? .left  : .right }
-        else        { return t.height < 0 ? .up    : .down  }
-    }
+    // The shutter button, its gesture state machine, direction hints and the
+    // first-run coach overlay now live in `ShutterControl` (ShutterControl.swift).
 
     // MARK: - Permission denied
 

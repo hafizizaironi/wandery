@@ -69,6 +69,17 @@ struct MainShellView: View {
     @State private var showMyHunt = false
     @State private var friendPlacesService = FriendPlacesService()
 
+    /// "What's new" carousel — shown once per release. The release identity
+    /// is `whatsNewReleaseKey` in `WhatsNewSheet.swift`; bump that constant
+    /// for the next round of changes and the sheet shows again automatically
+    /// for everyone (existing users + brand-new accounts).
+    @AppStorage("whatsNew.lastSeenKey") private var whatsNewLastSeen: String = ""
+    @State private var showWhatsNew = false
+    /// Pulse-binding for the WhatsNew "Show me the map →" jump:
+    /// MainShellView sets this true, MainMapView watches and opens the
+    /// Trending sheet, then resets the flag.
+    @State private var pendingShowTrending = false
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -83,7 +94,8 @@ struct MainShellView: View {
                         firestoreService: firestoreService,
                         socialService: socialService,
                         isActive: selectedPage == .map,
-                        pendingPlaceJumpId: $pendingMapJumpPlaceId
+                        pendingPlaceJumpId: $pendingMapJumpPlaceId,
+                        pendingShowTrending: $pendingShowTrending
                     )
                         .frame(width: geo.size.width, height: geo.size.height)
                         .offset(x: (0 - pageProgress) * geo.size.width)
@@ -117,7 +129,8 @@ struct MainShellView: View {
                                 displayName: row.titleText,
                                 photoURL: row.photoURL
                             )
-                        }
+                        },
+                        onPreviewWhatsNew:   { showWhatsNew = true }
                     )
                     .frame(width: geo.size.width, height: geo.size.height)
                     .offset(x: (2 - pageProgress) * geo.size.width)
@@ -237,6 +250,45 @@ struct MainShellView: View {
                 onClose:            { showFriendFindSheet = false }
             )
         }
+        .sheet(isPresented: $showWhatsNew) {
+            WhatsNewSheet(
+                onDismiss: {
+                    whatsNewLastSeen = whatsNewReleaseKey
+                    showWhatsNew = false
+                },
+                onJumpToFeature: { feature in
+                    // Mark the tour as seen + close, then route. The deeper
+                    // navs (Discover sheet / My Hunt overlay) fire after a
+                    // short delay so the page-switch animation lands first.
+                    whatsNewLastSeen = whatsNewReleaseKey
+                    showWhatsNew = false
+                    switch feature {
+                    case .camera:
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                            selectedPage = .hero
+                        }
+                    case .discover:
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                            selectedPage = .map
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                            pendingShowTrending = true
+                        }
+                    case .myHunt:
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                            selectedPage = .profile
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                                showMyHunt = true
+                            }
+                        }
+                    }
+                }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
         .onAppear {
             // Once per cold launch: surface the soft prompt to legacy
             // users (the hard gate in ContentView already handles new
@@ -260,6 +312,22 @@ struct MainShellView: View {
                     if userPrivateService.shouldSuggestContacts && !showPhonePromptPanel {
                         showContactsSuggestionPanel = true
                     }
+                }
+            }
+
+            // What's New — once per release. Delayed longer than the phone/
+            // contacts prompts so it never piles on; if either is up when
+            // the timer fires, defer to next cold launch (the key won't
+            // update until the user dismisses *this* sheet).
+            if whatsNewLastSeen != whatsNewReleaseKey {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    guard whatsNewLastSeen != whatsNewReleaseKey else { return }
+                    guard !showPhonePromptPanel,
+                          !showContactsSuggestionPanel,
+                          !showPhoneOnboardingSheet,
+                          !showFriendFindSheet,
+                          chatPresentation == nil else { return }
+                    showWhatsNew = true
                 }
             }
         }

@@ -20,6 +20,11 @@ struct ProfileHomeView: View {
     /// floating panel. MainShellView responds by presenting the chat
     /// fullScreenCover already opened to this friend's thread.
     var onMessageFriend: (FriendRow) -> Void = { _ in }
+    /// Admin-only hook to re-present the "What's New" tutorial — bypasses
+    /// the once-per-release AppStorage gate so the admin can preview the
+    /// sheet without reinstalling. MainShellView toggles its own
+    /// `showWhatsNew` from this closure.
+    var onPreviewWhatsNew: () -> Void = {}
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1017,6 +1022,36 @@ struct ProfileHomeView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Manage Creator's Pick")
+
+                // Admin-only: re-open the "What's New" tour. Bypasses the
+                // once-per-release AppStorage gate so we can preview copy/
+                // animations on the spot.
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onPreviewWhatsNew()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles.rectangle.stack.fill")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cafeAccent)
+                        Text("Preview What's New")
+                            .font(.caption).bold()
+                            .foregroundStyle(AppTheme.cafeAccent)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cafeAccent.opacity(0.6))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.cafeAccent.opacity(0.1))
+                    .clipShape(.rect(cornerRadius: 20))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Preview What's New tutorial")
             }
 
             // (Manual "Recompute achievements" button was removed — the
@@ -1059,6 +1094,13 @@ struct ProfileHomeView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Polaroid frames")
             .accessibilityValue(usePolaroidFrame ? "On" : "Off")
+
+            // Friend-of-friend Discover opt-out. The Cloud Function checks
+            // `users/{uid}.optedOutOfDiscovery` before letting this user's
+            // visits surface in others' circle pins. UI reads as opt-IN
+            // ("Help") while the stored field stays opt-OUT (default-falsey
+            // → an absent field is treated as opted in).
+            helpsCircleDiscoverRow
 
             // Reviewer-required legal + support surfaces. App Store
             // Guideline 1.2 expects users to reach the developer from
@@ -1142,6 +1184,48 @@ struct ProfileHomeView: View {
         } catch {
             signOutError = error.localizedDescription
         }
+    }
+
+    /// Inverse of the stored `optedOutOfDiscovery` field: the toggle reads
+    /// "Help your circle discover" (on = contributing). The write goes
+    /// through `SocialService.setOptedOutOfDiscovery(_:)`; the Firestore
+    /// listener feeds the latest value back via `socialService.profile`.
+    private var helpsCircleDiscoverRow: some View {
+        let helping = !(socialService.profile?.optedOutOfDiscovery ?? false)
+        return HStack(spacing: 10) {
+            Image(systemName: "sparkle.magnifyingglass")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.cafeAccent)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Help your circle discover")
+                    .font(.subheadline).bold()
+                    .foregroundStyle(AppTheme.textPrimary)
+                Text("Your visits may appear (blurred) to friends-of-friends.")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { helping },
+                set: { newValue in
+                    Task { try? await socialService.setOptedOutOfDiscovery(!newValue) }
+                }
+            ))
+            .labelsHidden()
+            .tint(AppTheme.accentAction)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(AppTheme.textPrimary.opacity(0.04))
+        .clipShape(.rect(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Help your circle discover")
+        .accessibilityValue(helping ? "On" : "Off")
     }
 
     @ViewBuilder

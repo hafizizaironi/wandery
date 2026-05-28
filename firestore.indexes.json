@@ -32,6 +32,33 @@
         { "fieldPath": "mediaType", "order": "ASCENDING" },
         { "fieldPath": "aestheticScore", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "posts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "placeId", "order": "ASCENDING" },
+        { "fieldPath": "discoverable", "order": "ASCENDING" },
+        { "fieldPath": "aestheticScore", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "posts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "placeId", "order": "ASCENDING" },
+        { "fieldPath": "authorId", "order": "ASCENDING" },
+        { "fieldPath": "discoverable", "order": "ASCENDING" },
+        { "fieldPath": "aestheticScore", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "posts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "placeId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

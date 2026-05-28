@@ -2,7 +2,6 @@ import FirebaseAppCheck
 @preconcurrency import FirebaseAuth
 import FirebaseCore
 import FirebaseMessaging
-import GoogleSignIn
 import UIKit
 
 /// Hosts all Firebase initialization + manual notification forwarding.
@@ -70,14 +69,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         completionHandler(.newData)
     }
 
-    // MARK: - URL handling (reCAPTCHA return, Google Sign-In)
-
-    func application(_ app: UIApplication,
-                     open url: URL,
-                     options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
-        if Auth.auth().canHandle(url) {
-            return true
-        }
-        return GIDSignIn.sharedInstance.handle(url)
-    }
+    // URL handling (Firebase Auth reCAPTCHA return + Google Sign-In callback)
+    // moved into `CafeHunterApp.body`'s `.onOpenURL` for iOS 26 — the
+    // AppDelegate `application(_:open:options:)` path was deprecated in
+    // favour of UIScene-based URL contexts. SwiftUI's `.onOpenURL` is the
+    // scene-aware equivalent and feeds both Firebase Auth and Google
+    // Sign-In handlers there.
 }

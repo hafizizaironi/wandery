@@ -36,6 +36,13 @@ final class CameraService: NSObject {
     var currentPosition: AVCaptureDevice.Position = .back
     /// Rear: 1× vs 0.5× (virtual zoom ramp or physical lens).
     var lensSlot: CameraLensSlot = .primary
+    /// Displayed zoom factor shown on the dial (0.5–8×). The dial reads and
+    /// writes this; `setZoom(displayed:)` maps it to the device's
+    /// `videoZoomFactor`. Reset to 1× on camera flip.
+    var displayedZoom: CGFloat = 1.0
+    /// Photo flash + video torch. `.off` default. Drives `AVCapturePhotoSettings.flashMode`
+    /// in `capture()` and the device torch while recording.
+    var flashMode: AVCaptureDevice.FlashMode = .off
 
     // MARK: - Session
 
@@ -54,6 +61,11 @@ final class CameraService: NSObject {
     private var videoExportTask: Task<Void, Never>?
     private var pendingRawVideoURL: URL?
     private let maxDuration: TimeInterval = 5
+    /// Set by `prepareForRecording()` on shutter touch-down. When true,
+    /// `startRecording()` skips the (already-applied) video connection config
+    /// so the start path only has to add audio + roll the file — shaving the
+    /// device-lock + stabilization work off the moment recording begins.
+    private var recordingConfigPrepared = false
     /// Cancels in-flight linear zoom steps when the user toggles again.
     private var zoomRampGeneration: UInt = 0
 
@@ -64,6 +76,22 @@ final class CameraService: NSObject {
     var hasLensToggleForCurrentCamera: Bool {
         currentPosition == .back && Self.rearHasHalfWideCapability
     }
+
+    /// Displayed-zoom floor for the live camera. 0.5× is only reachable
+    /// *continuously* on a virtual rear camera (dual-wide / triple); front and
+    /// non-virtual devices floor at 1.0 (digital zoom only). MainActor-safe:
+    /// reads `currentPosition` + a static device-discovery check (no `currentInput`).
+    var minDisplayedZoom: CGFloat {
+        (currentPosition == .back && Self.backVirtualDevice() != nil) ? 0.5 : 1.0
+    }
+    /// UI ceiling for the zoom dial. The actual `videoZoomFactor` is additionally
+    /// clamped to the device's real max inside `setZoom(displayed:)`.
+    var maxDisplayedZoom: CGFloat { 8.0 }
+    /// Whether the dial should offer a 0.5× chip.
+    var supportsHalfZoom: Bool { minDisplayedZoom < 1.0 }
+    /// Torch only exists on the rear camera (front has no flash). Used to dim
+    /// the flash control in Video mode. MainActor-safe (no `currentInput` read).
+    var hasTorchForCurrentCamera: Bool { currentPosition == .back }
 
     func toggleLens() {
         print("[Camera] toggleLens: hasToggle=\(hasLensToggleForCurrentCamera) currentSlot=\(lensSlot) position=\(currentPosition.rawValue)")
@@ -164,6 +192,11 @@ final class CameraService: NSObject {
                 settings.maxPhotoDimensions = maxDim
             }
         }
+        // Apply flash only if the active output/device supports the chosen mode
+        // (front cameras report only `.off`).
+        if photoOutput.supportedFlashModes.contains(flashMode) {
+            settings.flashMode = flashMode
+        }
         photoOutput.capturePhoto(with: settings, delegate: self)
         #endif
     }
@@ -237,13 +270,22 @@ final class CameraService: NSObject {
             #endif
         }
 
+        let prepared = recordingConfigPrepared
         sessionQueue.sync { [weak self] in
             guard let self else { return }
             self.addAudioInputIfNeeded()
-            self.applyNaturalVideoMirroringToOutputs()
-            self.reapplyDeviceRecordingFrameDuration()
-            self.applyVideoStabilization()
+            // Skip the connection config if a touch-down warm-up already ran
+            // it (the serial queue guarantees that block finished before this
+            // one). Falls back to applying inline for any non-warmed caller.
+            if !prepared {
+                self.applyNaturalVideoMirroringToOutputs()
+                self.reapplyDeviceRecordingFrameDuration()
+                self.applyVideoStabilization()
+            }
         }
+        recordingConfigPrepared = false
+        // Light the torch for the duration if flash is on (no-op on front / no-torch).
+        applyTorch(on: flashMode != .off)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".mov")
         movieOutput.maxRecordedDuration = CMTime(seconds: maxDuration,
@@ -268,6 +310,7 @@ final class CameraService: NSObject {
         progressTask?.cancel()
         progressTask = nil
         movieOutput.stopRecording()
+        applyTorch(on: false)
         isRecording      = false
         isLocked         = false
         recordingProgress = 0
@@ -279,9 +322,80 @@ final class CameraService: NSObject {
         startRecording()
     }
 
+    /// Front-runs the recording connection config on shutter touch-down, so the
+    /// device-lock / frame-rate / stabilization work happens during the
+    /// hold-to-record window instead of at the instant recording starts.
+    /// Idempotent and cheap; the matching `startRecording()` consumes it.
+    func prepareForRecording() {
+        #if !targetEnvironment(simulator)
+        guard session.isRunning, !isRecording else { return }
+        recordingConfigPrepared = true
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.applyNaturalVideoMirroringToOutputs()
+            self.reapplyDeviceRecordingFrameDuration()
+            self.applyVideoStabilization()
+        }
+        #endif
+    }
+
+    /// Touch ended without recording (tap / library / flip / feed). Invalidate
+    /// the warm-up so the next touch — or a camera flip — re-applies fresh
+    /// config. The already-applied connection settings are harmless to leave.
+    func discardRecordingPreparation() {
+        recordingConfigPrepared = false
+    }
+
+    // MARK: - Continuous zoom
+
+    /// Set the camera to a DISPLAYED zoom factor (the 0.5–8× the user sees on
+    /// the dial). Maps to `videoZoomFactor` via `displayed * oneXVideoZoom` —
+    /// the same endpoints `applyRearZoom` uses — then clamps to the device's
+    /// real range. Called from the dial on the main actor; the device write
+    /// runs on `sessionQueue`. Bumps `zoomRampGeneration` so a stale lens-toggle
+    /// ramp can't fight the scrub.
+    func setZoom(displayed: CGFloat) {
+        let clamped = min(max(displayed, minDisplayedZoom), maxDisplayedZoom)
+        displayedZoom = clamped
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.currentInput?.device else { return }
+            let oneX = Self.oneXVideoZoom(for: device)
+            let zf = min(max(clamped * oneX, device.minAvailableVideoZoomFactor),
+                         device.maxAvailableVideoZoomFactor)
+            self.zoomRampGeneration += 1
+            device.cancelVideoZoomRamp()
+            do {
+                try device.lockForConfiguration()
+                device.videoZoomFactor = zf
+                device.unlockForConfiguration()
+            } catch {}
+        }
+    }
+
+    /// Turn the device torch on/off for video recording. No-op on cameras
+    /// without a torch (front camera, flash-less hardware).
+    private func applyTorch(on: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.currentInput?.device,
+                  device.hasTorch, device.isTorchAvailable else { return }
+            do {
+                try device.lockForConfiguration()
+                device.torchMode = on ? .on : .off
+                device.unlockForConfiguration()
+            } catch {}
+        }
+    }
+
     // MARK: - Camera flip
 
     func switchCamera() {
+        // The new device needs its own recording config, so drop any warm-up
+        // that targeted the old one.
+        recordingConfigPrepared = false
+        // A rolling torch belongs to the old device; kill it before the swap,
+        // and reset the dial to 1× so it doesn't show a stale zoom for the new camera.
+        applyTorch(on: false)
+        displayedZoom = 1.0
         let newPos: AVCaptureDevice.Position = currentPosition == .back ? .front : .back
         let slot = lensSlot
         sessionQueue.async { [weak self] in
@@ -720,9 +834,17 @@ extension CameraService: AVCaptureFileOutputRecordingDelegate {
                                 from connections: [AVCaptureConnection],
                                 error: Error?) {
         // Tear down the audio path now that the file is finalized — keeps Bluetooth
-        // devices in A2DP between recordings.
+        // devices in A2DP between recordings. Also ensure the torch is off in case
+        // the recording ended via interruption rather than `stopRecording()`.
         sessionQueue.async { [weak self] in
-            self?.removeAudioInput()
+            guard let self else { return }
+            self.removeAudioInput()
+            if let device = self.currentInput?.device, device.hasTorch,
+               device.isTorchAvailable, device.torchMode != .off {
+                try? device.lockForConfiguration()
+                device.torchMode = .off
+                device.unlockForConfiguration()
+            }
         }
         Task { @MainActor in
             AppAudioSession.deactivate()

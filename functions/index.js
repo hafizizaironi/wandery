@@ -1216,3 +1216,397 @@ exports.reportContent = onCall(
     return { ok: true };
   },
 );
+
+// ============================================================================
+// discoverFeed — network-aware Discover (friend-of-friend + global trending)
+// ----------------------------------------------------------------------------
+// Replaces the legacy "Creator's Pick" surface with two channels:
+//
+//   1. circle    — places visited by 2nd-degree connections (friend of a
+//                  friend) that neither the caller nor any of their direct
+//                  friends has been to yet. Returned WITHOUT uids/usernames —
+//                  just an anonymised viaCount so the client can render
+//                  "Visited by N people in your circle". Photos (when any)
+//                  come ONLY from posts with `discoverable == true` (the
+//                  existing consent gate); pins blur them for UX tease.
+//
+//   2. trending  — places ordered by `globalVisitCount` globally (ignores
+//                  proximity), with up to 3 preview photos from
+//                  `discoverable == true` posts at that place.
+//
+// Friend-of-friend traversal MUST live server-side: Firestore rules block
+// reading another user's `friends` subcollection. We use the admin SDK to
+// fan out, then cache the privacy-scrubbed payload at
+// `users/{uid}/discover/cache` with a 6-hour TTL so we don't re-run the
+// expensive fan-out on every map load. Pass `force: true` to bypass the
+// cache (used for pull-to-refresh).
+// ============================================================================
+
+const DISCOVER = {
+  CACHE_TTL_MS: 6 * 60 * 60 * 1000,
+  F2_HARD_CAP: 400,
+  VISITS_PER_F2: 30,
+  TOTAL_VISIT_READ_CAP: 4000,   // safety valve — set `partial: true` if hit
+  CIRCLE_TOP_N: 50,
+  TRENDING_FETCH: 100,
+  TRENDING_RETURN: 20,
+  TRENDING_PHOTOS: 3,
+  IN_QUERY_CHUNK: 30,           // Firestore `in`/documentId-in cap
+};
+
+/** Chunk an array into pieces of at most `n` elements. */
+function chunk(arr, n) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+/** Read a flat set of doc ids from a subcollection (returns an array of ids). */
+async function listSubcollectionIds(ref) {
+  const snap = await ref.get();
+  return snap.docs.map((d) => d.id);
+}
+
+/** Batched `optedOutOfDiscovery` lookup via admin SDK `getAll`. */
+async function loadOptOutFlags(db, uids) {
+  if (uids.length === 0) return new Map();
+  const refs = uids.map((u) => db.collection("users").doc(u));
+  const snaps = await db.getAll(...refs);
+  return new Map(
+    snaps.map((s) => [s.id, !!(s.data() || {}).optedOutOfDiscovery]),
+  );
+}
+
+/** Shape a place doc into the response wire format (no internal fields). */
+function shapePlace(doc, extras = {}) {
+  const d = doc.data() || {};
+  return {
+    placeId: doc.id,
+    name: d.name || "",
+    type: d.type || "cafe",
+    lat: typeof d.lat === "number" ? d.lat : 0,
+    lng: typeof d.lng === "number" ? d.lng : 0,
+    globalVisitCount: d.globalVisitCount || 0,
+    ...extras,
+  };
+}
+
+/**
+ * Three-way classification for a post's photo in Discover surfaces:
+ *
+ *   "exclude" — never show, not even blurred. Two cases:
+ *     1. Classifier detected a face → privacy.
+ *     2. Author tapped "Hide from Discover" → respect their explicit choice.
+ *        Detected by: discoverable=false BUT the classifier had said
+ *        containsFaces=false AND aestheticScore≥0.6 (i.e. it had previously
+ *        passed and was flipped off manually).
+ *
+ *   "blur"    — show, but blurred client-side. Covers:
+ *     - classifier-hidden low-aesthetic (containsFaces=false, score<0.6),
+ *     - posts that were never classified (no fields present — common on
+ *       older devices / older posts).
+ *
+ *   "clear"   — show full-resolution. Only `discoverable === true` posts.
+ *
+ * Author-level `optedOutOfDiscovery` is a separate gate applied on top:
+ * an opted-out author's "clear" photo is forced to "blur".
+ */
+function classifyPhoto(data) {
+  if (data.containsFaces === true) return "exclude";
+  if (
+    data.discoverable === false &&
+    data.containsFaces === false &&
+    typeof data.aestheticScore === "number" &&
+    data.aestheticScore >= 0.6
+  ) {
+    return "exclude";   // author manually hid
+  }
+  return data.discoverable === true ? "clear" : "blur";
+}
+
+exports.discoverFeed = onCall(
+  { timeoutSeconds: 60, memory: "512MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const force = request.data?.force === true;
+
+    const db = admin.firestore();
+    const cacheRef = db.collection("users").doc(uid).collection("discover").doc("cache");
+
+    // 1. Cache short-circuit
+    if (!force) {
+      const cacheSnap = await cacheRef.get();
+      const cached = cacheSnap.data();
+      const exp = cached?.expiresAt?.toMillis ? cached.expiresAt.toMillis() : 0;
+      if (cached?.payload && exp > Date.now()) {
+        return cached.payload;
+      }
+    }
+
+    // 2. Resolve caller
+    const meRef = db.collection("users").doc(uid);
+    const [meSnap, friendsIds, blockedIds, callerVisits] = await Promise.all([
+      meRef.get(),
+      listSubcollectionIds(meRef.collection("friends")),
+      listSubcollectionIds(meRef.collection("blockedUsers")),
+      listSubcollectionIds(meRef.collection("visits")),
+    ]);
+    const me = meSnap.data() || {};
+    const blockedSet = new Set(blockedIds);
+    const F1 = friendsIds.filter((id) => !blockedSet.has(id));
+    const visitedSet = new Set(callerVisits);
+
+    const writeCache = async (payload) => {
+      try {
+        await cacheRef.set({
+          payload,
+          cachedAt: admin.firestore.FieldValue.serverTimestamp(),
+          expiresAt: admin.firestore.Timestamp.fromMillis(
+            Date.now() + DISCOVER.CACHE_TTL_MS,
+          ),
+        });
+      } catch (err) {
+        logger.warn("[discoverFeed] cache write failed", { uid, message: err?.message });
+      }
+      return payload;
+    };
+
+    // If the caller opted out of discovery, they still receive trending —
+    // they just don't contribute to others. Don't short-circuit entirely.
+    const callerOptedOut = !!me.optedOutOfDiscovery;
+
+    // 3. Build F2 = (∪ friends-of-friends) \ {self, F1, blocked, opted-out}
+    let f2ToVia = new Map(); // f2 uid → Set<f1 uid that bridged>
+    if (!callerOptedOut && F1.length > 0) {
+      const f1FriendLists = await Promise.all(
+        F1.map((f1) =>
+          listSubcollectionIds(db.collection("users").doc(f1).collection("friends"))
+            .catch(() => []),
+        ),
+      );
+      const f1Set = new Set(F1);
+      f1FriendLists.forEach((ids, idx) => {
+        const bridge = F1[idx];
+        for (const f2 of ids) {
+          if (f2 === uid) continue;
+          if (f1Set.has(f2)) continue;
+          if (blockedSet.has(f2)) continue;
+          if (!f2ToVia.has(f2)) f2ToVia.set(f2, new Set());
+          f2ToVia.get(f2).add(bridge);
+        }
+      });
+
+      // Drop opted-out F2 contributors.
+      const optOutFlags = await loadOptOutFlags(db, [...f2ToVia.keys()]);
+      for (const [f2, opted] of optOutFlags) {
+        if (opted) f2ToVia.delete(f2);
+      }
+
+      // Hard cap (sort by bridge-count desc to keep the most "connected" F2 first).
+      if (f2ToVia.size > DISCOVER.F2_HARD_CAP) {
+        const top = [...f2ToVia.entries()]
+          .sort((a, b) => b[1].size - a[1].size)
+          .slice(0, DISCOVER.F2_HARD_CAP);
+        f2ToVia = new Map(top);
+      }
+    }
+
+    // 4. Aggregate F2 visits → placeId → Set<f2>
+    const placeToF2 = new Map(); // placeId → Set<f2 uid>
+    let visitReads = 0;
+    let partial = false;
+    const f2Ids = [...f2ToVia.keys()];
+
+    for (const batch of chunk(f2Ids, 20)) {
+      if (visitReads >= DISCOVER.TOTAL_VISIT_READ_CAP) { partial = true; break; }
+      await Promise.all(
+        batch.map(async (f2) => {
+          if (visitReads >= DISCOVER.TOTAL_VISIT_READ_CAP) return;
+          try {
+            const snap = await db
+              .collection("users").doc(f2).collection("visits")
+              .orderBy("openedAt", "desc")
+              .limit(DISCOVER.VISITS_PER_F2)
+              .get();
+            visitReads += snap.size;
+            for (const doc of snap.docs) {
+              const placeId = doc.id;
+              if (visitedSet.has(placeId)) continue;  // caller already been
+              if (!placeToF2.has(placeId)) placeToF2.set(placeId, new Set());
+              placeToF2.get(placeId).add(f2);
+            }
+          } catch (err) {
+            logger.warn("[discoverFeed] visits read failed", { f2, message: err?.message });
+          }
+        }),
+      );
+    }
+
+    // Snapshot ALL F2-visited places before F1-removal. Used later to keep
+    // Trending honest — any place an F2 visited is "in your circle", even if
+    // it didn't make the top-N circle cut, and shouldn't reappear as a
+    // stranger surface.
+    const f2VisitedAll = new Set(placeToF2.keys());
+
+    // F1 visit exclusion — read each F1's visit doc ids (unconditionally, so
+    // we can reuse the set to filter trending below) and remove from placeToF2.
+    let f1Visited = new Set();
+    if (F1.length > 0) {
+      const f1VisitLists = await Promise.all(
+        F1.map((f1) =>
+          listSubcollectionIds(db.collection("users").doc(f1).collection("visits"))
+            .catch(() => []),
+        ),
+      );
+      f1Visited = new Set(f1VisitLists.flat());
+      for (const pid of f1Visited) placeToF2.delete(pid);
+    }
+
+    // 5. Rank circle places by |F2 set| desc, take top N.
+    const circleRanked = [...placeToF2.entries()]
+      .sort((a, b) => b[1].size - a[1].size)
+      .slice(0, DISCOVER.CIRCLE_TOP_N);
+    const circleSet = new Set(circleRanked.map(([pid]) => pid));
+
+    // 6. Fetch each circle place doc + pick ONE photo from posts authored by
+    //    any of its F2 contributors. Uses the same exclude/blur/clear
+    //    classifier as trending — but since the circle pin ALWAYS renders
+    //    its photo blurred (it's a teaser surface), we don't need to
+    //    distinguish clear vs blur in the response. We just need to apply
+    //    the hard-hide gates (face / author explicit hide) so face photos
+    //    never reach a circle pin even at low blur radius.
+    const circle = [];
+    if (circleRanked.length > 0) {
+      const placeSnaps = await db.getAll(
+        ...circleRanked.map(([pid]) => db.collection("places").doc(pid)),
+      );
+      await Promise.all(
+        circleRanked.map(async ([pid, f2Set], i) => {
+          const placeSnap = placeSnaps[i];
+          if (!placeSnap.exists) return;
+          let photoURL = null;
+          try {
+            // Reuse the `(placeId, createdAt DESC)` index — pull recent posts
+            // at the place and filter by F2-authorship in code. Cheaper than
+            // adding a separate (placeId, authorId, createdAt) composite.
+            const q = await db.collection("posts")
+              .where("placeId", "==", pid)
+              .orderBy("createdAt", "desc")
+              .limit(30)
+              .get();
+            for (const doc of q.docs) {
+              const data = doc.data() || {};
+              if (!f2Set.has(data.authorId)) continue;
+              if (classifyPhoto(data) === "exclude") continue;
+              const url = data.mediaURL || data.thumbnailURL;
+              if (url) { photoURL = url; break; }
+            }
+          } catch (err) {
+            // Missing index / transient — pin renders a placeholder.
+            logger.warn("[discoverFeed] circle photo lookup failed", {
+              placeId: pid, message: err?.message,
+            });
+          }
+          circle.push(shapePlace(placeSnap, {
+            photoURL,
+            viaCount: f2Set.size,
+          }));
+        }),
+      );
+      // Preserve rank order (Promise.all randomises completion).
+      circle.sort((a, b) => b.viaCount - a.viaCount);
+    }
+
+    // 7. Trending — top by globalVisitCount, restricted to places NOBODY in
+    //    the caller's relationship graph (self / friends / friends-of-friends)
+    //    has visited. Trending is the "pure strangers" surface; anyone with
+    //    even a single-hop connection to a place pushes it into the friend
+    //    pin layer or the Circle surface instead.
+    let trending = [];
+    try {
+      const trendSnap = await db.collection("places")
+        .orderBy("globalVisitCount", "desc")
+        .limit(DISCOVER.TRENDING_FETCH)
+        .get();
+      const candidates = trendSnap.docs.filter((d) => {
+        if (visitedSet.has(d.id)) return false;
+        if (f1Visited.has(d.id))  return false;   // friend visited → not stranger
+        if (f2VisitedAll.has(d.id)) return false; // friend-of-friend visited → not stranger
+        const v = (d.data() || {}).globalVisitCount || 0;
+        return v > 0;
+      }).slice(0, DISCOVER.TRENDING_RETURN);
+
+      // Fetch up to 3 photos per trending place. See `classifyPhoto` for the
+      // three-way decision (exclude / blur / clear). Author-level opt-out
+      // forces a clear photo to blur. We prefer clear over blurred when both
+      // exist at a place, so the trending row leads with the best signal.
+      await Promise.all(
+        candidates.map(async (doc) => {
+          let clearCandidates = [];
+          let blurCandidates = [];
+          try {
+            const q = await db.collection("posts")
+              .where("placeId", "==", doc.id)
+              .orderBy("createdAt", "desc")
+              .limit(20)
+              .get();
+            for (const p of q.docs) {
+              const data = p.data() || {};
+              const verdict = classifyPhoto(data);
+              if (verdict === "exclude") continue;
+              const url = data.mediaURL || data.thumbnailURL;
+              if (!url) continue;
+              const entry = { url, authorId: data.authorId, verdict };
+              if (verdict === "clear") clearCandidates.push(entry);
+              else                     blurCandidates.push(entry);
+              if (clearCandidates.length + blurCandidates.length >= 20) break;
+            }
+          } catch (err) {
+            logger.warn("[discoverFeed] trending photo lookup failed", {
+              placeId: doc.id, message: err?.message,
+            });
+          }
+          // Clear first, blurred as fallback, take top N.
+          const merged = [...clearCandidates, ...blurCandidates]
+            .slice(0, DISCOVER.TRENDING_PHOTOS);
+          const authorIds = [...new Set(
+            merged.map((p) => p.authorId).filter(Boolean)
+          )];
+          const optOuts = authorIds.length > 0
+            ? await loadOptOutFlags(db, authorIds)
+            : new Map();
+          const photos = merged.map((p) => ({
+            url: p.url,
+            // Already blurred by classifier verdict, OR forced by author opt-out.
+            blur: p.verdict === "blur" || optOuts.get(p.authorId) === true,
+          }));
+          trending.push(shapePlace(doc, { photos }));
+        }),
+      );
+      // Preserve globalVisitCount order (Promise.all randomises completion).
+      trending.sort((a, b) => b.globalVisitCount - a.globalVisitCount);
+    } catch (err) {
+      logger.warn("[discoverFeed] trending query failed", { uid, message: err?.message });
+    }
+
+    // 8. Persist cache + return.
+    const payload = {
+      circle,
+      trending,
+      cachedAt: Date.now(),
+      expiresAt: Date.now() + DISCOVER.CACHE_TTL_MS,
+      partial,
+    };
+    logger.info("[discoverFeed] done", {
+      uid,
+      f1: F1.length,
+      f2: f2ToVia.size,
+      circleN: circle.length,
+      trendingN: trending.length,
+      visitReads,
+      partial,
+    });
+    return await writeCache(payload);
+  },
+);

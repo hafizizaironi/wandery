@@ -61,7 +61,8 @@ final class SocialService {
                     username: data["username"] as? String,
                     usernameLower: data["usernameLower"] as? String,
                     displayName: data["displayName"] as? String,
-                    photoURL: data["photoURL"] as? String
+                    photoURL: data["photoURL"] as? String,
+                    optedOutOfDiscovery: data["optedOutOfDiscovery"] as? Bool ?? false
                 )
             }
         }
@@ -276,6 +277,17 @@ final class SocialService {
     func setDiscoverable(postId: String, _ value: Bool) async throws {
         try await db.collection("posts").document(postId).setData([
             "discoverable": value,
+        ], merge: true)
+    }
+
+    /// Per-user opt-out from CONTRIBUTING to friend-of-friend Discover. When
+    /// true, this user's visits are not surfaced to others via the `discoverFeed`
+    /// Cloud Function. The UI exposes the inverse ("Help your circle discover")
+    /// — default-falsey here so an absent field is treated as opted in.
+    func setOptedOutOfDiscovery(_ value: Bool) async throws {
+        guard let u = uid else { throw SocialError.notSignedIn }
+        try await db.collection("users").document(u).setData([
+            "optedOutOfDiscovery": value,
         ], merge: true)
     }
 
@@ -585,13 +597,18 @@ final class SocialService {
             media: media
         ))
 
-        // Fire-and-forget the doc write (SDK caches locally + retries).
-        postRef.setData(payload) { error in
-            #if DEBUG
-            if let error {
+        // Fire-and-forget the doc write (SDK caches locally + retries) — the
+        // detached Task lets the caller's spinner stop the moment the
+        // optimistic prepend lands above, without awaiting the round-trip.
+        let postRefCopy = postRef
+        Task.detached {
+            do {
+                try await postRefCopy.setData(payload)
+            } catch {
+                #if DEBUG
                 print("[SocialService] post setData failed: \(error.localizedDescription)")
+                #endif
             }
-            #endif
         }
 
         // Background Discover classification on the first image (the bytes a

@@ -263,6 +263,12 @@ private struct ClusterInputs: Hashable {
 struct CafeMapView: View {
     let cafes: [Cafe]
     let friendPlaces: [FriendPlace]
+    /// 2nd-degree "Circle" places — rendered as smaller, dashed-ring,
+    /// blurred-photo pins that are visually distinct from the avatar-stacked
+    /// friend pins. Drawn beneath the friend layer so a place visited by both
+    /// always shows the (known) friend pin on top.
+    var circlePlaces: [CirclePlace] = []
+    var onCirclePinClick: (CirclePlace) -> Void = { _ in }
     let activeCafeId: String?
     let onPinClick: (String) -> Void
     let onFriendPinClick: (FriendPlace) -> Void
@@ -337,6 +343,23 @@ struct CafeMapView: View {
                             .accessibilityHint("Opens place details")
                     }
                 }
+            }
+            // Friend-of-friend ("Circle") teaser pins — dashed-ring, blurred
+            // photo, smaller. Drawn BEFORE the friend pins so a place tagged
+            // by both always shows the known-friend pin on top. Belt-and-braces
+            // dedup: the discoverFeed function already excludes places visited
+            // by the caller or any direct friend, so the intersection should
+            // be empty here.
+            ForEach(circlePlaces.filter { p in
+                !friendPlaces.contains(where: { $0.id == p.id })
+            }) { p in
+                Annotation(p.name,
+                           coordinate: CLLocationCoordinate2D(latitude: p.lat, longitude: p.lng),
+                           anchor: .center) {
+                    CirclePinView(place: p)
+                        .onTapGesture { onCirclePinClick(p) }
+                }
+                .annotationTitles(.hidden)
             }
             // Friend-tagged places — clustered so dense venues (malls,
             // food courts) collapse into a single stacked pin instead of

@@ -76,6 +76,14 @@ struct CachedAsyncImage<Content: View>: View {
                 let (data, response) = try await URLSession.shared.data(from: url)
                 if let http = response as? HTTPURLResponse,
                    !(200...299).contains(http.statusCode) {
+                    // 404/410 = the object is permanently gone (e.g. a deleted
+                    // post's media). Retrying can't help, and callers want to
+                    // distinguish "deleted" from a transient blip — so fail
+                    // fast with a recognisable error instead of looping.
+                    if http.statusCode == 404 || http.statusCode == 410 {
+                        phase = .failure(URLError(.fileDoesNotExist))
+                        return
+                    }
                     throw URLError(.badServerResponse)
                 }
                 guard let ui = UIImage(data: data) else {
