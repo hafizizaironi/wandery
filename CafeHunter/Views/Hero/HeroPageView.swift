@@ -73,9 +73,11 @@ struct HeroPageView: View {
     /// rendered as a small stack). Empty = placeholder.
     @State private var libraryImages: [UIImage] = []
 
-    /// Post-preview: drag the centered post control (left = retake, right = save to library).
-    @State private var isDraggingReviewPost = false
-    @State private var reviewPostTranslation = CGSize.zero
+    /// Post-preview: three discrete tap buttons (Retake · Post · Save). Drag removed —
+    /// these counters drive the per-tap icon animations.
+    @State private var retakeSpinCount = 0
+    @State private var savePressTick = 0
+    @State private var saveJustSucceeded = false
 
     @State private var heroCardID: HeroCardID? = .camera
 
@@ -522,7 +524,6 @@ struct HeroPageView: View {
         do {
             try await socialService.uploadAndCreatePost(drafts: drafts)
             clearDraftTray()
-            reviewPostTranslation = .zero
             camera.discardCapture()
             syncCameraSessionForCaptureReview()
             loadLatestLibraryThumbnail()
@@ -549,7 +550,6 @@ struct HeroPageView: View {
 
     private func retakeFromReview() {
         postError = ""
-        reviewPostTranslation = .zero
         clearDraftTray()
         camera.discardCapture()
         syncCameraSessionForCaptureReview()
@@ -640,6 +640,11 @@ struct HeroPageView: View {
     }
 
     private func saveCaptureToPhotoLibrary() {
+        // Read from the current DRAFT — `camera.capturedImage/URL` are nilled
+        // the moment a capture is appended to `drafts` (see the onChange
+        // handlers up top), so the review screen has nothing left on `camera`.
+        guard drafts.indices.contains(currentDraftIndex) else { return }
+        let source = drafts[currentDraftIndex].source
         Task {
             let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
             guard status == .authorized || status == .limited else {
@@ -647,20 +652,35 @@ struct HeroPageView: View {
                 return
             }
             do {
-                if let image = camera.capturedImage {
+                switch source {
+                case .image(let image):
                     try await PHPhotoLibrary.shared().performChanges {
                         PHAssetChangeRequest.creationRequestForAsset(from: image)
                     }
-                } else if let url = camera.capturedVideoURL {
+                case .video(let url):
                     try await PHPhotoLibrary.shared().performChanges {
                         PHAssetCreationRequest.creationRequestForAssetFromVideo(atFileURL: url)
                     }
-                } else {
-                    return
                 }
-                await MainActor.run { loadLatestLibraryThumbnail() }
+                await MainActor.run {
+                    loadLatestLibraryThumbnail()
+                    flashSaveSuccess()
+                }
             } catch {
                 await MainActor.run { postError = error.localizedDescription }
+            }
+        }
+    }
+
+    /// Show the "Saved" confirmation on the Save button briefly, then revert.
+    private func flashSaveSuccess() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
+            saveJustSucceeded = true
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.4))
+            withAnimation(.easeOut(duration: 0.25)) {
+                saveJustSucceeded = false
             }
         }
     }
@@ -897,7 +917,8 @@ struct HeroPageView: View {
             } else {
                 let cam = Bindable(camera)
                 CameraPreviewView(session: camera.session, isRunning: camera.isSessionRunning,
-                                  lensSwitchToken: camera.lensSwitchToken)
+                                  lensSwitchToken: camera.lensSwitchToken,
+                                  cameraPosition: camera.currentPosition)
                     .frame(width: side, height: side)
                     .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
                     .overlay {
@@ -1131,38 +1152,53 @@ struct HeroPageView: View {
         .frame(height: HeroCameraLayout.controlStackHeight)
     }
 
-    /// Centered post control: **tap** = post, **drag left** = retake, **drag right** = save to Photos.
+    /// Three tap buttons: Retake (left) · Post (center) · Save (right). No drag —
+    /// each button has its own press animation and the side icons use SF Symbol
+    /// replace transitions for visual confirmation.
     private var captureReviewActions: some View {
         let disabled = isPosting
             || camera.isProcessingVideo
             || drafts.isEmpty
 
-        return ZStack {
-            HStack {
-                reviewSwipeHint(
-                    title: "Retake",
-                    systemImage: "arrow.uturn.backward",
-                    emphasized: reviewPostTranslation.width < -18
-                )
-                Spacer(minLength: 0)
-                reviewSwipeHint(
-                    title: "Save",
-                    systemImage: "square.and.arrow.down",
-                    emphasized: reviewPostTranslation.width > 18
-                )
+        return HStack(spacing: 28) {
+            reviewSideButton(
+                title: "Retake",
+                systemImage: "arrow.uturn.backward",
+                tint: AppTheme.textPrimary,
+                iconRotation: Double(retakeSpinCount) * -360,
+                bounceTrigger: retakeSpinCount,
+                disabled: disabled
+            ) {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
+                    retakeSpinCount += 1
+                }
+                // Defer the screen transition so the spin animation has time
+                // to play — otherwise the review screen tears down before the
+                // user sees the icon move.
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(280))
+                    retakeFromReview()
+                }
             }
-            .padding(.horizontal, 8)
-            .opacity(disabled ? 0.35 : 1)
 
-            reviewPostControlGroup(disabled: disabled)
-                .animation(.spring(response: 0.28, dampingFraction: 0.72), value: reviewPostOffsetX)
+            reviewPostButton(disabled: disabled)
+
+            reviewSideButton(
+                title: saveJustSucceeded ? "Saved" : "Save",
+                systemImage: saveJustSucceeded ? "checkmark" : "square.and.arrow.down",
+                tint: saveJustSucceeded ? AppTheme.cafeAccent : AppTheme.textPrimary,
+                bounceTrigger: savePressTick + (saveJustSucceeded ? 1000 : 0),
+                disabled: disabled || saveJustSucceeded
+            ) {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                savePressTick += 1
+                saveCaptureToPhotoLibrary()
+            }
         }
-        .contentShape(Rectangle())
         .frame(maxWidth: .infinity)
         .frame(height: 100)
-        .highPriorityGesture(reviewPostGesture(disabled: disabled))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Post. Drag left to retake, drag right to save to library, tap to post.")
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: - Draft filmstrip
@@ -1235,129 +1271,81 @@ struct HeroPageView: View {
             }
     }
 
-    private var reviewPostOffsetX: CGFloat {
-        let t = reviewPostTranslation.width
-        let rubber: CGFloat = 0.45
-        let maxOffset: CGFloat = 44
-        return max(-maxOffset, min(maxOffset, t * rubber))
+    /// Smaller circular tap button used for Retake and Save. `iconRotation`
+    /// drives the per-tap spin on Retake; `bounceTrigger` fires an SF Symbol
+    /// bounce on every tap; the symbol-replace transition handles the Save →
+    /// checkmark morph.
+    private func reviewSideButton(
+        title: String,
+        systemImage: String,
+        tint: Color,
+        iconRotation: Double = 0,
+        bounceTrigger: Int = 0,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                    Circle()
+                        .stroke(tint.opacity(0.22), lineWidth: 1)
+                    Image(systemName: systemImage)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .rotationEffect(.degrees(iconRotation))
+                        .contentTransition(.symbolEffect(.replace))
+                        .symbolEffect(.bounce, value: bounceTrigger)
+                }
+                .frame(width: 54, height: 54)
+                Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(tint.opacity(0.85))
+                    .contentTransition(.opacity)
+            }
+            // Solid hit region — the VStack has gaps between the circle and
+            // text, which would otherwise drop taps that landed in the gap.
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.scalePress)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
+        .accessibilityLabel(title)
     }
 
-    private func shouldRunReviewPostIdleAnimation(disabled: Bool) -> Bool {
-        !disabled && !isPosting
-    }
-
+    /// Centered post button. Keeps a subtle breathing scale while idle so the
+    /// primary action stays the visual anchor; tap = post.
     @ViewBuilder
-    private func reviewPostControlGroup(disabled: Bool) -> some View {
-        if shouldRunReviewPostIdleAnimation(disabled: disabled) {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
-                let nudge = reviewPostIdleNudge(t: t)
-                let scale = reviewPostIdleOrDragScale(t: t)
-                reviewPostCircle(disabled: disabled)
-                    .offset(x: reviewPostOffsetX + nudge)
-                    .scaleEffect(scale)
-            }
-        } else {
-            reviewPostCircle(disabled: disabled)
-                .offset(x: reviewPostOffsetX)
-                .scaleEffect(isDraggingReviewPost ? 1.05 : 1)
-        }
-    }
-
-    private func reviewPostIdleNudge(t: TimeInterval) -> CGFloat {
-        if isDraggingReviewPost { return 0 }
-        return sin(t * 2.2) * 5.0
-    }
-
-    private func reviewPostIdleOrDragScale(t: TimeInterval) -> CGFloat {
-        if isDraggingReviewPost {
-            let u = min(1, abs(reviewPostOffsetX) / 44.0)
-            return 1.05 + 0.1 * u
-        }
-        return 1.0 + 0.06 * (0.5 + 0.5 * sin(t * 1.85 + 0.3))
-    }
-
-    private func reviewSwipeHint(title: String, systemImage: String, emphasized: Bool) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: systemImage)
-                .font(.system(size: emphasized ? 18 : 14, weight: .semibold))
-            Text(title)
-                .font(.system(size: emphasized ? 11 : 10, weight: .medium))
-        }
-        .foregroundStyle(emphasized ? AppTheme.cafeAccent : AppTheme.textPrimary.opacity(0.65))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            Group {
-                if emphasized {
-                    Capsule()
-                        .fill(AppTheme.cafeAccent.opacity(0.14))
+    private func reviewPostButton(disabled: Bool) -> some View {
+        let idleAnimate = !disabled && !isPosting
+        Button {
+            Task { await postFromCapture() }
+        } label: {
+            ZStack {
+                Circle()
+                    .stroke(AppTheme.accentAction.opacity(isPosting ? 0.4 : 1), lineWidth: 3)
+                    .frame(width: 70, height: 70)
+                Circle()
+                    .fill(AppTheme.accentAction.opacity((isPosting || camera.isProcessingVideo || disabled) ? 0.45 : 1))
+                    .frame(width: 56, height: 56)
+                if isPosting {
+                    ProgressView().tint(.white)
                 } else {
-                    Color.clear
+                    Image(systemName: "paperplane.fill")
+                        .font(.title2).bold()
+                        .foregroundStyle(.white)
                 }
             }
-        )
-        .scaleEffect(emphasized ? 1.12 : 1.0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: emphasized)
-    }
-
-    private func reviewPostCircle(disabled: Bool) -> some View {
-        ZStack {
-            Circle()
-                .stroke(AppTheme.accentAction.opacity(isPosting ? 0.4 : 1), lineWidth: 3)
-                .frame(width: 70, height: 70)
-            Circle()
-                .fill(AppTheme.accentAction.opacity((isPosting || camera.isProcessingVideo || disabled) ? 0.45 : 1))
-                .frame(width: 56, height: 56)
-            if isPosting {
-                ProgressView()
-                    .tint(.white)
-            } else {
-                Image(systemName: "paperplane.fill")
-                    .font(.title2).bold()
-                    .foregroundStyle(.white)
+            .phaseAnimator([1.0, 1.05]) { content, scale in
+                content.scaleEffect(idleAnimate ? scale : 1.0)
+            } animation: { _ in
+                .easeInOut(duration: 1.4)
             }
         }
-    }
-
-    private func reviewPostGesture(disabled: Bool) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { value in
-                guard !disabled else { return }
-                if !isDraggingReviewPost {
-                    isDraggingReviewPost = true
-                }
-                reviewPostTranslation = value.translation
-            }
-            .onEnded { value in
-                guard !disabled else {
-                    isDraggingReviewPost = false
-                    reviewPostTranslation = .zero
-                    return
-                }
-                let t = value.translation
-                let commit: CGFloat = 72
-                let tapMax: CGFloat = 22
-
-                defer {
-                    isDraggingReviewPost = false
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
-                        reviewPostTranslation = .zero
-                    }
-                }
-
-                let ax = abs(t.width), ay = abs(t.height)
-                if ax < tapMax && ay < tapMax {
-                    Task { await postFromCapture() }
-                    return
-                }
-                guard ax >= ay, ax >= commit else { return }
-                if t.width < -commit {
-                    retakeFromReview()
-                } else if t.width > commit {
-                    saveCaptureToPhotoLibrary()
-                }
-            }
+        .buttonStyle(.scalePress)
+        .disabled(disabled)
+        .accessibilityLabel("Post")
     }
 
     // The shutter button, its gesture state machine, direction hints and the

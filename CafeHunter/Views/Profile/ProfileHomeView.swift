@@ -69,6 +69,7 @@ struct ProfileHomeView: View {
 
     /// Presents the Creator's Pick curation surface (admin-only).
     @State private var showCreatorPicksAdmin = false
+    @State private var showClassifierTuning = false
     /// Presents the FriendFind contact-scan surface.
     @State private var showFriendFind = false
 
@@ -278,6 +279,9 @@ struct ProfileHomeView: View {
         }
         .fullScreenCover(isPresented: $showCreatorPicksAdmin) {
             CreatorPicksAdminView(onClose: { showCreatorPicksAdmin = false })
+        }
+        .fullScreenCover(isPresented: $showClassifierTuning) {
+            AdminClassifierTuningView(onClose: { showClassifierTuning = false })
         }
         .fullScreenCover(isPresented: $showFriendFind) {
             FriendFindView(
@@ -1022,6 +1026,37 @@ struct ProfileHomeView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Manage Creator's Pick")
+
+                // Admin-only: inspect on-device classifier scores for
+                // recent placed-tagged posts. Lets the admin slide a
+                // hypothetical aesthetic floor and see how each photo
+                // would be classified — used to pick a real threshold.
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    showClassifierTuning = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cafeAccent)
+                        Text("Classifier Tuning")
+                            .font(.caption).bold()
+                            .foregroundStyle(AppTheme.cafeAccent)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cafeAccent.opacity(0.6))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.cafeAccent.opacity(0.1))
+                    .clipShape(.rect(cornerRadius: 20))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open classifier tuning")
 
                 // Admin-only: re-open the "What's New" tour. Bypasses the
                 // once-per-release AppStorage gate so we can preview copy/

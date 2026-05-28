@@ -920,20 +920,35 @@ struct MainMapView: View {
             let doc = try await db.collection("places")
                 .document(placeId)
                 .getDocument(as: Place.self)
-            let postsAtPlace = socialService.feedPosts.filter { $0.distinctPlaceIds.contains(placeId) }
+            let friendPosts = socialService.feedPosts.filter { $0.distinctPlaceIds.contains(placeId) }
+            // Trending-place / new-user path: the friend graph has no posts
+            // at this place, so the card stack would render empty. Fall back
+            // to public posts (clear AND blurred) so the sheet has content.
+            // PostStackCard renders non-discoverable ones with a blur based
+            // on `postsAreFallback` below.
+            let postsAtPlace: [FriendPost]
+            let postsAreFallback: Bool
+            if friendPosts.isEmpty {
+                postsAtPlace = await fetchDiscoverablePostsAtPlace(placeId, db: db)
+                postsAreFallback = true
+            } else {
+                postsAtPlace = friendPosts.sorted { $0.createdAt > $1.createdAt }
+                postsAreFallback = false
+            }
             let synthesized = FriendPlace(
                 id: placeId,
                 name: doc.name,
                 type: doc.type,
                 lat: doc.lat,
                 lng: doc.lng,
-                posts: postsAtPlace.sorted { $0.createdAt > $1.createdAt },
+                posts: postsAtPlace,
                 // Pass through the global counters so the detail sheet shows
                 // "N visits" instead of "0 visits by 0 friends" when the user
                 // landed here from a non-friend surface (e.g. Trending).
                 globalVisitCount: doc.globalVisitCount,
                 globalEngagementCount: doc.globalEngagementCount,
-                address: doc.address
+                address: doc.address,
+                postsAreFallback: postsAreFallback
             )
             targetCoordinate = CLLocationCoordinate2D(
                 latitude: doc.lat - 0.00375,
@@ -944,6 +959,68 @@ struct MainMapView: View {
             // Place was deleted or unreadable — silently no-op so the user
             // isn't stranded with a confusing error after a UI tap.
         }
+    }
+
+    /// Pulls public posts at a place when the friend feed has none. Used by
+    /// the trending → place-detail flow so the sheet never renders an empty
+    /// card stack. Includes BOTH discoverable=true (rendered clear) AND
+    /// discoverable=false (rendered blurred via PostStackCard's blur
+    /// modifier). Posts authored by users who toggled "Help your circle
+    /// discover" OFF are dropped entirely — we respect that opt-out by
+    /// hiding the card, not blurring it. The `containsFaces == false`
+    /// filter is required to match the Firestore rule.
+    private func fetchDiscoverablePostsAtPlace(_ placeId: String,
+                                               db: Firestore) async -> [FriendPost] {
+        do {
+            let snap = try await db.collection("posts")
+                .whereField("placeId", isEqualTo: placeId)
+                .whereField("containsFaces", isEqualTo: false)
+                .order(by: "createdAt", descending: true)
+                .limit(to: 20)
+                .getDocuments()
+            let posts = snap.documents.compactMap(FriendPost.init(document:))
+            let optedOut = await fetchOptedOutAuthorSet(
+                authorIds: Array(Set(posts.map(\.authorId))),
+                db: db
+            )
+            return posts.filter { !optedOut.contains($0.authorId) }
+        } catch {
+            #if DEBUG
+            print("[MainMapView] place-posts fallback fetch failed: \(error.localizedDescription)")
+            #endif
+            return []
+        }
+    }
+
+    /// Bulk-fetches `users/{uid}.optedOutOfDiscovery` for the given authors
+    /// and returns the set of UIDs that have the toggle OFF (= opted out).
+    /// Used to hide opted-out authors' cards in the place-detail panel —
+    /// mirrors how the trending Cloud Function drops them. Splits into
+    /// chunks of 30 because that's Firestore's `in:` query cap.
+    private func fetchOptedOutAuthorSet(authorIds: [String],
+                                        db: Firestore) async -> Set<String> {
+        guard !authorIds.isEmpty else { return [] }
+        var result: Set<String> = []
+        let chunks = stride(from: 0, to: authorIds.count, by: 30).map {
+            Array(authorIds[$0..<min($0 + 30, authorIds.count)])
+        }
+        for chunk in chunks {
+            do {
+                let snap = try await db.collection("users")
+                    .whereField(FieldPath.documentID(), in: chunk)
+                    .getDocuments()
+                for doc in snap.documents {
+                    if (doc.data()["optedOutOfDiscovery"] as? Bool) == true {
+                        result.insert(doc.documentID)
+                    }
+                }
+            } catch {
+                #if DEBUG
+                print("[MainMapView] opt-out batch read failed: \(error.localizedDescription)")
+                #endif
+            }
+        }
+        return result
     }
 
     private func selectFriendPlace(_ place: FriendPlace) {

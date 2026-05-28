@@ -207,9 +207,21 @@ service cloud.firestore {
       // Discoverable posts power the public Discover surface; everything
       // else stays inside the friend graph.
       allow read: if signedIn() && (
+        isAdmin() ||
         resource.data.authorId == request.auth.uid ||
         exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(resource.data.authorId)) ||
-        resource.data.discoverable == true
+        resource.data.discoverable == true ||
+        // Public-fallback gate for the place-detail panel: any signed-in
+        // user can read CLASSIFIED, NO-FACE, location-tagged posts. The
+        // client renders these blurred via the `postsAreFallback` flag on
+        // FriendPlace + `discoverable == false` check. Strict equality on
+        // containsFaces keeps unclassified legacy posts private (since
+        // `null != false` evaluates true under Firestore semantics).
+        (
+          resource.data.placeId is string &&
+          resource.data.placeId != "" &&
+          resource.data.containsFaces == false
+        )
       );
       allow create: if signedIn()
         && request.resource.data.authorId == request.auth.uid;

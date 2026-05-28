@@ -1311,13 +1311,18 @@ function shapePlace(doc, extras = {}) {
  * Author-level `optedOutOfDiscovery` is a separate gate applied on top:
  * an opted-out author's "clear" photo is forced to "blur".
  */
+// Discover classification floor — keep in sync with
+// `PostClassifier.aestheticFloor` in iOS. Bumping one without the other
+// drifts the "manual hide" detection from the actual classifier rule.
+const AESTHETIC_FLOOR = 0.4;
+
 function classifyPhoto(data) {
   if (data.containsFaces === true) return "exclude";
   if (
     data.discoverable === false &&
     data.containsFaces === false &&
     typeof data.aestheticScore === "number" &&
-    data.aestheticScore >= 0.6
+    data.aestheticScore >= AESTHETIC_FLOOR
   ) {
     return "exclude";   // author manually hid
   }
@@ -1567,20 +1572,25 @@ exports.discoverFeed = onCall(
               placeId: doc.id, message: err?.message,
             });
           }
-          // Clear first, blurred as fallback, take top N.
-          const merged = [...clearCandidates, ...blurCandidates]
-            .slice(0, DISCOVER.TRENDING_PHOTOS);
+          // Clear first, blurred as fallback. Filter out opted-out authors'
+          // photos entirely — they used to be force-blurred but Hafiz wants
+          // them hidden so the toggle reads as "off = invisible" rather
+          // than "off = visible-but-fuzzy". The classifier verdict still
+          // drives `blur` for everything that remains.
+          const authorPool = [...clearCandidates, ...blurCandidates];
           const authorIds = [...new Set(
-            merged.map((p) => p.authorId).filter(Boolean)
+            authorPool.map((p) => p.authorId).filter(Boolean)
           )];
           const optOuts = authorIds.length > 0
             ? await loadOptOutFlags(db, authorIds)
             : new Map();
-          const photos = merged.map((p) => ({
-            url: p.url,
-            // Already blurred by classifier verdict, OR forced by author opt-out.
-            blur: p.verdict === "blur" || optOuts.get(p.authorId) === true,
-          }));
+          const photos = authorPool
+            .filter((p) => optOuts.get(p.authorId) !== true)
+            .slice(0, DISCOVER.TRENDING_PHOTOS)
+            .map((p) => ({
+              url: p.url,
+              blur: p.verdict === "blur",
+            }));
           trending.push(shapePlace(doc, { photos }));
         }),
       );

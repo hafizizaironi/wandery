@@ -188,6 +188,16 @@ struct MainShellView: View {
         .task(id: socialService.feedPosts.map(\.id)) {
             await friendPlacesService.refresh(from: socialService.feedPosts)
         }
+        // Subscribe to my visit sessions so `FriendPlace.myVisitCount` matches
+        // the server-side dedupe used by `globalVisitCount`. Re-subscribes
+        // when the signed-in uid changes; clears on sign-out.
+        .task(id: authService.user?.uid) {
+            if let uid = authService.user?.uid, !uid.isEmpty {
+                friendPlacesService.subscribeToMyVisits(uid: uid)
+            } else {
+                friendPlacesService.unsubscribeMyVisits()
+            }
+        }
         .onChange(of: pageProgress) { _, value in
             let snapped = ShellPage(rawValue: Int(value.rounded())) ?? .hero
             if snapped != selectedPage { selectedPage = snapped }

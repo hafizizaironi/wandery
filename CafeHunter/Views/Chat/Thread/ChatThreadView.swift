@@ -91,16 +91,23 @@ struct ChatThreadView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ChatComposerView(
-                text: $composerText,
-                retryBanner: sendQueue.hasFailed ? AnyView(retryBanner) : nil,
-                toast: sendQueue.toast,
-                replyPreview: replyTarget.map { replyPreviewText(for: $0) },
-                onCancelReply: { replyTarget = nil },
-                onSend: sendCurrentDraft,
-                onDismissToast: { sendQueue.toast = nil },
-                focused: $composerFocused
-            )
+            // Hide composer (keyboard + reply banner) while the long-press
+            // action overlay is up, so the action card has room and isn't
+            // covered. The overlay drives this via its own `withAnimation`,
+            // so the slide-down rides that spring.
+            if actionPresenter.active == nil {
+                ChatComposerView(
+                    text: $composerText,
+                    retryBanner: sendQueue.hasFailed ? AnyView(retryBanner) : nil,
+                    toast: sendQueue.toast,
+                    replyPreview: replyTarget.map { replyPreviewText(for: $0) },
+                    onCancelReply: { replyTarget = nil },
+                    onSend: sendCurrentDraft,
+                    onDismissToast: { sendQueue.toast = nil },
+                    focused: $composerFocused
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -116,6 +123,11 @@ struct ChatThreadView: View {
         }
         .onChange(of: conversationService.activeMessages.last?.id) { _, newId in
             handleNewMessage(latestId: newId)
+        }
+        .onChange(of: actionPresenter.active != nil) { _, isShowing in
+            // Drop the keyboard the moment the long-press overlay appears, so
+            // it doesn't sit on top of the action card.
+            if isShowing { composerFocused = false }
         }
         .onDisappear {
             // Stamp read on exit so unread state for *this* conv clears

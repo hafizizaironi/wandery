@@ -17,6 +17,11 @@ struct FriendPlace: Identifiable, Equatable {
     /// "session" (multiple posts in one sitting count as one visit). Use
     /// this for any "X visits" UI label, NOT `posts.count`.
     var globalVisitCount: Int = 0
+    /// Per-user visit count derived from `users/{uid}/visits/{placeId}`:
+    /// closed sessions + 1 if there's a still-open one. Same session
+    /// semantics as `globalVisitCount` but scoped to the current user.
+    /// Zero until the visits listener catches up.
+    var myVisitCount: Int = 0
     /// Total engagement (reactions + replies) on tagged posts at this place.
     var globalEngagementCount: Int = 0
     /// Formatted address snapshot (newer places store this at creation); nil
@@ -26,6 +31,12 @@ struct FriendPlace: Identifiable, Equatable {
     /// from `address` when present, otherwise reverse-geocoded from lat/lng
     /// and filled in progressively (see `resolveMissingCities`).
     var cityName: String? = nil
+    /// `true` when `posts` were fetched via the public discoverable-fallback
+    /// path (trending tap on a place the user has no friend posts at).
+    /// Drives per-card blur in `PlaceDetailSheet` — non-discoverable posts
+    /// in this stack are rendered blurred. Friend-feed posts never set
+    /// this flag, so a friend's legacy `discoverable=false` post stays clear.
+    var postsAreFallback: Bool = false
 
     var mostRecent: FriendPost? { posts.first }
 }
@@ -66,6 +77,14 @@ final class FriendPlacesService {
     /// once per session. Places whose doc carries an `address` skip this.
     private var cityCache: [String: String] = [:]
     private var cityResolveTask: Task<Void, Never>?
+    /// `placeId → my visit count`. Populated by the live visits listener
+    /// (`subscribeToMyVisits`) reading `users/{uid}/visits`. Formula:
+    /// `visitCount + (closed ? 0 : 1)` — closed sessions plus one for any
+    /// currently-open session. Survives refreshes so a re-emit doesn't
+    /// flash back to zero.
+    private var myVisitsByPlace: [String: Int] = [:]
+    private var myVisitsListener: ListenerRegistration?
+    private var myVisitsListenerUid: String?
 
     private let db = Firestore.firestore()
 
@@ -225,6 +244,7 @@ final class FriendPlacesService {
                 lng: p.lng,
                 posts: sorted,
                 globalVisitCount: p.globalVisitCount,
+                myVisitCount: myVisitsByPlace[placeId] ?? 0,
                 globalEngagementCount: p.globalEngagementCount,
                 address: p.address,
                 cityName: city
@@ -241,6 +261,62 @@ final class FriendPlacesService {
 
         // Fill in any still-missing city labels by reverse-geocoding lat/lng.
         resolveMissingCities()
+    }
+
+    // MARK: - My visits
+
+    /// Subscribe to the user's `users/{uid}/visits` collection so each
+    /// `FriendPlace.myVisitCount` reflects the same session-deduped semantics
+    /// as `globalVisitCount`, scoped to this user. Re-applies values to any
+    /// places already loaded so the UI updates without waiting for a refresh.
+    ///
+    /// Safe to call repeatedly; switching uid swaps the listener.
+    func subscribeToMyVisits(uid: String) {
+        guard !uid.isEmpty else { return }
+        if myVisitsListenerUid == uid, myVisitsListener != nil { return }
+        myVisitsListener?.remove()
+        myVisitsListenerUid = uid
+        myVisitsListener = db.collection("users").document(uid)
+            .collection("visits")
+            .addSnapshotListener { [weak self] snap, _ in
+                guard let self, let docs = snap?.documents else { return }
+                Task { @MainActor in
+                    var next: [String: Int] = [:]
+                    for doc in docs {
+                        let d = doc.data()
+                        let closed = (d["closed"] as? Bool) ?? false
+                        let closedCount = (d["visitCount"] as? Int) ?? 0
+                        // Cloud function bumps `visitCount` only when a session
+                        // closes; add 1 while one is still open so the displayed
+                        // count includes the visit currently in progress.
+                        let total = closedCount + (closed ? 0 : 1)
+                        if total > 0 { next[doc.documentID] = total }
+                    }
+                    self.myVisitsByPlace = next
+                    self.applyMyVisitsToPlaces()
+                }
+            }
+    }
+
+    func unsubscribeMyVisits() {
+        myVisitsListener?.remove()
+        myVisitsListener = nil
+        myVisitsListenerUid = nil
+        myVisitsByPlace.removeAll()
+        applyMyVisitsToPlaces()
+    }
+
+    /// Patch `myVisitCount` into the already-assembled `places` so the UI
+    /// reflects a freshly-arrived visits snapshot without waiting for the
+    /// next `refresh(from:)` call.
+    private func applyMyVisitsToPlaces() {
+        guard !places.isEmpty else { return }
+        for i in places.indices {
+            let count = myVisitsByPlace[places[i].id] ?? 0
+            if places[i].myVisitCount != count {
+                places[i].myVisitCount = count
+            }
+        }
     }
 
     // MARK: - City resolution

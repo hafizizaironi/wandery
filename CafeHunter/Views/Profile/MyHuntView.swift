@@ -320,8 +320,15 @@ private struct PlaceRow: View {
     let place: FriendPlace
     let myUid: String
 
+    /// Mirrors the MapPageView / PlaceDetailSheet pattern: prefer the
+    /// server-deduped per-user session count (one trip = one visit), and
+    /// only fall back to counting my posts when the listener hasn't
+    /// populated yet. Keeps "3× visited" consistent with "3 people visited"
+    /// elsewhere when one of those people is me.
     private var myVisits: Int {
-        place.posts.filter { $0.authorId == myUid }.count
+        let server = max(place.myVisitCount, 0)
+        if server > 0 { return server }
+        return place.posts.filter { $0.authorId == myUid }.count
     }
     private var lastMineAt: Date? {
         place.posts.filter { $0.authorId == myUid }.map(\.createdAt).max()

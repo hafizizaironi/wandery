@@ -160,7 +160,16 @@ struct PlaceDetailSheet: View {
         return "\(n) visits by \(friendCount) friends"
     }
 
+    @ViewBuilder
     private var stack: some View {
+        if place.posts.isEmpty {
+            emptyStack
+        } else {
+            populatedStack
+        }
+    }
+
+    private var populatedStack: some View {
         GeometryReader { geo in
             let cardSide = min(geo.size.width - 64, 360)
             // 0 → 1 progress used to advance back cards toward the front as
@@ -179,7 +188,11 @@ struct PlaceDetailSheet: View {
                 }
                 // Departing card during a swipe-off, rendered above the stack.
                 if let flying = flyingPost {
-                    PostStackCard(post: flying, hydrator: hydrator)
+                    PostStackCard(
+                        post: flying,
+                        hydrator: hydrator,
+                        shouldBlur: place.postsAreFallback && !flying.discoverable
+                    )
                         .frame(width: cardSide, height: cardSide)
                         .offset(flyingOffset)
                         .rotationEffect(.degrees(flyingRotation))
@@ -191,6 +204,27 @@ struct PlaceDetailSheet: View {
         }
         .frame(height: 360)
         .task { await runHintIfNeeded() }
+    }
+
+    /// Shown when there's nothing left to display — either no one has posted
+    /// here, or every author chose to keep their visits private. Calm
+    /// "nothing to see" copy rather than a hard error.
+    private var emptyStack: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "eye.slash")
+                .font(.title2)
+                .foregroundStyle(.white.opacity(0.55))
+            Text("No photos to show here yet")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.85))
+            Text("Friends of yours haven't posted here, and visitors at this place chose to keep their photos private.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 360)
     }
 
     private struct StackEntry {
@@ -229,7 +263,11 @@ struct PlaceDetailSheet: View {
         // AsyncImage and reloads it, which is what produced the post-swipe
         // spinner. Always attach the same DragGesture and gate behavior
         // inside its handlers.
-        return PostStackCard(post: post, hydrator: hydrator)
+        return PostStackCard(
+            post: post,
+            hydrator: hydrator,
+            shouldBlur: place.postsAreFallback && !post.discoverable
+        )
             .frame(width: side, height: side)
             .scaleEffect(isFront ? 1.0 : advancedScale)
             .offset(
@@ -341,6 +379,12 @@ struct PlaceDetailSheet: View {
 private struct PostStackCard: View {
     let post: FriendPost
     let hydrator: ParticipantHydrator
+    /// True when the parent stack came from the public-discoverable fallback
+    /// AND this specific post wasn't approved by the classifier. Renders the
+    /// media layer blurred so the card still appears (the new-user flow
+    /// would otherwise see an empty stack) while preserving the privacy
+    /// signal the trending grid already shows.
+    var shouldBlur: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -383,6 +427,29 @@ private struct PostStackCard: View {
                         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                     @unknown default:
                         placeholder
+                    }
+                }
+                .blur(radius: shouldBlur ? 22 : 0)
+                .overlay {
+                    if shouldBlur {
+                        // Slight dim so the blur reads as intentional, plus a
+                        // lock chip with truthful copy: blur lifts when the
+                        // viewer is friends with the author, not when "some
+                        // friend visits this place" (the old wording was
+                        // misleading — see Hafiz 2026-05-28).
+                        ZStack {
+                            Color.black.opacity(0.10)
+                            VStack(spacing: 6) {
+                                Image(systemName: "lock.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(.white.opacity(0.85))
+                                Text("Only visible to the author's circle")
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.78))
+                                    .multilineTextAlignment(.center)
+                            }
+                            .padding(.horizontal, 14)
+                        }
                     }
                 }
             } else {

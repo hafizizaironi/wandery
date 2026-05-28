@@ -9,6 +9,9 @@ struct CameraPreviewView: UIViewRepresentable {
     var isRunning: Bool
     /// Increment before a physical lens swap; triggers a `CATransition` fade to cover the blank frame.
     var lensSwitchToken: Int = 0
+    /// Mirrors the preview when `.front` so the selfie feed feels like a mirror to the user.
+    /// Capture outputs stay unmirrored (saved photo/video reads naturally).
+    var cameraPosition: AVCaptureDevice.Position = .back
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -20,6 +23,7 @@ struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewUIView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
+        view.shouldMirrorPreview = (cameraPosition == .front)
         return view
     }
 
@@ -36,6 +40,7 @@ struct CameraPreviewView: UIViewRepresentable {
         _ = isRunning
         uiView.previewLayer.session = session
         uiView.previewLayer.videoGravity = .resizeAspectFill
+        uiView.shouldMirrorPreview = (cameraPosition == .front)
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
     }
@@ -43,6 +48,7 @@ struct CameraPreviewView: UIViewRepresentable {
     final class PreviewUIView: UIView {
 
         let previewLayer = AVCaptureVideoPreviewLayer()
+        var shouldMirrorPreview = false { didSet { if oldValue != shouldMirrorPreview { setNeedsLayout() } } }
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -66,11 +72,13 @@ struct CameraPreviewView: UIViewRepresentable {
                 if connection.isVideoRotationAngleSupported(angle) {
                     connection.videoRotationAngle = angle
                 }
-                // Front camera defaults to mirrored; turn off so preview matches saved photo/video.
-                // Must disable automatic mirroring before setting `isVideoMirrored` or the runtime throws.
+                // Mirror the front-camera preview so it feels like a mirror to the user; capture
+                // outputs stay unmirrored (see `applyNaturalVideoMirroringToOutputs`) so saved
+                // stills/video keep text readable. Must disable automatic mirroring before
+                // setting `isVideoMirrored` or the runtime throws.
                 if connection.isVideoMirroringSupported {
                     connection.automaticallyAdjustsVideoMirroring = false
-                    connection.isVideoMirrored = false
+                    connection.isVideoMirrored = shouldMirrorPreview
                 }
             }
         }

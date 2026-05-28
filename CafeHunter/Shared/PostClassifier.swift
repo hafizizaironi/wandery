@@ -33,10 +33,12 @@ enum PostClassifier {
     }
 
     /// Aesthetic-score floor a post must clear to be considered for
-    /// Discover. Apple's score is 0…1; 0.6 sits comfortably in the
-    /// "well-composed shot of a place" zone in informal testing. Tune
-    /// based on real CafeHunter content before launch.
-    static let aestheticFloor: Double = 0.6
+    /// Discover. Apple's score is 0…1. Tuned to 0.4 on 2026-05-28
+    /// after auditing real CafeHunter posts in the admin tuning view —
+    /// 0.6 (Apple's "Featured Photos" zone) was too strict for casual
+    /// cafe shots. Bump the cloud-function manual-hide check in
+    /// `functions/index.js > classifyPhoto` to match if changed here.
+    static let aestheticFloor: Double = 0.4
 
     /// Classify a UIImage. Runs face detection + aesthetic scoring in
     /// parallel — both are cheap (each <150ms on modern A-series silicon).
