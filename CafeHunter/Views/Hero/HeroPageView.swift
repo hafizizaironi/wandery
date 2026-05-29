@@ -493,6 +493,19 @@ struct HeroPageView: View {
         return -max(0, keyboardHeight + Self.composerKeyboardClearance - bottomChrome)
     }
 
+    /// Lifts the capture-review card (photo + caption pill + actions) above the
+    /// keyboard while editing the caption. The pager's `.ignoresSafeArea(.keyboard)`
+    /// disables auto-avoidance, so — like `composerKeyboardLift` — we offset up
+    /// manually. The caption pill sits at the bottom edge of the viewfinder square,
+    /// i.e. `bottomChrome + belowCardHeight` above the screen bottom.
+    private static let captureReviewKeyboardClearance: CGFloat = 24
+    private var captureReviewKeyboardLift: CGFloat {
+        guard isReviewingCapture, keyboardHeight > 0 else { return 0 }
+        let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: Self.bottomSafeAreaInset)
+        let pillDistanceFromBottom = bottomChrome + HeroCameraLayout.belowCardHeight
+        return -max(0, keyboardHeight + Self.captureReviewKeyboardClearance - pillDistanceFromBottom)
+    }
+
     /// Unread-conversation count derived from the conversation docs'
     /// server-side `lastReadAt` map, with the legacy local
     /// `@AppStorage` stamp as a fallback for convs that haven't yet
@@ -864,6 +877,8 @@ struct HeroPageView: View {
         .padding(.horizontal, HeroCameraLayout.horizontalPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .padding(.bottom, bottomChrome)
+        .offset(y: captureReviewKeyboardLift)
+        .animation(.easeOut(duration: 0.25), value: keyboardHeight)
     }
 
     private func heroEmptyFeedPage(geometry geo: GeometryProxy) -> some View {
