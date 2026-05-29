@@ -1534,13 +1534,19 @@ exports.discoverFeed = onCall(
         .orderBy("globalVisitCount", "desc")
         .limit(DISCOVER.TRENDING_FETCH)
         .get();
+      // No early `.slice(0, TRENDING_RETURN)` — we now drop places that end
+      // up with zero qualifying photos (used to render an emoji + letter
+      // placeholder, which Hafiz prefers hidden). Over-sampling here means
+      // the final trending list still hits the target size when many
+      // candidates have no clear contributors. We slice to TRENDING_RETURN
+      // AFTER the photo build below.
       const candidates = trendSnap.docs.filter((d) => {
         if (visitedSet.has(d.id)) return false;
         if (f1Visited.has(d.id))  return false;   // friend visited → not stranger
         if (f2VisitedAll.has(d.id)) return false; // friend-of-friend visited → not stranger
         const v = (d.data() || {}).globalVisitCount || 0;
         return v > 0;
-      }).slice(0, DISCOVER.TRENDING_RETURN);
+      });
 
       // Fetch up to 3 photos per trending place. See `classifyPhoto` for the
       // three-way decision (exclude / blur / clear). Author-level opt-out
@@ -1572,30 +1578,36 @@ exports.discoverFeed = onCall(
               placeId: doc.id, message: err?.message,
             });
           }
-          // Clear first, blurred as fallback. Filter out opted-out authors'
-          // photos entirely — they used to be force-blurred but Hafiz wants
-          // them hidden so the toggle reads as "off = invisible" rather
-          // than "off = visible-but-fuzzy". The classifier verdict still
-          // drives `blur` for everything that remains.
-          const authorPool = [...clearCandidates, ...blurCandidates];
+          // Trending shows CLEAR photos only — `discoverable === true` posts
+          // from authors who haven't opted out. Classifier-rejected
+          // (verdict === "blur") posts are no longer surfaced here; places
+          // with no clear contributors fall back to the placeholder render.
+          // Blur on this surface used to read as "fuzzy hint"; Hafiz prefers
+          // a clean "hidden = absent" line.
           const authorIds = [...new Set(
-            authorPool.map((p) => p.authorId).filter(Boolean)
+            clearCandidates.map((p) => p.authorId).filter(Boolean)
           )];
           const optOuts = authorIds.length > 0
             ? await loadOptOutFlags(db, authorIds)
             : new Map();
-          const photos = authorPool
+          const photos = clearCandidates
             .filter((p) => optOuts.get(p.authorId) !== true)
             .slice(0, DISCOVER.TRENDING_PHOTOS)
             .map((p) => ({
               url: p.url,
-              blur: p.verdict === "blur",
+              blur: false,
             }));
+          // Drop the place entirely if no clear photo survived — keeps the
+          // grid free of placeholder tiles.
+          if (photos.length === 0) return;
           trending.push(shapePlace(doc, { photos }));
         }),
       );
-      // Preserve globalVisitCount order (Promise.all randomises completion).
+      // Preserve globalVisitCount order (Promise.all randomises completion)
+      // and trim to the target visible size now that empty-photo places have
+      // been dropped above.
       trending.sort((a, b) => b.globalVisitCount - a.globalVisitCount);
+      trending = trending.slice(0, DISCOVER.TRENDING_RETURN);
     } catch (err) {
       logger.warn("[discoverFeed] trending query failed", { uid, message: err?.message });
     }
