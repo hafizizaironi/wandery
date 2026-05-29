@@ -11,6 +11,7 @@
 		C40DF9052FA86EEB000FE277 /* GooglePlacesSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C40DF9042FA86EEB000FE277 /* GooglePlacesSwift */; };
 		C424C2E72FC15C97003256A0 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = C424C2E62FC15C97003256A0 /* FirebaseAppCheck */; };
 		C43CAA5C2F9B50EB00ABCA8A /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = C43CAA5B2F9B50EB00ABCA8A /* FirebaseFunctions */; };
+		C45CFB8A2FC96C9D003AEC18 /* WanderyNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C4795F692F8AE41D002495D1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F682F8AE41D002495D1 /* GoogleSignIn */; };
 		C4795F6B2F8AE41D002495D1 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F6A2F8AE41D002495D1 /* GoogleSignInSwift */; };
 		C4795F712F8AE41D002495D1 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F702F8AE41D002495D1 /* FirebaseAuth */; };
@@ -21,13 +22,53 @@
 		C4795F7C2F8C0E2002495D1 /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F7B2F8C0E2002495D1 /* Lottie */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		C45CFB882FC96C9D003AEC18 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C4795F2C2F8ADCC7002495D1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C45CFB822FC96C9C003AEC18;
+			remoteInfo = WanderyNotificationService;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		C45CFB8F2FC96C9D003AEC18 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				C45CFB8A2FC96C9D003AEC18 /* WanderyNotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WanderyNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C4795F342F8ADCC7002495D1 /* CafeHunter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CafeHunter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
 		D1E2F3A4B5C6D70080000002 /* Secrets.xcconfig.sample */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig.sample; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		C45CFB8E2FC96C9D003AEC18 /* Exceptions for "WanderyNotificationService" folder in "WanderyNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = C45CFB822FC96C9C003AEC18 /* WanderyNotificationService */;
+		};
+		C45CFB942FC96DCE003AEC18 /* Exceptions for "CafeHunter" folder in "WanderyNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Services/MessageCrypto.swift,
+				Shared/Keychain.swift,
+			);
+			target = C45CFB822FC96C9C003AEC18 /* WanderyNotificationService */;
+		};
 		C4795F782F8ADCC8002495D1 /* Exceptions for "CafeHunter" folder in "CafeHunter" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -38,10 +79,19 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		C45CFB842FC96C9C003AEC18 /* WanderyNotificationService */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				C45CFB8E2FC96C9D003AEC18 /* Exceptions for "WanderyNotificationService" folder in "WanderyNotificationService" target */,
+			);
+			path = WanderyNotificationService;
+			sourceTree = "<group>";
+		};
 		C4795F362F8ADCC7002495D1 /* CafeHunter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				C4795F782F8ADCC8002495D1 /* Exceptions for "CafeHunter" folder in "CafeHunter" target */,
+				C45CFB942FC96DCE003AEC18 /* Exceptions for "CafeHunter" folder in "WanderyNotificationService" target */,
 			);
 			path = CafeHunter;
 			sourceTree = "<group>";
@@ -49,6 +99,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		C45CFB802FC96C9C003AEC18 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C4795F312F8ADCC7002495D1 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -84,6 +141,7 @@
 				C4795F362F8ADCC7002495D1 /* CafeHunter */,
 				D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */,
 				D1E2F3A4B5C6D70080000002 /* Secrets.xcconfig.sample */,
+				C45CFB842FC96C9C003AEC18 /* WanderyNotificationService */,
 				C43CAA5A2F9B50EB00ABCA8A /* Frameworks */,
 				C4795F352F8ADCC7002495D1 /* Products */,
 			);
@@ -93,6 +151,7 @@
 			isa = PBXGroup;
 			children = (
 				C4795F342F8ADCC7002495D1 /* CafeHunter.app */,
+				C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -100,6 +159,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		C45CFB822FC96C9C003AEC18 /* WanderyNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C45CFB8B2FC96C9D003AEC18 /* Build configuration list for PBXNativeTarget "WanderyNotificationService" */;
+			buildPhases = (
+				C45CFB7F2FC96C9C003AEC18 /* Sources */,
+				C45CFB802FC96C9C003AEC18 /* Frameworks */,
+				C45CFB812FC96C9C003AEC18 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				C45CFB842FC96C9C003AEC18 /* WanderyNotificationService */,
+			);
+			name = WanderyNotificationService;
+			packageProductDependencies = (
+			);
+			productName = WanderyNotificationService;
+			productReference = C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		C4795F332F8ADCC7002495D1 /* CafeHunter */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = C4795F3F2F8ADCC8002495D1 /* Build configuration list for PBXNativeTarget "CafeHunter" */;
@@ -107,10 +188,12 @@
 				C4795F302F8ADCC7002495D1 /* Sources */,
 				C4795F312F8ADCC7002495D1 /* Frameworks */,
 				C4795F322F8ADCC7002495D1 /* Resources */,
+				C45CFB8F2FC96C9D003AEC18 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				C45CFB892FC96C9D003AEC18 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				C4795F362F8ADCC7002495D1 /* CafeHunter */,
@@ -141,9 +224,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2640;
+				LastSwiftUpdateCheck = 2650;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
+					C45CFB822FC96C9C003AEC18 = {
+						CreatedOnToolsVersion = 26.5;
+					};
 					C4795F332F8ADCC7002495D1 = {
 						CreatedOnToolsVersion = 26.4;
 					};
@@ -170,11 +256,19 @@
 			projectRoot = "";
 			targets = (
 				C4795F332F8ADCC7002495D1 /* CafeHunter */,
+				C45CFB822FC96C9C003AEC18 /* WanderyNotificationService */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		C45CFB812FC96C9C003AEC18 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C4795F322F8ADCC7002495D1 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -185,6 +279,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		C45CFB7F2FC96C9C003AEC18 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C4795F302F8ADCC7002495D1 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -194,7 +295,73 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		C45CFB892FC96C9D003AEC18 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C45CFB822FC96C9C003AEC18 /* WanderyNotificationService */;
+			targetProxy = C45CFB882FC96C9D003AEC18 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		C45CFB8C2FC96C9D003AEC18 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = WanderyNotificationService/WanderyNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WanderyNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = WanderyNotificationService;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = TechVision.CafeHunter.WanderyNotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C45CFB8D2FC96C9D003AEC18 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = WanderyNotificationService/WanderyNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WanderyNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = WanderyNotificationService;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = TechVision.CafeHunter.WanderyNotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		C4795F3D2F8ADCC8002495D1 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */;
@@ -409,6 +576,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		C45CFB8B2FC96C9D003AEC18 /* Build configuration list for PBXNativeTarget "WanderyNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C45CFB8C2FC96C9D003AEC18 /* Debug */,
+				C45CFB8D2FC96C9D003AEC18 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		C4795F2F2F8ADCC7002495D1 /* Build configuration list for PBXProject "CafeHunter" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

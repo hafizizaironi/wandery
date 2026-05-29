@@ -93,6 +93,10 @@ final class SocialService {
                     try await db.collection("users").document(uid)
                         .setData(["publicKey": pub], merge: true)
                 }
+                // Mirror the key into the shared keychain group so the
+                // Notification Service Extension can decrypt message
+                // notifications on-device (only while unlocked).
+                MessageCrypto.mirrorIdentityKeyToSharedGroup(uid: uid)
             } catch {
                 #if DEBUG
                 print("[SocialService] ensureIdentityKey failed: \(error.localizedDescription)")

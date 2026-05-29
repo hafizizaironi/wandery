@@ -143,6 +143,7 @@ final class AuthService {
         if let uid = Auth.auth().currentUser?.uid {
             MessageCrypto.deleteIdentityKey(uid: uid)
         }
+        MessageCrypto.clearSharedIdentityKey()
         try Auth.auth().signOut()
     }
 
@@ -167,6 +168,7 @@ final class AuthService {
         // notifications until the next launch.
         NotificationService.shared.removeAllTokensForCurrentUser()
         MessageCrypto.deleteIdentityKey(uid: user.uid)
+        MessageCrypto.clearSharedIdentityKey()
 
         let callable = Functions.functions().httpsCallable("deleteMyAccount")
         _ = try await callable.call([:])

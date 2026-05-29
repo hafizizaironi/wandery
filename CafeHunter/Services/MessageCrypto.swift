@@ -45,6 +45,27 @@ enum MessageCrypto {
         try? Keychain.delete(account: account(uid))
     }
 
+    // MARK: - Shared mirror (for the Notification Service Extension)
+
+    /// Fixed account for the shared-group copy of the current user's private
+    /// key. Fixed (not uid-suffixed) so the extension can read it without
+    /// knowing the signed-in uid — there's only ever one current user/device.
+    static let sharedIdentityAccount = "e2ee.identity.current"
+
+    /// Copy the current user's private key into the shared keychain group so
+    /// the Notification Service Extension can decrypt message notifications.
+    /// `WhenUnlocked` accessibility ⇒ only works while the phone is unlocked.
+    /// No-op (silently) if the shared-group entitlement isn't configured yet.
+    static func mirrorIdentityKeyToSharedGroup(uid: String) {
+        guard let priv = try? loadOrCreateIdentityKey(uid: uid) else { return }
+        try? Keychain.saveShared(priv.rawRepresentation, account: sharedIdentityAccount)
+    }
+
+    /// Remove the shared-group key copy (sign-out / account deletion).
+    static func clearSharedIdentityKey() {
+        try? Keychain.deleteShared(account: sharedIdentityAccount)
+    }
+
     // MARK: - Conversation key
 
     static func conversationKey(

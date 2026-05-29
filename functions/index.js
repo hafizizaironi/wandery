@@ -11,7 +11,7 @@ admin.initializeApp();
 // Set via:  firebase functions:secrets:set REPLICATE_API_TOKEN --project look-cafe
 const REPLICATE_API_TOKEN = defineSecret("REPLICATE_API_TOKEN");
 
-async function sendToUser(uid, title, body, data = {}) {
+async function sendToUser(uid, title, body, data = {}, options = {}) {
   const snap = await admin
     .firestore()
     .collection("users")
@@ -25,11 +25,18 @@ async function sendToUser(uid, title, body, data = {}) {
   );
   for (const token of tokens) {
     try {
-      await admin.messaging().send({
+      const message = {
         token,
         notification: { title, body },
         data: dataPayload,
-      });
+      };
+      // `mutable-content` lets the iOS Notification Service Extension rewrite
+      // the notification before display (decrypt the message body, attach the
+      // post photo). Ignored harmlessly on devices without the extension.
+      if (options.mutableContent) {
+        message.apns = { payload: { aps: { "mutable-content": 1 } } };
+      }
+      await admin.messaging().send(message);
     } catch (e) {
       console.error("FCM send failed", e);
     }
@@ -75,11 +82,14 @@ exports.onNewPost = functions.firestore
       .collection("friends")
       .get();
     const friendUids = friendsSnap.docs.map((x) => x.id);
+    // Photo for the rich notification — prefer the thumbnail (smaller, faster
+    // for the extension's tight download budget), fall back to the full media.
+    const imageURL = d.thumbnailURL || d.mediaURL || "";
+    const data = { type: "newPost", postId: context.params.postId };
+    if (imageURL) data.imageURL = imageURL;
     for (const uid of friendUids) {
-      await sendToUser(uid, "New post", `${authorName} shared a moment`, {
-        type: "newPost",
-        postId: context.params.postId,
-      });
+      await sendToUser(uid, "New post", `${authorName} shared a moment`, data,
+        { mutableContent: !!imageURL });
     }
   });
 
@@ -453,11 +463,13 @@ exports.onNewMessage = functions.firestore
     // Resolve a friendly sender label from users/{uid}; fall back to
     // "Someone" if the doc is missing or the field is empty.
     let senderName = "Someone";
+    let senderPublicKey = "";
     try {
       const userSnap = await admin.firestore().doc(`users/${senderId}`).get();
       const u = userSnap.data();
       senderName =
         (u && (u.displayName || u.username)) || senderName;
+      senderPublicKey = (u && u.publicKey) || "";
     } catch (err) {
       logger.warn("onNewMessage sender lookup failed", {
         senderId,
@@ -465,9 +477,10 @@ exports.onNewMessage = functions.firestore
       });
     }
 
-    // Generic body only — message text is end-to-end encrypted, so the
-    // server can't (and shouldn't) read it. The recipient's device shows the
-    // real content once they open the thread.
+    // Generic body — the server can't read E2EE message text. The recipient's
+    // Notification Service Extension decrypts the ciphertext on-device (only
+    // while the phone is unlocked, via the key's keychain accessibility) and
+    // rewrites the body; otherwise this generic body stands.
     let body;
     if (m.kind === "reaction") {
       body = "Reacted to your post";
@@ -477,11 +490,24 @@ exports.onNewMessage = functions.firestore
       body = "New message";
     }
 
-    await sendToUser(recipient, senderName, body, {
+    // The extension needs the ciphertext + the sender's public key to derive
+    // the conversation key. Ciphertext is already encrypted at rest, so this
+    // leaks nothing the server didn't already hold. Only sent for encrypted
+    // text messages (encv >= 1); reactions/replies stay generic.
+    const extra = {
       type: "message",
       convId: context.params.convId,
       senderId,
-    });
+    };
+    const encrypted = (m.encv || 0) >= 1 && m.kind === "text" &&
+      typeof m.text === "string" && senderPublicKey;
+    if (encrypted) {
+      extra.encText = m.text;
+      extra.encv = m.encv;
+      extra.senderPublicKey = senderPublicKey;
+    }
+
+    await sendToUser(recipient, senderName, body, extra, { mutableContent: encrypted });
   });
 
 exports.onReaction = functions.firestore
