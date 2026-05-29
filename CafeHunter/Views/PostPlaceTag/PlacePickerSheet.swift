@@ -197,26 +197,12 @@ struct PlacePickerSheet: View {
     @State private var newType: PlaceType = .restaurant
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AppTheme.surfaceCanvas.ignoresSafeArea()
-                content
-            }
-            .navigationTitle("Tag a place")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Skip") {
-                        dismiss()
-                    }
-                }
-            }
-            .task { await vm.loadNearby(around: nil) }
-            .keyboardDismissToolbar()
+        ZStack {
+            AppTheme.surfaceCanvas.ignoresSafeArea()
+            content.padding(.top, 16)
         }
+        .task { await vm.loadNearby(around: nil) }
+        .keyboardDismissToolbar()
     }
 
     @ViewBuilder
@@ -248,27 +234,36 @@ struct PlacePickerSheet: View {
         }
         .padding(.vertical, 10).padding(.horizontal, 14)
         .background(AppTheme.surfacePrimary, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(AppTheme.borderSubtle, lineWidth: 1) }
     }
 
     private var typeChips: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             ForEach(PlaceType.allCases, id: \.self) { t in
+                let selected = (typeOverride == t)
                 Button {
-                    typeOverride = (typeOverride == t) ? nil : t
+                    typeOverride = selected ? nil : t
                 } label: {
-                    Text("\(t.emoji)  \(t.label)")
-                        .font(.subheadline)
-                        .padding(.vertical, 6).padding(.horizontal, 12)
+                    Text(t.emoji)
+                        .font(.title2)
+                        .frame(width: 72, height: 52)
                         .background(
-                            (typeOverride == t ? AppTheme.accentAction : AppTheme.surfacePrimary),
+                            selected ? AppTheme.accentAction.opacity(0.15) : AppTheme.surfacePrimary,
                             in: Capsule()
                         )
-                        .foregroundStyle(typeOverride == t ? AppTheme.textOnAccent : AppTheme.textPrimary)
+                        .overlay {
+                            Capsule().stroke(
+                                selected ? AppTheme.accentAction : AppTheme.borderSubtle,
+                                lineWidth: selected ? 1.5 : 1
+                            )
+                        }
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(t.label)
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
-            Spacer()
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var listSection: some View {

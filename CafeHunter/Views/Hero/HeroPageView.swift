@@ -117,6 +117,9 @@ struct HeroPageView: View {
     // Place tagging
     @State private var pendingPlace: PlaceSelection?
     @State private var showPlacePicker = false
+    /// Nearest place (top of the picker's nearby list), offered as a one-tap
+    /// suggestion next to "Tag a place". Fetched once per compose session.
+    @State private var suggestedPlace: PlaceCandidate?
 
     // Moderation state. Long-press on a feed post surfaces report/block.
     @State private var reportTarget: ReportTarget?
@@ -313,6 +316,19 @@ struct HeroPageView: View {
         // published score so the ring fades out when leaving the viewfinder.
         .task(id: liveScoringShouldRun) {
             camera.setLiveAestheticScoring(enabled: liveScoringShouldRun)
+        }
+        // Fetch the nearest place once per compose session so we can offer it as
+        // a one-tap suggestion next to "Tag a place". `nearby` returns the list
+        // sorted nearest-first, so `.first` is the same top row the picker shows.
+        // No-ops gracefully when location is denied or nothing is nearby.
+        .task(id: isReviewingCapture) {
+            guard isReviewingCapture, suggestedPlace == nil else { return }
+            guard let coord = await LocationProvider.shared.currentCoordinate() else { return }
+            let results = try? await PlacePickerService.shared.nearby(coord)
+            guard let top = results?.first else { return }
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                suggestedPlace = top
+            }
         }
         .onChange(of: heroCardID) { _, _ in
             // Paging away from the current post (to camera, empty
@@ -747,6 +763,7 @@ struct HeroPageView: View {
         isCapturingMore = false
         previewCaption = ""
         pendingPlace = nil
+        suggestedPlace = nil
         excludedFriendUids = []
     }
 
@@ -1141,7 +1158,7 @@ struct HeroPageView: View {
                 PolaroidFrame(username: username, date: Date(), photoSide: side) {
                     captureReviewMedia
                 } topLeading: {
-                    placeTagPill
+                    placeTagArea
                 } bottomCenter: {
                     captionPillBody
                 }
@@ -1149,7 +1166,7 @@ struct HeroPageView: View {
                 PlainFeedFrame(username: username, photoSide: side) {
                     captureReviewMedia
                 } topLeading: {
-                    placeTagPill
+                    placeTagArea
                 } bottomCenter: {
                     captionPillBody
                 }
@@ -1220,6 +1237,53 @@ struct HeroPageView: View {
         }
     }
 
+    /// "Tag a place" pill plus, while still untagged, the nearest-place
+    /// suggestion pill beside it. Tapping the suggestion sets `pendingPlace`
+    /// (animated), so the suggestion transitions out and the main pill flips to
+    /// the place name; tapping the main pill then opens the picker as usual.
+    @ViewBuilder
+    private var placeTagArea: some View {
+        HStack(spacing: 6) {
+            placeTagPill
+            if pendingPlace == nil, let s = suggestedPlace {
+                placeSuggestionPill(s)
+                    .transition(.scale(scale: 0.8).combined(with: .opacity))
+            }
+        }
+    }
+
+    private func placeSuggestionPill(_ c: PlaceCandidate) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                pendingPlace = PlaceSelection(
+                    id: c.source == .db ? c.id : nil,
+                    googlePlaceId: c.googlePlaceId,
+                    name: c.name,
+                    type: c.suggestedType,
+                    lat: c.lat, lng: c.lng,
+                    isNew: c.source == .google,
+                    address: c.address
+                )
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                    .font(.caption2).bold()
+                Text(c.name)
+                    .font(.caption).bold()
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .frame(maxWidth: 140)
+            .liquidGlassChrome(in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Suggested place: \(c.name)")
+        .accessibilityHint("Tag this photo here")
+    }
+
     private var placeTagPill: some View {
         Button {
             showPlacePicker = true
@@ -1230,6 +1294,7 @@ struct HeroPageView: View {
                 Text(pendingPlace?.name ?? "Tag a place")
                     .font(.caption).bold()
                     .lineLimit(1)
+                    .contentTransition(.opacity)
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 10)
@@ -1241,6 +1306,7 @@ struct HeroPageView: View {
             PlacePickerSheet { selection in
                 pendingPlace = selection
             }
+            .presentationDragIndicator(.visible)
         }
         .contextMenu {
             if drafts.count > 1 {
