@@ -178,7 +178,7 @@ final class CameraService: NSObject {
         deliverBlankCapturePlaceholder()
         #else
         guard session.isRunning else { return }
-        sessionQueue.sync { self.applyNaturalVideoMirroringToOutputs() }
+        sessionQueue.sync { self.applyVideoMirroringToOutputs() }
 
         guard hasReadyPhotoVideoConnection else {
             deliverBlankCapturePlaceholder()
@@ -278,7 +278,7 @@ final class CameraService: NSObject {
             // it (the serial queue guarantees that block finished before this
             // one). Falls back to applying inline for any non-warmed caller.
             if !prepared {
-                self.applyNaturalVideoMirroringToOutputs()
+                self.applyVideoMirroringToOutputs()
                 self.reapplyDeviceRecordingFrameDuration()
                 self.applyVideoStabilization()
             }
@@ -332,7 +332,7 @@ final class CameraService: NSObject {
         recordingConfigPrepared = true
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.applyNaturalVideoMirroringToOutputs()
+            self.applyVideoMirroringToOutputs()
             self.reapplyDeviceRecordingFrameDuration()
             self.applyVideoStabilization()
         }
@@ -431,7 +431,7 @@ final class CameraService: NSObject {
             }
 
             session.commitConfiguration()
-            applyNaturalVideoMirroringToOutputs()
+            applyVideoMirroringToOutputs()
             applyVideoStabilization()
             let lensForMainActor = outLensSlot
             applyRearZoom(slot: lensForMainActor, animated: false, effectivePosition: newPos)
@@ -471,7 +471,7 @@ final class CameraService: NSObject {
         session.beginConfiguration()
         defer {
             session.commitConfiguration()
-            applyNaturalVideoMirroringToOutputs()
+            applyVideoMirroringToOutputs()
         }
         session.sessionPreset = .hd1920x1080
 
@@ -597,12 +597,15 @@ final class CameraService: NSObject {
         audioInput = nil
     }
 
-    /// Match saved stills/video: disable the default front-camera horizontal mirror on capture outputs.
-    private func applyNaturalVideoMirroringToOutputs() {
+    /// Mirror front-camera stills/video so the capture matches the mirrored
+    /// "feels like a mirror" preview (a selfie shouldn't flip on snap). The
+    /// rear camera stays unmirrored. Must run on `sessionQueue`.
+    private func applyVideoMirroringToOutputs() {
+        let mirror = currentInput?.device.position == .front
         for output in [photoOutput as AVCaptureOutput, movieOutput] {
             guard let c = output.connection(with: .video), c.isVideoMirroringSupported else { continue }
             c.automaticallyAdjustsVideoMirroring = false
-            c.isVideoMirrored = false
+            c.isVideoMirrored = mirror
         }
     }
 
@@ -654,7 +657,7 @@ final class CameraService: NSObject {
         session.beginConfiguration()
         defer {
             session.commitConfiguration()
-            applyNaturalVideoMirroringToOutputs()
+            applyVideoMirroringToOutputs()
             applyVideoStabilization()
             applyRearZoom(slot: lensSlot, animated: false, effectivePosition: .back)
         }
