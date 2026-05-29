@@ -90,12 +90,13 @@ final class CameraService: NSObject {
     @ObservationIgnored private let videoDataQueue = DispatchQueue(label: "com.cafehunter.camera.framescore", qos: .utility)
     /// Reused across frames so we don't spin up a new GPU context per tick.
     /// Low request priority keeps it from competing with the live preview.
-    /// Touched only on `videoDataQueue`.
-    @ObservationIgnored private lazy var frameScoreContext = CIContext(options: [.priorityRequestLow: true])
+    /// `let` (not lazy) so `nonisolated` is valid; CIContext is thread-safe after init.
+    @ObservationIgnored nonisolated private let frameScoreContext = CIContext(options: [.priorityRequestLow: true])
     /// The next three are touched ONLY on `videoDataQueue` (serial) — no locks.
-    @ObservationIgnored private var liveScoringEnabled = false
-    @ObservationIgnored private var isScoringInFlight = false
-    @ObservationIgnored private var lastScoredAt: CFTimeInterval = 0
+    /// nonisolated(unsafe) lets the nonisolated AVCapture delegate access them.
+    @ObservationIgnored nonisolated(unsafe) private var liveScoringEnabled = false
+    @ObservationIgnored nonisolated(unsafe) private var isScoringInFlight = false
+    @ObservationIgnored nonisolated(unsafe) private var lastScoredAt: CFTimeInterval = 0
     /// Min seconds between scored frames. ~2.5 Hz feels live while keeping the
     /// Neural Engine load (and thermals) low; single-flight prevents pile-ups.
     @ObservationIgnored private let scoreThrottle: CFTimeInterval = 0.4

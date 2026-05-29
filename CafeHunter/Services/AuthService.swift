@@ -27,12 +27,10 @@ final class AuthService {
     // so there's no real concurrency to protect against.
     //
     // NOTE: Swift's "consider using `nonisolated`" warning here is misleading
-    // — the class IS @MainActor-isolated (via @Observable), so `deinit` can't
-    // read a plain stored property without an override, and plain
-    // `nonisolated` is rejected on a mutable stored property. The `(unsafe)`
-    // variant is the only annotation that compiles AND lets deinit detach
-    // the listener. We accept the false-positive warning.
-    nonisolated(unsafe) private var handle: AuthStateDidChangeListenerHandle?
+    // Listener token only accessed in init/deinit — not UI state, skip
+    // observation tracking. nonisolated(unsafe) lets the nonisolated deinit
+    // detach the listener from a @MainActor-isolated @Observable class.
+    @ObservationIgnored nonisolated(unsafe) private var handle: AuthStateDidChangeListenerHandle?
 
     init() {
         // `appVerificationDisabledForTesting` is set up in `CafeHunterApp.init`

@@ -8,16 +8,21 @@ enum AppEnvironment {
     /// gate tester-only surfaces (e.g. the welcome message) so real users
     /// never see "you're an early tester" copy.
     ///
-    /// `appStoreReceiptURL` is deprecated in favour of StoreKit 2's async
-    /// `AppTransaction`, but that's overkill for a synchronous, non-security
-    /// UI gate — the worst case here is a welcome banner showing (or not) to
-    /// the wrong build channel. Deliberately keeping the simple sync check.
+    /// Synchronous TestFlight / sandbox check. StoreKit 2's `AppTransaction` is
+    /// async and overkill for a non-security UI gate. On iOS 18+ we construct
+    /// the known sandbox receipt path directly to avoid the deprecated API.
     static var isTester: Bool {
         #if DEBUG
         return true
         #else
-        guard let url = Bundle.main.appStoreReceiptURL else { return false }
-        return url.lastPathComponent == "sandboxReceipt"
+        if #available(iOS 18.0, *) {
+            let sandboxReceiptURL = Bundle.main.bundleURL
+                .appendingPathComponent("StoreKit/sandboxReceipt")
+            return FileManager.default.fileExists(atPath: sandboxReceiptURL.path)
+        } else {
+            guard let url = Bundle.main.appStoreReceiptURL else { return false }
+            return url.lastPathComponent == "sandboxReceipt"
+        }
         #endif
     }
 }
