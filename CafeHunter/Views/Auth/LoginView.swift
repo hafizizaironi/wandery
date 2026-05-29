@@ -206,9 +206,7 @@ struct LoginView: View {
     private func refreshLocalityHint() async {
         guard let coord = locationManager.userLocation else { return }
         let location = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-        guard let request = MKReverseGeocodingRequest(location: location) else { return }
-        let items = (try? await request.mapItems) ?? []
-        if let resolved = items.first?.addressRepresentations?.cityName, !resolved.isEmpty {
+        if let resolved = await Geocoding.cityName(at: location) {
             localityName = resolved
         }
     }

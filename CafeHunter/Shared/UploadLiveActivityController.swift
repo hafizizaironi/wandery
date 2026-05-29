@@ -20,18 +20,31 @@ final class UploadLiveActivityController {
     private var activity: Activity<UploadActivityAttributes>?
 
     func start() {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        let info = ActivityAuthorizationInfo()
+        #if DEBUG
+        print("[LiveActivity] start: areActivitiesEnabled=\(info.areActivitiesEnabled) frequentPushesEnabled=\(info.frequentPushesEnabled) existingActivities=\(Activity<UploadActivityAttributes>.activities.count)")
+        #endif
+        guard info.areActivitiesEnabled else {
+            #if DEBUG
+            print("[LiveActivity] ABORT — Live Activities disabled for this app (Settings ▸ CafeHunter ▸ Live Activities, and Settings ▸ Face ID & Passcode / Notifications).")
+            #endif
+            return
+        }
         // End any stale activity from a prior upload before starting a new one.
         if activity != nil { finish(failed: false) }
         let initial = UploadActivityAttributes.ContentState(progress: 0, done: false, failed: false)
         do {
-            activity = try Activity.request(
+            let a = try Activity.request(
                 attributes: UploadActivityAttributes(),
                 content: .init(state: initial, staleDate: nil)
             )
+            activity = a
+            #if DEBUG
+            print("[LiveActivity] requested OK — id=\(a.id) state=\(a.activityState)")
+            #endif
         } catch {
             #if DEBUG
-            print("[LiveActivity] request failed: \(error.localizedDescription)")
+            print("[LiveActivity] request FAILED: \(error)  (\(error.localizedDescription))")
             #endif
             activity = nil
         }
@@ -41,7 +54,12 @@ final class UploadLiveActivityController {
         guard let activity else { return }
         let clamped = min(max(progress, 0), 1)
         let state = UploadActivityAttributes.ContentState(progress: clamped, done: false, failed: false)
-        Task { await activity.update(.init(state: state, staleDate: nil)) }
+        Task {
+            await activity.update(.init(state: state, staleDate: nil))
+            #if DEBUG
+            print("[LiveActivity] update progress=\(String(format: "%.2f", clamped)) state=\(activity.activityState)")
+            #endif
+        }
     }
 
     func finish(failed: Bool) {
@@ -50,10 +68,14 @@ final class UploadLiveActivityController {
         let final = UploadActivityAttributes.ContentState(
             progress: failed ? 0 : 1, done: !failed, failed: failed
         )
+        #if DEBUG
+        print("[LiveActivity] finish(failed: \(failed)) — id=\(activity.id)")
+        #endif
         Task {
             await activity.update(.init(state: final, staleDate: nil))
-            // Let the done/failed state breathe briefly, then dismiss.
-            await activity.end(.init(state: final, staleDate: nil), dismissalPolicy: .after(.now + 1.5))
+            // Keep the done/failed state on screen a few seconds so it's
+            // observable when the app is backgrounded, then dismiss.
+            await activity.end(.init(state: final, staleDate: nil), dismissalPolicy: .after(.now + 4))
         }
     }
 }

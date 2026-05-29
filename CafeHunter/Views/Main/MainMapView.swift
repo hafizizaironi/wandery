@@ -105,7 +105,7 @@ private struct LiquidGlassChromeModifier<S: Shape>: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .glassEffect(.clear, in: shape)
+            .liquidGlassBackground(shape)
             .overlay {
                 shape.stroke(
                     LinearGradient(
@@ -141,7 +141,7 @@ struct LiquidGlassSheetBackground: View {
     var body: some View {
         Rectangle()
             .fill(.clear)
-            .glassEffect(.clear, in: Rectangle())
+            .liquidGlassBackground(Rectangle())
     }
 }
 
@@ -169,7 +169,7 @@ private struct LiquidGlassPanelModifier: ViewModifier {
             // and left alone. One subtle gradient stroke is the only
             // decoration on top; it gives the panel a defined edge over
             // any backdrop the map provides.
-            .glassEffect(.clear, in: shape)
+            .liquidGlassBackground(shape)
             .overlay {
                 shape.stroke(
                     LinearGradient(
@@ -192,6 +192,21 @@ extension View {
     /// Applies the shared rounded-rectangle Liquid Glass panel styling.
     fileprivate func liquidGlassPanel(cornerRadius: CGFloat) -> some View {
         modifier(LiquidGlassPanelModifier(cornerRadius: cornerRadius))
+    }
+
+    /// iOS 26 Liquid Glass with an iOS-18 frosted-material fallback. This is the
+    /// single place the `glassEffect` availability split lives — every glass
+    /// surface in the app routes through it, so iOS 18 users get a clean
+    /// `.ultraThinMaterial` (+ optional tint) instead of a missing API.
+    @ViewBuilder
+    func liquidGlassBackground<S: Shape>(_ shape: S, tint: Color? = nil, regular: Bool = false) -> some View {
+        if #available(iOS 26.0, *) {
+            let base: Glass = regular ? .regular : .clear
+            glassEffect(tint.map { base.tint($0) } ?? base, in: shape)
+        } else {
+            background(.ultraThinMaterial, in: shape)
+                .overlay { if let tint { shape.fill(tint) } }
+        }
     }
 }
 
@@ -1154,12 +1169,9 @@ struct BottomSheetView<Content: View>: View {
         ))
         // `Color(.systemBackground)` adapts: near-white tint in light mode,
         // near-black in dark mode. Keeps the panel readable in both.
-        .glassEffect(
-            .clear.tint(Color(.systemBackground).opacity(0.90)),
-            in: RoundedRectangle(
-                cornerRadius: FloatingPanelStyle.cornerRadius,
-                style: .continuous
-            )
+        .liquidGlassBackground(
+            RoundedRectangle(cornerRadius: FloatingPanelStyle.cornerRadius, style: .continuous),
+            tint: Color(.systemBackground).opacity(0.90)
         )
         .shadow(color: .black.opacity(0.20), radius: 14, x: 0, y: 6)
     }
@@ -1175,10 +1187,10 @@ struct BottomSheetView<Content: View>: View {
                 .font(.system(size: 13, weight: .bold))
                 .foregroundColor(.primary)
                 .frame(width: 34, height: 34)
-                .glassEffect(
-                    .regular
-                        .tint(AppTheme.accentAction.opacity(0.07)),
-                    in: Circle()
+                .liquidGlassBackground(
+                    Circle(),
+                    tint: AppTheme.accentAction.opacity(0.07),
+                    regular: true
                 )
                 .liquidGlassShine(in: Circle(), strength: 1.0)
                 .overlay(

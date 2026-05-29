@@ -20,12 +20,15 @@ enum CameraCaptureProcessing {
         return UIImage(cgImage: cropped, scale: upright.scale, orientation: .up)
     }
 
+    /// Shared GPU context — allocating a `CIContext` per call is expensive
+    /// (tens of ms); reuse one across uploads.
+    private static let sharedCIContext = CIContext(options: [.useSoftwareRenderer: false])
+
     static func preparePhotoForUpload(_ image: UIImage) -> UIImage? {
         let upright = renderBitmapUpright(image)
         guard let ciImage = CIImage(image: upright) else { return nil }
-        let context = CIContext(options: [.useSoftwareRenderer: false])
         let cropped = squareCenterCrop(ciImage)
-        guard let cg = context.createCGImage(cropped, from: cropped.extent.integral) else { return nil }
+        guard let cg = sharedCIContext.createCGImage(cropped, from: cropped.extent.integral) else { return nil }
         return UIImage(cgImage: cg, scale: 1, orientation: .up)
     }
 
@@ -79,39 +82,59 @@ enum CameraCaptureProcessing {
         return out
     }
 
-    /// Immutable `AVVideoComposition` API (iOS 26+; replaces `AVMutableVideoComposition`).
+    /// Square 1080² composition. iOS 26 uses the immutable `Configuration` API;
+    /// iOS 18–25 uses the classic `AVMutableVideoComposition`.
     private static func makeSquareVideoComposition(
         track: AVAssetTrack,
         duration: CMTime,
         transform: CGAffineTransform
     ) -> AVVideoComposition {
-        var layerConfig = AVVideoCompositionLayerInstruction.Configuration(assetTrack: track)
-        layerConfig.setTransform(transform, at: .zero)
-        let layerInstruction = AVVideoCompositionLayerInstruction(configuration: layerConfig)
-        let instructionConfig = AVVideoCompositionInstruction.Configuration(
-            backgroundColor: nil,
-            enablePostProcessing: false,
-            layerInstructions: [layerInstruction],
-            requiredSourceSampleDataTrackIDs: [],
-            timeRange: CMTimeRange(start: .zero, duration: duration)
-        )
-        let instruction = AVVideoCompositionInstruction(configuration: instructionConfig)
-        let compConfig = AVVideoComposition.Configuration(
-            animationTool: nil,
-            colorPrimaries: nil,
-            colorTransferFunction: nil,
-            colorYCbCrMatrix: nil,
-            customVideoCompositorClass: nil,
-            frameDuration: CMTime(value: 1, timescale: 60),
-            instructions: [instruction],
-            outputBufferDescription: nil,
-            renderScale: 1.0,
-            renderSize: CGSize(width: 1080, height: 1080),
-            sourceSampleDataTrackIDs: [],
-            sourceTrackIDForFrameTiming: track.trackID,
-            spatialVideoConfigurations: []
-        )
-        return AVVideoComposition(configuration: compConfig)
+        let square = CGSize(width: 1080, height: 1080)
+        let frameDuration = CMTime(value: 1, timescale: 60)
+
+        if #available(iOS 26.0, *) {
+            var layerConfig = AVVideoCompositionLayerInstruction.Configuration(assetTrack: track)
+            layerConfig.setTransform(transform, at: .zero)
+            let layerInstruction = AVVideoCompositionLayerInstruction(configuration: layerConfig)
+            let instructionConfig = AVVideoCompositionInstruction.Configuration(
+                backgroundColor: nil,
+                enablePostProcessing: false,
+                layerInstructions: [layerInstruction],
+                requiredSourceSampleDataTrackIDs: [],
+                timeRange: CMTimeRange(start: .zero, duration: duration)
+            )
+            let instruction = AVVideoCompositionInstruction(configuration: instructionConfig)
+            let compConfig = AVVideoComposition.Configuration(
+                animationTool: nil,
+                colorPrimaries: nil,
+                colorTransferFunction: nil,
+                colorYCbCrMatrix: nil,
+                customVideoCompositorClass: nil,
+                frameDuration: frameDuration,
+                instructions: [instruction],
+                outputBufferDescription: nil,
+                renderScale: 1.0,
+                renderSize: square,
+                sourceSampleDataTrackIDs: [],
+                sourceTrackIDForFrameTiming: track.trackID,
+                spatialVideoConfigurations: []
+            )
+            return AVVideoComposition(configuration: compConfig)
+        } else {
+            // iOS 18–25: classic mutable composition. (`AVMutableVideoComposition`
+            // is soft-deprecated on iOS 26 — one unavoidable warning to keep the
+            // square crop working below 26.)
+            let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
+            layer.setTransform(transform, at: .zero)
+            let instruction = AVMutableVideoCompositionInstruction()
+            instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
+            instruction.layerInstructions = [layer]
+            let comp = AVMutableVideoComposition()
+            comp.renderSize = square
+            comp.frameDuration = frameDuration
+            comp.instructions = [instruction]
+            return comp
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 @preconcurrency import FirebaseAuth
+import AVFoundation
 import Photos
 import SwiftUI
 import PhotosUI
@@ -78,8 +79,14 @@ struct HeroPageView: View {
     /// First draft's image, rendered as the card that flies up toward the
     /// Dynamic Island (or off the top on non-DI phones).
     @State private var flightImage: UIImage?
-    /// Drives the flight card from its resting frame to its target.
+    /// True while the card is in flight (hides the static review square so the
+    /// moving droplet copy isn't doubled).
     @State private var flightActive = false
+    /// Incremented to launch the droplet keyframe animation.
+    @State private var flightTrigger = 0
+    /// Brief "warming the camera" cue while the + (add another) transition
+    /// waits for the session to be ready before swapping to the live camera.
+    @State private var addMorePreparing = false
 
     /// Mirror of the system keyboard's visible height. Driven by
     /// `keyboardWillShow / keyboardWillHide` notifications because the
@@ -286,7 +293,7 @@ struct HeroPageView: View {
                 highlightedPostId = nil
             }
         }
-        .animation(Motion.iosDrawer(duration: 0.22), value: isReviewingCapture)
+        .animation(Motion.strongEaseOut(duration: 0.4), value: isReviewingCapture)
         .photosPicker(isPresented: $showPhotosPicker,
                       selection: $librarySelection,
                       maxSelectionCount: max(1, maxDrafts - drafts.count),
@@ -656,25 +663,24 @@ struct HeroPageView: View {
         heroCardID == .camera || heroCardID == nil
     }
 
-    /// The capture session should only run when the camera card is actually
-    /// visible and in the foreground: on the Hero page, app active, authorized,
-    /// not mid-review, and parked on the camera card (not browsing the feed).
-    /// Drives the unified `.task(id:)` lifecycle — see its comment for why this
-    /// replaced the old always-on session.
+    /// The capture session runs whenever the camera card is the foreground Hero
+    /// content — **including while reviewing a capture**. Keeping it warm through
+    /// the compose/review flow means returning to the live camera (after Post or
+    /// "+") is instant and smooth, with no cold-start stutter or black-preview
+    /// pop. The expensive live-scoring tap is still gated off during review (see
+    /// `liveScoringShouldRun`), so the incremental cost is just the sensor.
     private var cameraShouldRun: Bool {
         isActive
             && scenePhase == .active
             && camera.isAuthorized
-            && !isReviewingCapture
             && isOnCameraCard
             && !isObscured
     }
 
-    /// Live aesthetic scoring runs only when the live viewfinder is up in photo
-    /// mode — i.e. exactly when the ring is visible. Video mode (recording) and
-    /// capture review both exclude it, keeping the Neural Engine free for the
-    /// capture path. Mirrors `cameraShouldRun`'s lifecycle so it sleeps whenever
-    /// the camera does.
+    /// Live aesthetic scoring stays on for the whole capture loop in photo mode
+    /// (feed → preview → upload → feed) so nothing toggles the pipeline — the
+    /// camera and Neural Engine keep running until the user leaves the camera
+    /// card. Only video mode (recording) excludes it.
     private var liveScoringShouldRun: Bool {
         cameraShouldRun && cameraMode == .polaroid
     }
@@ -717,51 +723,114 @@ struct HeroPageView: View {
     /// True on Dynamic Island phones (top inset ≈59 vs ≈47–50 notch / 20 classic).
     private var hasDynamicIsland: Bool { Self.topSafeAreaInset >= 55 }
 
-    /// First draft's still image, used as the card that flies into the DI.
-    /// nil for a video-first draft (we fall back to a plain cross-fade).
-    private var flightSourceImage: UIImage? {
-        guard let first = drafts.first else { return nil }
-        if case .image(let img) = first.source { return img }
-        return nil
-    }
-
-    /// Choreographs the publish transition: a beat, chrome dissolves, the photo
-    /// card flies into the Dynamic Island (or up, on non-DI), the camera warms
-    /// up and springs back, then the chrome un-dissolves. Reduced-motion and
-    /// video-first drafts take a plain cross-fade.
+    /// Choreographs the publish transition: a beat, chrome dissolves, the
+    /// captured card flies into the Dynamic Island (or up, on non-DI), the
+    /// camera warms up and springs back, then the chrome un-dissolves.
+    /// Reduced-motion takes a plain cross-fade.
     private func launchPostChoreography() {
-        let img = flightSourceImage
-        guard !reduceMotion, let img else {
-            withAnimation(.easeInOut(duration: 0.28)) {
-                clearDraftTray()
-            }
+        guard !reduceMotion, let first = drafts.first else {
             camera.startSession()
+            withAnimation(.easeInOut(duration: 0.28)) { clearDraftTray() }
             camera.discardCapture()
             loadLatestLibraryThumbnail()
             return
         }
+        // Fly the captured photo into the Dynamic Island.
+        switch first.source {
+        case .image(let img):
+            beginFlightTransition(flyPhoto: img)
+        case .video(let url):
+            // Grab a poster frame for the flying card; the brief async gen also
+            // serves as the deliberate "beat" before the card launches.
+            Task { @MainActor in
+                beginFlightTransition(flyPhoto: await Self.videoPosterImage(url))
+            }
+        }
+    }
 
+    /// Transition: dissolve chrome, warm the camera, fly the photo card into
+    /// the Dynamic Island (droplet) + splash the ring, then return the live
+    /// camera and un-dissolve the chrome.
+    private func beginFlightTransition(flyPhoto: UIImage) {
         isLaunchingPost = true
-        flightImage = img
-        camera.startSession() // warm up so the returning preview isn't black
-
-        // Beat + dissolve the chrome + launch the card.
+        flightActive = true           // hide the static review square underneath
+        flightImage = flyPhoto
+        camera.startSession()         // warm up so the returning preview isn't black
         withAnimation(.easeOut(duration: 0.28)) { chromeDissolved = true }
-        withAnimation(Motion.strongEaseInOut(duration: 0.55)) { flightActive = true }
+
+        // Defer the launch one runloop so the keyframe animator has the card at
+        // its resting frame for a frame before the droplet dives in.
+        DispatchQueue.main.async { flightTrigger += 1 }
+        // Splash the ring right as the droplet reaches the island.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(480))
+            socialService.signalCardImpact()
+        }
 
         Task { @MainActor in
-            // Deliberate, unrushed beat while the card travels up.
-            try? await Task.sleep(for: .milliseconds(450))
+            // Let the full droplet animation finish (~600ms), then hold a clear
+            // 500ms so the camera slide-in plays entirely on its own — nothing
+            // else animating, so it reads as perfectly smooth.
+            try? await Task.sleep(for: .milliseconds(825))
+            // Camera's been warm since the tap, so this returns immediately.
+            await awaitCameraReady()
             // Swap to the live camera, entering with a springy slide-up.
             withAnimation(Motion.cozyReveal) { clearDraftTray() }
             camera.discardCapture()
             loadLatestLibraryThumbnail()
             flightImage = nil
             flightActive = false
-            // Un-dissolve the chrome as the preview settles.
-            try? await Task.sleep(for: .milliseconds(300))
-            withAnimation(.easeOut(duration: 0.3)) { chromeDissolved = false }
+            // Un-dissolve the chrome once the preview has settled.
+            try? await Task.sleep(for: .milliseconds(240))
+            withAnimation(.easeOut(duration: 0.32)) { chromeDissolved = false }
             isLaunchingPost = false
+        }
+    }
+
+    /// Warms the capture session and waits until the first frame is realistically
+    /// ready, so the heavy `configureSession`/`startRunning` work finishes BEFORE
+    /// the live-preview spring — no cold-start stutter, no black-preview pop.
+    /// Returns almost immediately when the session is already warm.
+    private func awaitCameraReady() async {
+        camera.startSession()
+        var ticks = 0
+        while !camera.isSessionRunning, ticks < 30 {   // ≤ ~1.5s cap
+            try? await Task.sleep(for: .milliseconds(50))
+            ticks += 1
+        }
+        try? await Task.sleep(for: .milliseconds(90))  // let 1–2 frames land
+    }
+
+    /// Deliberate review → live-camera transition for the "+" (add another)
+    /// button: a gentle pre-swap cue while the camera warms, then a smooth swap
+    /// once it's ready (so the cold start never janks the cut).
+    private func goToAddMore() {
+        guard !isCapturingMore else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Task { @MainActor in
+            withAnimation(.easeOut(duration: 0.22)) { addMorePreparing = true }
+            await awaitCameraReady()
+            withAnimation(Motion.strongEaseOut(duration: 0.45)) {
+                isCapturingMore = true
+                addMorePreparing = false
+            }
+        }
+    }
+
+    /// First-frame poster for a video draft (for the flight card). Falls back to
+    /// a plain black card if generation fails.
+    private static func videoPosterImage(_ url: URL) async -> UIImage {
+        let asset = AVURLAsset(url: url)
+        let gen = AVAssetImageGenerator(asset: asset)
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = CGSize(width: 600, height: 600)
+        if let result = try? await gen.image(at: CMTime(seconds: 0.1, preferredTimescale: 600)) {
+            return UIImage(cgImage: result.image)
+        }
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 240, height: 240))
+        return renderer.image { ctx in
+            UIColor.black.setFill()
+            ctx.fill(CGRect(origin: .zero, size: CGSize(width: 240, height: 240)))
         }
     }
 
@@ -978,9 +1047,18 @@ struct HeroPageView: View {
         }
     }
 
-    /// The flying capture card. At rest it sits exactly over the viewfinder
-    /// square; `flightActive` animates it to the Dynamic Island capsule (top
-    /// centre) on DI phones, or up and off-screen on non-DI phones.
+    /// Per-frame state of the droplet flight (anisotropic scale = stretch/squash).
+    private struct DropletPhase {
+        var y: CGFloat
+        var scale: CGFloat = 1
+        var stretch: CGFloat = 1   // >1 = tall droplet, <1 = squashed on impact
+        var opacity: CGFloat = 1
+    }
+
+    /// The flying capture card, animated like a water droplet diving into the
+    /// Dynamic Island: it stretches tall as it rises, squashes on impact, then
+    /// is absorbed (fades) — which is when the ring splashes. On non-DI phones
+    /// the same motion carries it up and off the top.
     private func postFlightCard(image: UIImage, geo: GeometryProxy,
                                 side: CGFloat, bottomChrome: CGFloat) -> some View {
         // Resting centre of the viewfinder square (bottom-anchored VStack).
@@ -990,15 +1068,38 @@ struct HeroPageView: View {
         // DI capsule centre ≈ 28pt from the top; non-DI flies off the top.
         let targetY: CGFloat = di ? 28 : -side * 0.6
         let targetScale: CGFloat = di ? max(0.12, 37 / side) : 0.5
-        let corner: CGFloat = di ? 19 : HeroCameraLayout.viewfinderCornerRadius
+        let midY = restingY - (restingY - targetY) * 0.62
+        let corner: CGFloat = di ? 22 : HeroCameraLayout.viewfinderCornerRadius
+
         return Image(uiImage: image)
             .resizable()
             .scaledToFill()
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-            .scaleEffect(flightActive ? targetScale : 1)
-            .position(x: centerX, y: flightActive ? targetY : restingY)
-            .opacity(flightActive ? 0 : 1)
+            .keyframeAnimator(initialValue: DropletPhase(y: restingY), trigger: flightTrigger) { view, p in
+                view
+                    .scaleEffect(x: p.scale / p.stretch, y: p.scale * p.stretch, anchor: .center)
+                    .opacity(p.opacity)
+                    .position(x: centerX, y: p.y)
+            } keyframes: { _ in
+                KeyframeTrack(\.y) {
+                    CubicKeyframe(midY, duration: 0.30)
+                    CubicKeyframe(targetY, duration: 0.18)
+                }
+                KeyframeTrack(\.scale) {
+                    CubicKeyframe(0.55, duration: 0.30)
+                    CubicKeyframe(targetScale, duration: 0.18)
+                }
+                KeyframeTrack(\.stretch) {
+                    CubicKeyframe(1.32, duration: 0.26)   // stretch tall while rising
+                    CubicKeyframe(0.70, duration: 0.12)   // squash on impact
+                    CubicKeyframe(1.0, duration: 0.12)    // settle
+                }
+                KeyframeTrack(\.opacity) {
+                    CubicKeyframe(1.0, duration: 0.42)
+                    CubicKeyframe(0.0, duration: 0.12)    // absorbed into the island
+                }
+            }
     }
 
     private func heroEmptyFeedPage(geometry geo: GeometryProxy) -> some View {
@@ -1189,8 +1290,10 @@ struct HeroPageView: View {
             if isReviewingCapture {
                 captureReviewSquare(side: side)
                     // Hidden during the flight so the moving copy (postFlightCard)
-                    // isn't doubled by the static square underneath.
-                    .opacity(flightActive ? 0 : 1)
+                    // isn't doubled by the static square underneath. Gently dims
+                    // + shrinks while the camera warms for the "+" add-more swap.
+                    .scaleEffect(addMorePreparing ? 0.96 : 1)
+                    .opacity(flightActive ? 0 : (addMorePreparing ? 0.55 : 1))
             } else {
                 let cam = Bindable(camera)
                 CameraPreviewView(session: camera.session, isRunning: camera.isSessionRunning,
@@ -1198,6 +1301,17 @@ struct HeroPageView: View {
                                   cameraPosition: camera.currentPosition)
                     .frame(width: side, height: side)
                     .clipShape(RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous))
+                    // Front↔rear swap cover: appears instantly to hide the input
+                    // swap + rotation correction + mirror toggle, then fades away
+                    // once the new feed is ready (driven by camera.isSwapping).
+                    .overlay {
+                        if camera.isSwapping {
+                            RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
+                                .fill(.black)
+                                .transition(.asymmetric(insertion: .identity, removal: .opacity))
+                        }
+                    }
+                    .animation(.easeOut(duration: 0.3), value: camera.isSwapping)
                     .overlay {
                         RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                             .stroke(Color.white.opacity(0.12), lineWidth: 1)
@@ -1578,9 +1692,9 @@ struct HeroPageView: View {
                 }
                 if drafts.count < maxDrafts {
                     Button {
-                        // Straight to the live camera — the photo library is
-                        // reachable from there via the shutter's left-drag.
-                        isCapturingMore = true
+                        // Deliberate, camera-ready-gated swap to the live camera
+                        // (the photo library is reachable there via left-drag).
+                        goToAddMore()
                     } label: {
                         addDraftCell
                     }

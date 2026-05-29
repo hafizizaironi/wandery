@@ -243,8 +243,21 @@ struct MainShellView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(16)
                 }
+
+                // ── In-app Dynamic Island upload ring ── the foreground upload
+                // indicator (a Live Activity can't render in the DI while the
+                // app is frontmost), traced around the island. DI phones only.
+                if socialService.isUploadingPost, DeviceMetrics.hasDynamicIsland {
+                    DynamicIslandUploadRing(
+                        progress: socialService.uploadProgress,
+                        splashTrigger: socialService.cardImpactTick
+                    )
+                    .transition(.opacity)
+                    .zIndex(30)
+                }
             }
             .animation(.easeInOut(duration: 0.25), value: socialService.pendingUploadError)
+            .animation(.easeInOut(duration: 0.25), value: socialService.isUploadingPost)
         }
         .ignoresSafeArea()
         // Soft check for a newer published build (config/app) — best-effort.

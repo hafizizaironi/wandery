@@ -352,11 +352,7 @@ final class FriendPlacesService {
     }
 
     private static func reverseGeocodeCity(lat: Double, lng: Double) async -> String? {
-        let location = CLLocation(latitude: lat, longitude: lng)
-        guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
-        let items = (try? await request.mapItems) ?? []
-        let city = items.first?.addressRepresentations?.cityName
-        return (city?.isEmpty == false) ? city : nil
+        await Geocoding.cityName(at: CLLocation(latitude: lat, longitude: lng))
     }
 
     /// Locality from a comma-separated address. Tuned for the common

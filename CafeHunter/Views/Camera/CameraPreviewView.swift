@@ -7,7 +7,8 @@ struct CameraPreviewView: UIViewRepresentable {
 
     let session: AVCaptureSession
     var isRunning: Bool
-    /// Increment before a physical lens swap; triggers a `CATransition` fade to cover the blank frame.
+    /// Increment for a lens-slot change (0.5×/1×); triggers a crossfade to cover the blank frame.
+    /// (Front↔rear flips are covered by the opaque swap cover in `HeroPageView`.)
     var lensSwitchToken: Int = 0
     /// Mirrors the preview when `.front` so the selfie feed feels like a mirror to the user.
     /// Capture outputs stay unmirrored (saved photo/video reads naturally).
@@ -28,11 +29,11 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PreviewUIView, context: Context) {
-        // Apply a crossfade before a physical lens swap to hide the blank frame between inputs.
+        // Lens-slot change (0.5×/1×) → simple crossfade over the blank frame.
         if lensSwitchToken != context.coordinator.lastLensSwitchToken {
             context.coordinator.lastLensSwitchToken = lensSwitchToken
             let transition = CATransition()
-            transition.duration = 0.35
+            transition.duration = 0.3
             transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             transition.type = .fade
             uiView.previewLayer.add(transition, forKey: "lensSwitch")

@@ -179,10 +179,15 @@ struct CirclePlaceCard: View {
     }
 
     private func openInMaps() {
-        // iOS 26+ MKMapItem initialiser — `MKMapItem(placemark:)` /
-        // `MKPlacemark` were deprecated in favour of location+address.
-        let location = CLLocation(latitude: place.lat, longitude: place.lng)
-        let item = MKMapItem(location: location, address: nil)
+        // iOS 26 replaced `MKMapItem(placemark:)`/`MKPlacemark` with location+
+        // address. Use the new initialiser on 26, the classic one on 18–25.
+        let coord = CLLocationCoordinate2D(latitude: place.lat, longitude: place.lng)
+        let item: MKMapItem
+        if #available(iOS 26.0, *) {
+            item = MKMapItem(location: CLLocation(latitude: place.lat, longitude: place.lng), address: nil)
+        } else {
+            item = MKMapItem(placemark: MKPlacemark(coordinate: coord))
+        }
         item.name = place.name
         item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
     }

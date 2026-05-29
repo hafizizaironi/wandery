@@ -31,6 +31,10 @@ final class SocialService {
     /// Set when a background upload fails — surfaces the retry banner. Cleared
     /// on retry / dismiss.
     var pendingUploadError: String?
+    /// Incremented when the flying capture card "dives" into the Dynamic Island,
+    /// so the in-app DI ring can splash/ripple in reaction. Bumped by the view.
+    private(set) var cardImpactTick = 0
+    func signalCardImpact() { cardImpactTick += 1 }
     /// Drafts + audience kept so a failed upload can be retried verbatim.
     private var savedUpload: (drafts: [MediaDraft], recipients: [String]?)?
 
@@ -750,8 +754,21 @@ final class SocialService {
             }()
             switch draft.source {
             case .image(let image):
-                let processed = CameraCaptureProcessing.preparePhotoForUpload(image) ?? image
-                guard let data = processed.jpegData(compressionQuality: 0.82) else { throw SocialError.uploadFailed }
+                // Prepare + JPEG-encode OFF the main actor — this is heavy
+                // (full-res bitmap redraw + Core Image render + encode) and
+                // `SocialService` is @MainActor, so doing it inline would block
+                // the main thread right as the post-launch animation plays
+                // (the cause of the intermittent stutter). Offloading keeps the
+                // spring smooth.
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    () -> (data: Data, processed: UIImage)? in
+                    let processed = CameraCaptureProcessing.preparePhotoForUpload(image) ?? image
+                    guard let data = processed.jpegData(compressionQuality: 0.82) else { return nil }
+                    return (data, processed)
+                }.value
+                guard let prepared else { throw SocialError.uploadFailed }
+                let data = prepared.data
+                let processed = prepared.processed
                 let ref = Storage.storage().reference().child("social/\(authorUid)/\(postId)_\(i).jpg")
                 try await putDataTracked(data, to: ref) { frac in
                     Task { @MainActor [weak self] in
@@ -859,6 +876,11 @@ final class SocialService {
         if let img = firstImageForClassify, !isRestricted {
             let postRefForVerdict = postRef
             Task.detached(priority: .utility) {
+                // Hold off ~1s so the Vision/CoreML classify doesn't hammer the
+                // Neural Engine while the post-launch animation is still playing
+                // (it shares the GPU with the SwiftUI render). The verdict only
+                // affects Discover eligibility, so a brief delay is invisible.
+                try? await Task.sleep(for: .seconds(1))
                 let verdict = await PostClassifier.classify(img)
                 #if DEBUG
                 print("[Discover] post \(postId): faces=\(verdict.containsFaces) score=\(String(format: "%.2f", verdict.aestheticScore)) discoverable=\(verdict.discoverable)")

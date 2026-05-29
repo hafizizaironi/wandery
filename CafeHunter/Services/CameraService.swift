@@ -71,8 +71,14 @@ final class CameraService: NSObject {
     /// Cancels in-flight linear zoom steps when the user toggles again.
     private var zoomRampGeneration: UInt = 0
 
-    /// Incremented just before a physical lens swap so `CameraPreviewView` can apply a crossfade transition.
+    /// Incremented just before a lens-slot change (0.5×/1×) so `CameraPreviewView`
+    /// applies a crossfade to hide the blank frame between inputs.
     var lensSwitchToken: Int = 0
+    /// True while flipping front↔rear: the viewfinder shows an opaque cover so
+    /// the input swap, rotation correction, and mirror toggle are never seen.
+    /// The cover fades away once the new feed is ready (revealing the live
+    /// preview). Driven by `switchCamera()`.
+    private(set) var isSwapping: Bool = false
 
     // MARK: - Live aesthetic scoring (viewfinder ring)
 
@@ -444,6 +450,13 @@ final class CameraService: NSObject {
         displayedZoom = 1.0
         let newPos: AVCaptureDevice.Position = currentPosition == .back ? .front : .back
         let slot = lensSlot
+        // Cover the viewfinder NOW (before the session-queue swap) so the input
+        // swap, the preview's rotation correction, and the mirror toggle all
+        // happen hidden. `currentPosition` is updated up front so the preview's
+        // mirroring settles behind the cover; the cover fades away once the new
+        // feed is ready (see the reveal below).
+        currentPosition = newPos
+        isSwapping = true
         sessionQueue.async { [weak self] in
             guard let self else { return }
             if let d = currentInput?.device {
@@ -482,8 +495,12 @@ final class CameraService: NSObject {
             let lensForMainActor = outLensSlot
             applyRearZoom(slot: lensForMainActor, animated: false, effectivePosition: newPos)
             Task { @MainActor in
-                self.currentPosition = newPos
+                // `currentPosition` was already set up front (see above); finalize
+                // the resolved lens slot, then — once the new feed has had a beat
+                // to produce frames — reveal it by fading the cover away.
                 self.lensSlot = lensForMainActor
+                try? await Task.sleep(for: .milliseconds(300))
+                self.isSwapping = false
             }
         }
     }
