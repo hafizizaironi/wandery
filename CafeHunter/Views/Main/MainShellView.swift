@@ -86,8 +86,24 @@ struct MainShellView: View {
     /// MainShellView sets this true, MainMapView watches and opens the
     /// Trending sheet, then resets the flag.
     @State private var pendingShowTrending = false
+    /// Set when arriving at a post via a notification tap; HeroPageView gives
+    /// that post a brief highlight, then clears this.
+    @State private var highlightedPostId: String?
+    /// Bumped to ask ProfileHomeView to scroll to its Friend Requests section
+    /// (e.g. after tapping a friend-request notification).
+    @State private var scrollToRequestsToken: Int = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// True when a full-screen surface fully hides the Hero page (chat,
+    /// friend-find, phone onboarding, marketing mockups). HeroPageView uses
+    /// this to sleep the camera while the user is in messages and deeper.
+    private var heroIsCovered: Bool {
+        chatPresentation != nil
+            || showFriendFindSheet
+            || showPhoneOnboardingSheet
+            || showMarketingMockups
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -114,9 +130,12 @@ struct MainShellView: View {
                         socialService: socialService,
                         conversationService: conversationService,
                         pendingPostJumpId: $pendingHeroPostJumpId,
+                        highlightedPostId: $highlightedPostId,
                         edgeDragActive: edgeDragActive,
                         onJumpToPlace: { placeId in jumpToMap(placeId: placeId) },
-                        onOpenMessages: { chatPresentation = .inbox }
+                        onOpenMessages: { chatPresentation = .inbox },
+                        onFindFriends: { showFriendFindSheet = true },
+                        isObscured: heroIsCovered
                     )
                         .frame(width: geo.size.width, height: geo.size.height)
                         .offset(x: (1 - pageProgress) * geo.size.width)
@@ -139,7 +158,8 @@ struct MainShellView: View {
                         },
                         onPreviewWhatsNew:   { showWhatsNew = true },
                         onShowTesterWelcome: { showTesterWelcome = true },
-                        onShowMarketingMockups: { showMarketingMockups = true }
+                        onShowMarketingMockups: { showMarketingMockups = true },
+                        scrollToRequestsToken: scrollToRequestsToken
                     )
                     .frame(width: geo.size.width, height: geo.size.height)
                     .offset(x: (2 - pageProgress) * geo.size.width)
@@ -193,6 +213,16 @@ struct MainShellView: View {
             }
         }
         .ignoresSafeArea()
+        // Route a tapped notification. `.task` drains a cold-start tap that
+        // was buffered before this view mounted; `.onChange` handles taps
+        // while the app is already running. Both only fire once the shell is
+        // mounted, which ContentView gates behind auth + onboarding.
+        .task {
+            if let link = NotificationRouter.shared.pending { consume(link) }
+        }
+        .onChange(of: NotificationRouter.shared.pending) { _, link in
+            if let link { consume(link) }
+        }
         // Hydrate the My Hunt map from the same feed posts the Map tab uses.
         .task(id: socialService.feedPosts.map(\.id)) {
             await friendPlacesService.refresh(from: socialService.feedPosts)
@@ -389,6 +419,28 @@ struct MainShellView: View {
             selectedPage = .hero
             pageProgress = 1
         }
+    }
+
+    /// Apply a tapped-notification deep link, then clear it.
+    private func consume(_ link: NotificationDeepLink) {
+        switch link {
+        case .thread(let otherUid):
+            chatPresentation = .thread(otherUid: otherUid, displayName: nil, photoURL: nil)
+        case .post(let postId):
+            jumpToPost(postId: postId)
+            highlightedPostId = postId
+        case .friendRequests:
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                selectedPage = .profile
+                pageProgress = 2
+            }
+            // Defer the scroll until the page transition settles (same delay
+            // the What's New jumps use).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                scrollToRequestsToken += 1
+            }
+        }
+        NotificationRouter.shared.pending = nil
     }
 
     private func jumpToMap(placeId: String) {

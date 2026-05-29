@@ -37,12 +37,16 @@ struct CameraPreviewView: UIViewRepresentable {
             transition.type = .fade
             uiView.previewLayer.add(transition, forKey: "lensSwitch")
         }
-        _ = isRunning
-        uiView.previewLayer.session = session
-        uiView.previewLayer.videoGravity = .resizeAspectFill
+        // `updateUIView` fires on every parent re-render — ≈60×/sec while a
+        // page swipe animates `pageProgress`. The old code reassigned the
+        // session + forced a synchronous `layoutIfNeeded()` every call, which
+        // showed up as swipe jank. Only touch the layer when an input actually
+        // changed; `shouldMirrorPreview`'s didSet schedules layout on change,
+        // and `layoutSubviews` handles the frame/rotation on the normal pass.
+        if uiView.previewLayer.session !== session {
+            uiView.previewLayer.session = session
+        }
         uiView.shouldMirrorPreview = (cameraPosition == .front)
-        uiView.setNeedsLayout()
-        uiView.layoutIfNeeded()
     }
 
     final class PreviewUIView: UIView {

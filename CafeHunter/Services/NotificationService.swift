@@ -87,4 +87,37 @@ extension NotificationService: UNUserNotificationCenterDelegate {
     ) {
         completionHandler([.banner, .sound, .badge])
     }
+
+    /// Notification TAP (foreground banner tap, background, or cold-start
+    /// launch). Parses the push payload into a deep link and hands it to
+    /// `NotificationRouter`, which `MainShellView` observes to route.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if let link = Self.deepLink(from: response.notification.request.content.userInfo) {
+            Task { @MainActor in NotificationRouter.shared.pending = link }
+        }
+        completionHandler()
+    }
+
+    /// Pure mapping from an FCM `data` payload to a deep link. Values arrive
+    /// as strings (the server stringifies the whole data block). Static +
+    /// pure so it's trivially testable and captures no state.
+    static func deepLink(from info: [AnyHashable: Any]) -> NotificationDeepLink? {
+        guard let type = info["type"] as? String else { return nil }
+        switch type {
+        case "message":
+            guard let senderId = info["senderId"] as? String, !senderId.isEmpty else { return nil }
+            return .thread(otherUid: senderId)   // recipient's view: sender == the other participant
+        case "newPost", "reaction":
+            guard let postId = info["postId"] as? String, !postId.isEmpty else { return nil }
+            return .post(postId: postId)
+        case "friendRequest":
+            return .friendRequests
+        default:
+            return nil                           // friendAccepted etc. — banner only
+        }
+    }
 }

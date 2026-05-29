@@ -30,6 +30,9 @@ struct HeroPageView: View {
     /// scrolling to the matching post, then resets the binding to nil so
     /// the same id can fire again later.
     @Binding var pendingPostJumpId: String?
+    /// Set by MainShellView when arriving at a post via a notification tap;
+    /// this view gives that post a brief highlight, then clears the binding.
+    @Binding var highlightedPostId: String?
     /// True while MainShellView is interpreting a drag as an edge-swipe
     /// page-switch. We disable the vertical pager during this window
     /// so the two gestures don't compete and stutter the animation.
@@ -40,6 +43,16 @@ struct HeroPageView: View {
     /// Fired when the user taps the top-trailing Messages button.
     /// MainShellView presents the chat fullScreenCover.
     var onOpenMessages: () -> Void = { }
+    /// Fired from the empty-feed "Find friends" button — MainShellView opens
+    /// the friend-find sheet.
+    var onFindFriends: () -> Void = { }
+    /// True when a full-screen surface (chat, friend-find, etc.) is covering
+    /// Hero. The cover keeps Hero mounted with `scenePhase == .active`, so we
+    /// need this to sleep the camera while the user is in messages and deeper.
+    var isObscured: Bool = false
+    /// Last feed post id the user has seen at the top. Drives the "New
+    /// moments" pill; seeded on first feed load so a fresh launch is quiet.
+    @AppStorage("feed.lastSeenPostId") private var lastSeenPostId: String = ""
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var camera = CameraService()
@@ -222,6 +235,24 @@ struct HeroPageView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
         }
+        // "New moments" pill — appears when friends have posted since the
+        // user last viewed the top of the feed, and they're not already there.
+        .overlay(alignment: .top) {
+            if isActive, !isReviewingCapture, hasNewMoments {
+                newMomentsPill
+                    .padding(.top, Self.topSafeAreaInset + 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: hasNewMoments)
+        // Clear a notification-tap highlight after it has played briefly.
+        .onChange(of: highlightedPostId) { _, id in
+            guard id != nil else { return }
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.5))
+                highlightedPostId = nil
+            }
+        }
         .animation(Motion.iosDrawer(duration: 0.22), value: isReviewingCapture)
         .photosPicker(isPresented: $showPhotosPicker,
                       selection: $librarySelection,
@@ -252,25 +283,22 @@ struct HeroPageView: View {
         }
         .task {
             await camera.requestAccess()
-            // `onChange(of: isActive)` does not run for the initial value, so on first launch
-            // (Hero is the default tab) we must start here after auth succeeds.
-            if isActive && camera.isAuthorized {
-                camera.startSession()
-            }
             loadLatestLibraryThumbnail()
         }
-        .onChange(of: isActive) { _, active in
-            if active {
-                if camera.isAuthorized {
-                    camera.startSession()
-                }
-            } else {
-                camera.stopSession()
-            }
-        }
-        .onChange(of: camera.isAuthorized) { _, authorized in
-            if authorized && isActive {
+        // Single source of truth for the capture session: run it only when the
+        // camera card is the visible, foreground content on Hero. This sleeps
+        // the camera when the user leaves Hero, backgrounds the app, browses
+        // the feed, or reviews a capture — cutting the heat/battery drain (and
+        // the thermal throttling that made paging janky) the always-on session
+        // caused. The stop is debounced so a quick scroll-through or a
+        // swipe-and-back doesn't thrash start/stop.
+        .task(id: cameraShouldRun) {
+            if cameraShouldRun {
                 camera.startSession()
+            } else {
+                try? await Task.sleep(for: .milliseconds(800))
+                guard !Task.isCancelled else { return }
+                camera.stopSession()
             }
         }
         .onChange(of: heroCardID) { _, _ in
@@ -285,11 +313,11 @@ struct HeroPageView: View {
             // Warm the disk cache for the post we're on + the next couple, so
             // the upcoming video is local (instant) by the time it's swiped to.
             prefetchFeedVideos()
-        }
-        .onChange(of: isReviewingCapture) { _, _ in
-            // Review covers the viewfinder, so stop the session; leaving review
-            // — including tapping "+" to add another (isCapturingMore) — restarts it.
-            syncCameraSessionForCaptureReview()
+            // Reaching the newest post marks the feed "seen" so the New
+            // moments pill clears and won't re-show for that post.
+            if case .post(let id)? = heroCardID, id == socialService.feedPosts.first?.id {
+                lastSeenPostId = id
+            }
         }
         .onChange(of: cameraMode) { _, mode in
             // Entering Video mode warms the recording path so the first tap
@@ -318,6 +346,11 @@ struct HeroPageView: View {
             // Feed (re)loaded — prefetch the first videos so the top of the
             // feed is ready before the user scrolls into it.
             prefetchFeedVideos()
+            // Seed the "seen" marker on first load so a fresh launch doesn't
+            // flash a New moments pill against an empty baseline.
+            if lastSeenPostId.isEmpty, let firstId = socialService.feedPosts.first?.id {
+                lastSeenPostId = firstId
+            }
             guard let current = heroCardID else { return }
             switch current {
             case .post(let id) where !socialService.feedPosts.contains(where: { $0.id == id }):
@@ -348,7 +381,51 @@ struct HeroPageView: View {
             // Initial warm-up in case the feed was already loaded before this
             // view appeared (listener delivered posts while on another tab).
             prefetchFeedVideos()
+            // Seed the "seen" marker if the feed arrived before appear (the
+            // count-change handler wouldn't have fired in that case).
+            if lastSeenPostId.isEmpty, let firstId = socialService.feedPosts.first?.id {
+                lastSeenPostId = firstId
+            }
         }
+    }
+
+    // MARK: - New moments pill
+
+    /// True when the user is currently parked on the newest post card.
+    private var isViewingNewest: Bool {
+        guard let first = socialService.feedPosts.first else { return false }
+        return heroCardID == .post(first.id)
+    }
+
+    /// True when a newer post has arrived than the one the user last saw at
+    /// the top, and they're not already viewing it.
+    private var hasNewMoments: Bool {
+        guard let first = socialService.feedPosts.first else { return false }
+        return first.id != lastSeenPostId && !isViewingNewest
+    }
+
+    private var newMomentsPill: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            guard let first = socialService.feedPosts.first else { return }
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                heroCardID = .post(first.id)
+            }
+            lastSeenPostId = first.id
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.up")
+                    .font(.caption.weight(.bold))
+                Text("New moments")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .liquidGlassChrome(in: Capsule())
+        }
+        .buttonStyle(.scalePress)
+        .accessibilityLabel("New moments — jump to the latest post")
     }
 
     // MARK: - Messages top button
@@ -490,14 +567,24 @@ struct HeroPageView: View {
         (!drafts.isEmpty || camera.isProcessingVideo) && !isCapturingMore
     }
 
-    /// Stop the session only during capture review (preview covers the viewfinder anyway).
-    /// Scrolling to feed pages keeps the session alive so returning to camera is instant.
-    private func syncCameraSessionForCaptureReview() {
-        if isReviewingCapture {
-            camera.stopSession()
-        } else if isActive, camera.isAuthorized {
-            camera.startSession()
-        }
+    /// The camera card is the default/top pager card. `nil` is treated as the
+    /// camera (initial state before the user has scrolled).
+    private var isOnCameraCard: Bool {
+        heroCardID == .camera || heroCardID == nil
+    }
+
+    /// The capture session should only run when the camera card is actually
+    /// visible and in the foreground: on the Hero page, app active, authorized,
+    /// not mid-review, and parked on the camera card (not browsing the feed).
+    /// Drives the unified `.task(id:)` lifecycle — see its comment for why this
+    /// replaced the old always-on session.
+    private var cameraShouldRun: Bool {
+        isActive
+            && scenePhase == .active
+            && camera.isAuthorized
+            && !isReviewingCapture
+            && isOnCameraCard
+            && !isObscured
     }
 
     private func scrollToFeedFromCamera() {
@@ -525,7 +612,6 @@ struct HeroPageView: View {
             try await socialService.uploadAndCreatePost(drafts: drafts)
             clearDraftTray()
             camera.discardCapture()
-            syncCameraSessionForCaptureReview()
             loadLatestLibraryThumbnail()
         } catch {
             postError = friendlyPostError(error)
@@ -552,7 +638,6 @@ struct HeroPageView: View {
         postError = ""
         clearDraftTray()
         camera.discardCapture()
-        syncCameraSessionForCaptureReview()
     }
 
     // MARK: - Draft tray (multi-media compose)
@@ -587,7 +672,6 @@ struct HeroPageView: View {
         if drafts.isEmpty {
             clearDraftTray()
             camera.discardCapture()
-            syncCameraSessionForCaptureReview()
             return
         }
         currentDraftIndex = min(currentDraftIndex, drafts.count - 1)
@@ -798,11 +882,31 @@ struct HeroPageView: View {
                     .stroke(AppTheme.borderSubtle, lineWidth: 1)
             }
             .overlay {
-                Text("No posts yet.\nShare a moment from the camera.")
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(24)
+                VStack(spacing: 14) {
+                    Text("🌱")
+                        .font(.system(size: 40))
+                    Text("Your feed's quiet for now.")
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text("Add a friend or two and their moments will land right here.")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        onFindFriends()
+                    } label: {
+                        Label("Find friends", systemImage: "person.badge.plus")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.textOnAccent)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(Capsule().fill(AppTheme.accentAction))
+                    }
+                    .buttonStyle(.scalePress)
+                    .padding(.top, 2)
+                }
+                .padding(28)
             }
     }
 
@@ -847,7 +951,9 @@ struct HeroPageView: View {
                 // Off-window posts show the poster (no live player) so only the
                 // current ±1 cards spin up AVPlayers — caps memory/bandwidth and
                 // lets the prefetch actually win.
-                staticPreview: !videoLive
+                staticPreview: !videoLive,
+                // Brief glow when arriving here via a notification tap.
+                isHighlighted: highlightedPostId == post.id
             )
             // Long-press → focus menu (blurred backdrop + lifted post +
             // action card). Report/Block for others' posts (App Store
@@ -1401,6 +1507,9 @@ private struct FeedPolaroidCard: View {
     /// poster thumbnail + a play badge instead of a live player, which would
     /// otherwise sit blank until the first frame decodes.
     var staticPreview: Bool = false
+    /// Brief accent glow/scale when the user was brought to this post by a
+    /// notification tap (cleared by the parent after ~1.5s).
+    var isHighlighted: Bool = false
 
     /// Display preference (Profile → "Polaroid frames"). Off = plain cards.
     @AppStorage("feed.usePolaroidFrame") private var usePolaroidFrame = false
@@ -1448,6 +1557,9 @@ private struct FeedPolaroidCard: View {
         // so the composer below doesn't move.
         .frame(width: side, height: side)
         .frame(maxWidth: .infinity)
+        .scaleEffect(isHighlighted ? 1.03 : 1)
+        .shadow(color: AppTheme.cafeAccent.opacity(isHighlighted ? 0.55 : 0), radius: 18)
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isHighlighted)
     }
 
     @ViewBuilder

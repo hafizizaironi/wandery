@@ -32,6 +32,9 @@ struct ProfileHomeView: View {
     /// Admin-only hook to open the marketing-mockup screenshot pages.
     /// MainShellView toggles its own `showMarketingMockups`.
     var onShowMarketingMockups: () -> Void = {}
+    /// Bumped by MainShellView to scroll to the Friend Requests section
+    /// (e.g. after a friend-request notification tap).
+    var scrollToRequestsToken: Int = 0
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -174,40 +177,51 @@ struct ProfileHomeView: View {
         ZStack {
             AppTheme.espresso.ignoresSafeArea()
 
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 0) {
-                    heroHeader
-                    if !socialService.incomingRequests.isEmpty {
-                        friendRequestsSection
-                    }
-                    if !socialService.outgoingRequests.isEmpty {
-                        sentRequestsSection
-                    }
-                    friendsSection
-                    // YOUR MAP — rolls up the old statsRow + storySection into a
-                    // tappable map that opens MyHunt.
-                    HuntingMapSection(
-                        myUid: authService.user?.uid ?? "",
-                        friendPlacesService: friendPlacesService,
-                        onTap: {
-                            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
-                                showMyHunt = true
-                            }
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 0) {
+                        heroHeader
+                        if !socialService.incomingRequests.isEmpty {
+                            friendRequestsSection
+                                .id("friendRequestsAnchor")
                         }
-                    )
-                    achievementsSection
-                    settingsSection
+                        if !socialService.outgoingRequests.isEmpty {
+                            sentRequestsSection
+                        }
+                        friendsSection
+                        // YOUR MAP — rolls up the old statsRow + storySection into a
+                        // tappable map that opens MyHunt.
+                        HuntingMapSection(
+                            myUid: authService.user?.uid ?? "",
+                            friendPlacesService: friendPlacesService,
+                            onTap: {
+                                withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                                    showMyHunt = true
+                                }
+                            }
+                        )
+                        achievementsSection
+                        settingsSection
+                    }
+                    .padding(.bottom, ArcNavBar.frameContentHeight + 24)
                 }
-                .padding(.bottom, ArcNavBar.frameContentHeight + 24)
+                // Drag-to-dismiss replaces the previous `.keyboardDismissToolbar()`
+                // accessory bar. That toolbar was leaking into ChatView's keyboard
+                // (ChatView is presented as an overlay of this view, so it
+                // inherits any `.toolbar(placement: .keyboard)` modifier) and
+                // crowding out the iOS predictive-emoji bar. Drag-to-dismiss
+                // covers the same intent without sitting on top of every
+                // TextField keyboard the user opens anywhere in the profile.
+                .scrollDismissesKeyboard(.interactively)
+                // Scroll to the Friend Requests section when asked (e.g. from a
+                // friend-request notification tap). No-op when there are none.
+                .onChange(of: scrollToRequestsToken) { _, token in
+                    guard token > 0, !socialService.incomingRequests.isEmpty else { return }
+                    withAnimation(.easeInOut(duration: 0.4)) {
+                        proxy.scrollTo("friendRequestsAnchor", anchor: .top)
+                    }
+                }
             }
-            // Drag-to-dismiss replaces the previous `.keyboardDismissToolbar()`
-            // accessory bar. That toolbar was leaking into ChatView's keyboard
-            // (ChatView is presented as an overlay of this view, so it
-            // inherits any `.toolbar(placement: .keyboard)` modifier) and
-            // crowding out the iOS predictive-emoji bar. Drag-to-dismiss
-            // covers the same intent without sitting on top of every
-            // TextField keyboard the user opens anywhere in the profile.
-            .scrollDismissesKeyboard(.interactively)
         }
         .floatingPanel(isPresented: $showEditProfile) {
             if let u = user {
