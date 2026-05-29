@@ -93,6 +93,11 @@ struct MainShellView: View {
     /// (e.g. after tapping a friend-request notification).
     @State private var scrollToRequestsToken: Int = 0
 
+    // Soft "update available" nudge — reads config/app once, compares build
+    // numbers, shows a dismissible banner. Dismissal remembered per-build.
+    @State private var updateChecker = AppUpdateChecker()
+    @AppStorage("update.dismissedBuild") private var dismissedUpdateBuild = 0
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// True when a full-screen surface fully hides the Hero page (chat,
@@ -210,9 +215,25 @@ struct MainShellView: View {
                 )
                 .frame(height: navbarHeight)
                 .zIndex(10)
+
+                // ── Soft update banner ── top-pinned, dismissible. Hidden
+                // while My Hunt is open; zIndex above the navbar, below My Hunt.
+                if updateChecker.updateAvailable(dismissedBuild: dismissedUpdateBuild), !showMyHunt {
+                    AppUpdateBanner(updateURL: updateChecker.updateURL) {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            dismissedUpdateBuild = updateChecker.latestBuild ?? dismissedUpdateBuild
+                        }
+                    }
+                    .padding(.top, geo.safeAreaInsets.top + 6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(15)
+                }
             }
         }
         .ignoresSafeArea()
+        // Soft check for a newer published build (config/app) — best-effort.
+        .task { await updateChecker.check() }
         // Route a tapped notification. `.task` drains a cold-start tap that
         // was buffered before this view mounted; `.onChange` handles taps
         // while the app is already running. Both only fire once the shell is

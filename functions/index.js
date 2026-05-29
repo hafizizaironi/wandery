@@ -75,19 +75,30 @@ exports.onNewPost = functions.firestore
     if (!d) return;
     const author = d.authorId;
     const authorName = d.authorUsername || "Friend";
-    const friendsSnap = await admin
-      .firestore()
-      .collection("users")
-      .doc(author)
-      .collection("friends")
-      .get();
-    const friendUids = friendsSnap.docs.map((x) => x.id);
+
+    // Audience for the push. A restricted post notifies ONLY its recipients
+    // (minus the author) — never the author's full friend list, or excluded
+    // friends would learn a private post exists. An "everyone" post fans out
+    // to all friends as before.
+    let recipients;
+    if (d.restricted === true) {
+      recipients = (Array.isArray(d.recipientUids) ? d.recipientUids : [])
+        .filter((uid) => uid !== author);
+    } else {
+      const friendsSnap = await admin
+        .firestore()
+        .collection("users")
+        .doc(author)
+        .collection("friends")
+        .get();
+      recipients = friendsSnap.docs.map((x) => x.id);
+    }
     // Photo for the rich notification — prefer the thumbnail (smaller, faster
     // for the extension's tight download budget), fall back to the full media.
     const imageURL = d.thumbnailURL || d.mediaURL || "";
     const data = { type: "newPost", postId: context.params.postId };
     if (imageURL) data.imageURL = imageURL;
-    for (const uid of friendUids) {
+    for (const uid of recipients) {
       await sendToUser(uid, "New post", `${authorName} shared a moment`, data,
         { mutableContent: !!imageURL });
     }
@@ -1343,6 +1354,10 @@ function shapePlace(doc, extras = {}) {
 const AESTHETIC_FLOOR = 0.4;
 
 function classifyPhoto(data) {
+  // Restricted (audience-limited) posts never surface on the public Discover
+  // surface, even blurred. The admin SDK bypasses security rules here, so this
+  // guard — not the rules — is what keeps them out of circle/trending photos.
+  if (data.restricted === true) return "exclude";
   if (data.containsFaces === true) return "exclude";
   if (
     data.discoverable === false &&

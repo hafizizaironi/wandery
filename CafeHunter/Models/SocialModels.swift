@@ -78,6 +78,16 @@ struct FriendPost: Identifiable, Equatable {
     /// for analytics + so a manual review surface can sort by it.
     let containsFaces: Bool?
 
+    /// Audience gate. `false` (or absent on legacy docs → decoded false) =
+    /// an "everyone" post, visible to all the author's friends (and Discover
+    /// if `discoverable`). `true` = audience-limited: visible ONLY to the
+    /// uids in `recipientUids`. A restricted post is never discoverable. See
+    /// firestore.rules for the matching read-gate.
+    let restricted: Bool
+    /// When `restricted`, the exact set of uids that may see the post —
+    /// the selected friends PLUS the author. Empty for "everyone" posts.
+    let recipientUids: [String]
+
     /// All media items in display order (always ≥1). Legacy single-media
     /// docs are synthesized into a one-item array from the top-level fields.
     let media: [PostMedia]
@@ -129,6 +139,8 @@ struct FriendPost: Identifiable, Equatable {
         discoverable: Bool = false,
         aestheticScore: Double? = nil,
         containsFaces: Bool? = nil,
+        restricted: Bool = false,
+        recipientUids: [String] = [],
         media: [PostMedia]? = nil
     ) {
         self.id = id
@@ -144,6 +156,8 @@ struct FriendPost: Identifiable, Equatable {
         self.discoverable = discoverable
         self.aestheticScore = aestheticScore
         self.containsFaces = containsFaces
+        self.restricted = restricted
+        self.recipientUids = recipientUids
         self.media = media ?? [PostMedia(
             type: mediaType, url: mediaURL, thumbnailURL: thumbnailURL,
             placeId: placeId, placeName: placeName,
@@ -173,6 +187,9 @@ struct FriendPost: Identifiable, Equatable {
         discoverable = (d["discoverable"] as? Bool) ?? false
         aestheticScore = d["aestheticScore"] as? Double
         containsFaces = d["containsFaces"] as? Bool
+        // Legacy docs predate the audience gate; absent → "everyone".
+        restricted = (d["restricted"] as? Bool) ?? false
+        recipientUids = d["recipientUids"] as? [String] ?? []
         if let ts = d["createdAt"] as? Timestamp {
             createdAt = ts.dateValue()
         } else {

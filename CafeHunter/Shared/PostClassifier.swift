@@ -91,7 +91,13 @@ enum PostClassifier {
     /// Apple's aesthetic scorer (iOS 18+). Returns 0…1; higher = more
     /// aesthetically pleasing per Apple's pretrained model. Same model
     /// powers Photos.app's "Featured Photos".
-    private static func aestheticScore(cgImage: CGImage) async -> Double {
+    ///
+    /// Exposed (not `private`) so the live camera preview ring can score
+    /// viewfinder frames with the *same* model + scale as this publish-time
+    /// gate — the ring is a live prediction of the Discover verdict, so they
+    /// must agree. The ring only needs the quality gate, not the face gate,
+    /// so it calls this directly rather than full `classify(_:)`.
+    static func aestheticScore(cgImage: CGImage) async -> Double {
         await withCheckedContinuation { (cont: CheckedContinuation<Double, Never>) in
             let request = CalculateImageAestheticsScoresRequest()
             Task {

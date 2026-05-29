@@ -36,5 +36,8 @@ Secrets.xcconfig
 # Claude Code local state
 .claude/
 
+# graphify knowledge-graph output (analysis artifacts, not source)
+graphify-out/
+
 # Session export caveat files
 *-local-command-caveatcaveat-*.txt

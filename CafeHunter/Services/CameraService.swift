@@ -1,5 +1,7 @@
 import AVFoundation
+import CoreImage
 import Observation
+import QuartzCore
 import UIKit
 
 /// Rear only: 1× vs 0.5×. Uses virtual dual-wide / triple camera + smooth zoom ramp when available; otherwise swaps ultra-wide vs wide.
@@ -71,6 +73,32 @@ final class CameraService: NSObject {
 
     /// Incremented just before a physical lens swap so `CameraPreviewView` can apply a crossfade transition.
     var lensSwitchToken: Int = 0
+
+    // MARK: - Live aesthetic scoring (viewfinder ring)
+
+    /// On-device aesthetic score (0…1) of the current viewfinder frame, or
+    /// `nil` when scoring is disabled / not yet computed. Uses the *same*
+    /// Vision model and `PostClassifier.aestheticFloor` the Discover gate runs
+    /// at publish time, so the live ring predicts the eventual verdict.
+    /// Published on the main actor ~2.5×/sec; drives `HeroAestheticIndicator`.
+    private(set) var liveAestheticScore: Double?
+
+    /// Frame tap for live scoring. Added in `configureSession` only when the
+    /// hardware allows a 3rd output beside the photo/movie outputs — guarded so
+    /// it can never disturb the capture path.
+    @ObservationIgnored private let videoDataOutput = AVCaptureVideoDataOutput()
+    @ObservationIgnored private let videoDataQueue = DispatchQueue(label: "com.cafehunter.camera.framescore", qos: .utility)
+    /// Reused across frames so we don't spin up a new GPU context per tick.
+    /// Low request priority keeps it from competing with the live preview.
+    /// Touched only on `videoDataQueue`.
+    @ObservationIgnored private lazy var frameScoreContext = CIContext(options: [.priorityRequestLow: true])
+    /// The next three are touched ONLY on `videoDataQueue` (serial) — no locks.
+    @ObservationIgnored private var liveScoringEnabled = false
+    @ObservationIgnored private var isScoringInFlight = false
+    @ObservationIgnored private var lastScoredAt: CFTimeInterval = 0
+    /// Min seconds between scored frames. ~2.5 Hz feels live while keeping the
+    /// Neural Engine load (and thermals) low; single-flight prevents pile-ups.
+    @ObservationIgnored private let scoreThrottle: CFTimeInterval = 0.4
 
     /// Rear only: 0.5 / 1 toggle when ultra-wide exists or a virtual wide + ultra-wide camera supports zoom.
     var hasLensToggleForCurrentCamera: Bool {
@@ -166,6 +194,23 @@ final class CameraService: NSObject {
             DispatchQueue.main.async { [weak self] in
                 self?.isSessionRunning = false
             }
+        }
+    }
+
+    // MARK: - Live aesthetic scoring control
+
+    /// Enable/disable the live aesthetic-score tap. Driven by the camera UI:
+    /// on only while the viewfinder is visible in photo mode (never during
+    /// video recording or capture review — those modes don't turn it on).
+    /// Disabling clears the published score so the ring fades out.
+    func setLiveAestheticScoring(enabled: Bool) {
+        videoDataQueue.async { [weak self] in
+            guard let self else { return }
+            self.liveScoringEnabled = enabled
+            if !enabled { self.lastScoredAt = 0 }
+        }
+        if !enabled {
+            Task { @MainActor in self.liveAestheticScore = nil }
         }
     }
 
@@ -505,6 +550,16 @@ final class CameraService: NSObject {
             session.addOutput(photoOutput)
         }
         if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
+
+        // Live frame tap for the aesthetic-score ring (photo mode only). Guarded
+        // by `canAddOutput` so if the device won't allow a video-data output
+        // alongside the movie file output, live scoring just stays unavailable —
+        // the photo/video capture path is never affected.
+        if session.canAddOutput(videoDataOutput) {
+            videoDataOutput.alwaysDiscardsLateVideoFrames = true
+            videoDataOutput.setSampleBufferDelegate(self, queue: videoDataQueue)
+            session.addOutput(videoDataOutput)
+        }
 
         // Audio input is added lazily in `startRecording` and removed when the file
         // output finishes. See `audioInput` declaration for the BT-HFP rationale.
@@ -876,6 +931,50 @@ extension CameraService: AVCaptureFileOutputRecordingDelegate {
                     self.pendingRawVideoURL = nil
                 }
             }
+        }
+    }
+}
+
+// MARK: - Live frame tap (aesthetic scoring)
+
+extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
+    nonisolated func captureOutput(_ output: AVCaptureOutput,
+                                   didOutput sampleBuffer: CMSampleBuffer,
+                                   from connection: AVCaptureConnection) {
+        // Runs on `videoDataQueue` (serial). Cheap early-outs first so the
+        // common disabled/throttled/busy case costs almost nothing.
+        guard liveScoringEnabled, !isScoringInFlight else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastScoredAt >= scoreThrottle else { return }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // Downscale to ~512px and snapshot a standalone CGImage on this queue,
+        // so the capture buffer pool can recycle `sampleBuffer` immediately —
+        // nothing pool-backed escapes into the async Vision call below. The
+        // aesthetic model resizes internally, so 512px barely shifts the score
+        // versus the full-res publish-time gate while costing far less.
+        let source = CIImage(cvPixelBuffer: pixelBuffer)
+        let maxSide = max(source.extent.width, source.extent.height)
+        let scale = maxSide > 512 ? 512 / maxSide : 1
+        let scaled = scale < 1
+            ? source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            : source
+        guard let cgImage = frameScoreContext.createCGImage(scaled, from: scaled.extent) else { return }
+
+        lastScoredAt = now
+        isScoringInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            let score = await PostClassifier.aestheticScore(cgImage: cgImage)
+            await MainActor.run {
+                // Exponential smoothing: the raw per-frame score is jittery, which
+                // would make the ring colour flicker. Blending toward each new
+                // value trades a little latency (fine — the ring is a hint, not a
+                // readout) for a calm, gliding colour. The published value doubles
+                // as the EMA accumulator; `nil` (just after enable) seeds it raw.
+                self.liveAestheticScore = self.liveAestheticScore.map { $0 * 0.6 + score * 0.4 } ?? score
+            }
+            self.videoDataQueue.async { self.isScoringInFlight = false }
         }
     }
 }

@@ -17,10 +17,6 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == "A7waeoywDgdauEvQk3SsjPRYzPg2";
     }
 
-    function postAuthorId(postId) {
-      return get(/databases/$(database)/documents/posts/$(postId)).data.authorId;
-    }
-
     function isFriend(otherUid) {
       return signedIn() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(otherUid));
@@ -33,10 +29,20 @@ service cloud.firestore {
       return participants[0] == request.auth.uid ? participants[1] : participants[0];
     }
 
+    function postData(postId) {
+      return get(/databases/$(database)/documents/posts/$(postId)).data;
+    }
+
+    // Mirrors the posts read-gate's non-public branches: author, an explicit
+    // recipient of a restricted post, or (for an "everyone" post) a friend of
+    // the author. Used by the reactions subcollection so a non-recipient
+    // friend can't read reaction docs and infer a restricted post exists.
     function canReadPost(postId) {
-      let author = postAuthorId(postId);
-      return isSelf(author) ||
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(author));
+      let p = postData(postId);
+      return isSelf(p.authorId) ||
+        (p.restricted == true && request.auth.uid in p.recipientUids) ||
+        (p.restricted != true &&
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(p.authorId)));
     }
 
     // Places — read by any signed-in user (the picker, the map, Discover
@@ -47,6 +53,13 @@ service cloud.firestore {
     // create/edit places via `AdminAddView` and curate Creator's Pick via
     // `CreatorPicksAdminView`.
     match /places/{placeId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // App-wide config (e.g. `config/app` = { latestBuild, updateURL }) read by
+    // every signed-in client for the soft update nudge. Admin-written only.
+    match /config/{docId} {
       allow read: if signedIn();
       allow write: if isAdmin();
     }
@@ -201,31 +214,60 @@ service cloud.firestore {
     }
 
     match /posts/{postId} {
-      // Read by author, by friends, OR by anyone when the post has been
-      // marked discoverable (the implicit consent gate set by the on-device
-      // PostClassifier — see CafeHunter/Shared/PostClassifier.swift).
-      // Discoverable posts power the public Discover surface; everything
-      // else stays inside the friend graph.
+      // Restricted (audience-limited) posts are readable ONLY by the uids the
+      // author selected (recipientUids always includes the author). The
+      // friend / discoverable / public-fallback branches are all gated on
+      // `restricted != true` so a restricted post can never leak through them.
+      // `!= true` (not `== false`) so legacy/null docs — which the backfill
+      // sets to false — behave as "everyone".
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.authorId == request.auth.uid ||
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(resource.data.authorId)) ||
-        resource.data.discoverable == true ||
-        // Public-fallback gate for the place-detail panel: any signed-in
-        // user can read CLASSIFIED, NO-FACE, location-tagged posts. The
-        // client renders these blurred via the `postsAreFallback` flag on
-        // FriendPlace + `discoverable == false` check. Strict equality on
-        // containsFaces keeps unclassified legacy posts private (since
-        // `null != false` evaluates true under Firestore semantics).
-        (
-          resource.data.placeId is string &&
-          resource.data.placeId != "" &&
-          resource.data.containsFaces == false
-        )
+        (resource.data.restricted == true && request.auth.uid in resource.data.recipientUids) ||
+        (resource.data.restricted != true && (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(resource.data.authorId)) ||
+          resource.data.discoverable == true ||
+          // Public-fallback gate for the place-detail panel: any signed-in
+          // user can read CLASSIFIED, NO-FACE, location-tagged posts. The
+          // client renders these blurred. Strict equality on containsFaces
+          // keeps unclassified legacy posts private (`null != false` is true
+          // under Firestore semantics).
+          (
+            resource.data.placeId is string &&
+            resource.data.placeId != "" &&
+            resource.data.containsFaces == false
+          )
+        ))
       );
+      // Author only. A restricted post must carry a non-empty recipientUids
+      // (≤21 = 20 friends + self) that includes the author and is NOT
+      // discoverable. (Rules can't loop to verify each recipient is a friend;
+      // the picker only shows friends and a forged uid only gains read of this
+      // one post — strictly less than today's all-friends default.)
       allow create: if signedIn()
-        && request.resource.data.authorId == request.auth.uid;
-      allow update, delete: if signedIn() && resource.data.authorId == request.auth.uid;
+        && request.resource.data.authorId == request.auth.uid
+        && (
+          request.resource.data.restricted != true || (
+            request.resource.data.recipientUids is list &&
+            request.resource.data.recipientUids.size() > 0 &&
+            request.resource.data.recipientUids.size() <= 21 &&
+            request.auth.uid in request.resource.data.recipientUids &&
+            request.resource.data.discoverable != true
+          )
+        );
+      // Author only. A restricted post can never become discoverable, and its
+      // audience (restricted flag + recipientUids) is immutable — no post-hoc
+      // widening or sneaking into Discover.
+      allow update: if signedIn()
+        && resource.data.authorId == request.auth.uid
+        && (
+          resource.data.restricted != true || (
+            request.resource.data.discoverable != true &&
+            request.resource.data.restricted == resource.data.restricted &&
+            request.resource.data.recipientUids == resource.data.recipientUids
+          )
+        );
+      allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
 
       match /reactions/{reactorUid} {
         allow read: if signedIn() && canReadPost(postId);

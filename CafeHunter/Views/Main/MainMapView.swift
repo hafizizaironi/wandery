@@ -967,13 +967,16 @@ struct MainMapView: View {
     /// discoverable=false (rendered blurred via PostStackCard's blur
     /// modifier). Posts authored by users who toggled "Help your circle
     /// discover" OFF are dropped entirely — we respect that opt-out by
-    /// hiding the card, not blurring it. The `containsFaces == false`
-    /// filter is required to match the Firestore rule.
+    /// hiding the card, not blurring it. The `containsFaces == false` and
+    /// `restricted == false` filters are required to match the Firestore rule
+    /// (a restricted/audience-limited post must never surface in this public
+    /// place-detail fallback).
     private func fetchDiscoverablePostsAtPlace(_ placeId: String,
                                                db: Firestore) async -> [FriendPost] {
         do {
             let snap = try await db.collection("posts")
                 .whereField("placeId", isEqualTo: placeId)
+                .whereField("restricted", isEqualTo: false)
                 .whereField("containsFaces", isEqualTo: false)
                 .order(by: "createdAt", descending: true)
                 .limit(to: 20)

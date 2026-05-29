@@ -24,6 +24,11 @@ final class SocialService {
     /// so callers always see the filtered `feedPosts`. Re-applied through
     /// `applyBlockedFilter()` whenever either input changes.
     private var rawFeedPosts: [FriendPost] = []
+    /// Sources merged into `rawFeedPosts`: "everyone" posts by me + friends
+    /// (Q1) and restricted posts directed at me (Q2). Kept separate so each
+    /// listener updates independently before `mergeFeeds()` recombines them.
+    private var rawOpenPosts: [FriendPost] = []
+    private var rawRestrictedPosts: [FriendPost] = []
 
     var needsUsername: Bool {
         guard let p = profile else { return true }
@@ -32,6 +37,8 @@ final class SocialService {
 
     private let db = Firestore.firestore()
     private var feedListener: ListenerRegistration?
+    /// Q2 listener for restricted posts directed at me (recipientUids contains me).
+    private var restrictedFeedListener: ListenerRegistration?
     private var friendsListener: ListenerRegistration?
     private var requestsListener: ListenerRegistration?
     private var outgoingRequestsListener: ListenerRegistration?
@@ -107,12 +114,14 @@ final class SocialService {
 
     func reset() {
         feedListener?.remove()
+        restrictedFeedListener?.remove()
         friendsListener?.remove()
         requestsListener?.remove()
         outgoingRequestsListener?.remove()
         profileListener?.remove()
         blockedListener?.remove()
         feedListener = nil
+        restrictedFeedListener = nil
         friendsListener = nil
         requestsListener = nil
         outgoingRequestsListener = nil
@@ -124,6 +133,8 @@ final class SocialService {
         outgoingRequests = []
         feedPosts = []
         rawFeedPosts = []
+        rawOpenPosts = []
+        rawRestrictedPosts = []
         blockedUserIds = []
     }
 
@@ -237,6 +248,7 @@ final class SocialService {
 
     private func attachFeedListener() {
         feedListener?.remove()
+        restrictedFeedListener?.remove()
         guard let myUid = uid else { return }
         var chunk: [String] = Array(friendIds.prefix(29))
         if !chunk.contains(myUid) {
@@ -245,32 +257,71 @@ final class SocialService {
         if chunk.count > 30 {
             chunk = Array(chunk.prefix(30))
         }
-        guard !chunk.isEmpty else {
-            feedPosts = []
-            return
+
+        // Q1 — "everyone" posts by me + friends. `restricted == false` excludes
+        // friends' audience-limited posts I may not be a recipient of: Firestore
+        // fails the WHOLE query if any matched doc is unreadable, so they must be
+        // filtered out here (they arrive via Q2 only when they're for me).
+        if !chunk.isEmpty {
+            feedListener = db.collection("posts")
+                .whereField("authorId", in: chunk)
+                .whereField("restricted", isEqualTo: false)
+                .order(by: "createdAt", descending: true)
+                .limit(to: 50)
+                .addSnapshotListener { [weak self] snap, err in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if let err {
+                            // Transient network errors used to wipe feedPosts
+                            // here, which cascaded into the map showing no
+                            // pins until the listener reconnected. Keep the
+                            // last-known feed in place; the listener will
+                            // emit a fresh snapshot once Firestore reconnects.
+                            self.errorMessage = err.localizedDescription
+                            return
+                        }
+                        guard let docs = snap?.documents else { return }
+                        self.rawOpenPosts = docs.compactMap { FriendPost(document: $0) }
+                            .filter { !$0.mediaURL.isEmpty }
+                        self.mergeFeeds()
+                    }
+                }
+        } else {
+            rawOpenPosts = []
         }
-        feedListener = db.collection("posts")
-            .whereField("authorId", in: chunk)
+
+        // Q2 — restricted posts directed at me. `recipientUids` always includes
+        // the author, so this also returns my OWN restricted posts. Every doc it
+        // matches lists me as a recipient, so it's always readable.
+        restrictedFeedListener = db.collection("posts")
+            .whereField("recipientUids", arrayContains: myUid)
             .order(by: "createdAt", descending: true)
             .limit(to: 50)
             .addSnapshotListener { [weak self] snap, err in
                 Task { @MainActor in
                     guard let self else { return }
                     if let err {
-                        // Transient network errors used to wipe feedPosts
-                        // here, which cascaded into the map showing no
-                        // pins until the listener reconnected. Keep the
-                        // last-known feed in place; the listener will
-                        // emit a fresh snapshot once Firestore reconnects.
                         self.errorMessage = err.localizedDescription
                         return
                     }
                     guard let docs = snap?.documents else { return }
-                    self.rawFeedPosts = docs.compactMap { FriendPost(document: $0) }
+                    self.rawRestrictedPosts = docs.compactMap { FriendPost(document: $0) }
                         .filter { !$0.mediaURL.isEmpty }
-                    self.applyBlockedFilter()
+                    self.mergeFeeds()
                 }
             }
+    }
+
+    /// Merge the two feed sources (open + restricted-to-me), dedup by id,
+    /// sort newest-first, cap at 50, then apply the block filter. Called from
+    /// either listener's snapshot.
+    private func mergeFeeds() {
+        var seen = Set<String>()
+        let merged = (rawOpenPosts + rawRestrictedPosts)
+            .sorted { $0.createdAt > $1.createdAt }
+            .filter { seen.insert($0.id).inserted }
+        rawFeedPosts = Array(merged.prefix(50))
+        applyBlockedFilter()
     }
 
     /// Subscribes to my `blockedUsers` subcollection. The block list is the
@@ -308,6 +359,16 @@ final class SocialService {
     /// true is allowed by the rules but discouraged — the classifier's
     /// face-gate exists for a reason.
     func setDiscoverable(postId: String, _ value: Bool) async throws {
+        // A restricted (audience-limited) post must never become discoverable —
+        // that would expose it to strangers via the `discoverable == true` read
+        // gate. The security rules also reject this; guard client-side so the UI
+        // never attempts it. (If the post isn't in the loaded feed we let the
+        // server rule be the backstop.)
+        if value,
+           let post = rawFeedPosts.first(where: { $0.id == postId }) ?? feedPosts.first(where: { $0.id == postId }),
+           post.restricted {
+            throw SocialError.notAuthorized
+        }
         try await db.collection("posts").document(postId).setData([
             "discoverable": value,
         ], merge: true)
@@ -532,10 +593,21 @@ final class SocialService {
     /// place tag and caption. Uploads every item, mirrors item 0 to the
     /// top-level fields (back-compat + feed filter + Discover index), writes
     /// the `media` array, and optimistically prepends the post.
-    func uploadAndCreatePost(drafts: [MediaDraft]) async throws {
+    /// `recipientUids` nil/empty = an "everyone" post (visible to all friends,
+    /// Discover-eligible). A non-empty set restricts the post to those friends
+    /// — the author is always added so they see their own restricted post, and
+    /// the post is forced non-discoverable.
+    func uploadAndCreatePost(drafts: [MediaDraft], recipientUids: [String]? = nil) async throws {
         guard let authorUid = uid else { throw SocialError.notSignedIn }
         guard let username = profile?.username else { throw SocialError.needsUsername }
         guard !drafts.isEmpty, drafts.count <= 6 else { throw SocialError.uploadFailed }
+
+        let isRestricted = (recipientUids?.isEmpty == false)
+        // Materialize selected friends + author; the rule requires the author
+        // present and the Q2 feed query is `recipientUids array-contains me`.
+        let finalRecipients: [String] = isRestricted
+            ? Array(Set((recipientUids ?? []) + [authorUid]))
+            : []
 
         let postRef = db.collection("posts").document()
         let postId = postRef.documentID
@@ -614,6 +686,14 @@ final class SocialService {
             payload["placeId"] = pid
             payload["placeName"] = first.placeName ?? ""
         }
+        // Audience gate. Always stamp `restricted` (so the Q1 `restricted == false`
+        // feed query matches every new everyone-post). A restricted post carries
+        // its recipients and is forced non-discoverable up front.
+        payload["restricted"] = isRestricted
+        if isRestricted {
+            payload["recipientUids"] = finalRecipients
+            payload["discoverable"] = false
+        }
 
         // Optimistic feed insert (media-aware) so the caller's spinner stops now.
         prependOptimisticFeedPost(FriendPost(
@@ -627,6 +707,8 @@ final class SocialService {
             createdAt: createdAt.dateValue(),
             placeId: first.placeId,
             placeName: first.placeName,
+            restricted: isRestricted,
+            recipientUids: finalRecipients,
             media: media
         ))
 
@@ -645,8 +727,10 @@ final class SocialService {
         }
 
         // Background Discover classification on the first image (the bytes a
-        // stranger would see). Skipped for video-only posts.
-        if let img = firstImageForClassify {
+        // stranger would see). Skipped for video-only posts AND for restricted
+        // posts — those are never discoverable, so there's nothing to classify
+        // and we must not let the verdict patch flip `discoverable` true.
+        if let img = firstImageForClassify, !isRestricted {
             let postRefForVerdict = postRef
             Task.detached(priority: .utility) {
                 let verdict = await PostClassifier.classify(img)

@@ -107,6 +107,13 @@ struct HeroPageView: View {
     @State private var isCapturingMore = false
     private let maxDrafts = 6
 
+    /// Live-hydrated friend rows (avatar + name) for the audience-selector strip
+    /// on the review screen. Reuses the FriendListView loader.
+    @State private var audienceLoader = FriendListLoader()
+    /// Friends the author DESELECTED for the current draft. Empty (default) =
+    /// everyone selected → an unrestricted "everyone" post.
+    @State private var excludedFriendUids: Set<String> = []
+
     // Place tagging
     @State private var pendingPlace: PlaceSelection?
     @State private var showPlacePicker = false
@@ -300,6 +307,12 @@ struct HeroPageView: View {
                 guard !Task.isCancelled else { return }
                 camera.stopSession()
             }
+        }
+        // Toggle the live aesthetic-score tap with the same lifecycle as the
+        // session, but additionally gated to photo mode. Disabling clears the
+        // published score so the ring fades out when leaving the viewfinder.
+        .task(id: liveScoringShouldRun) {
+            camera.setLiveAestheticScoring(enabled: liveScoringShouldRun)
         }
         .onChange(of: heroCardID) { _, _ in
             // Paging away from the current post (to camera, empty
@@ -587,6 +600,15 @@ struct HeroPageView: View {
             && !isObscured
     }
 
+    /// Live aesthetic scoring runs only when the live viewfinder is up in photo
+    /// mode — i.e. exactly when the ring is visible. Video mode (recording) and
+    /// capture review both exclude it, keeping the Neural Engine free for the
+    /// capture path. Mirrors `cameraShouldRun`'s lifecycle so it sleeps whenever
+    /// the camera does.
+    private var liveScoringShouldRun: Bool {
+        cameraShouldRun && cameraMode == .polaroid
+    }
+
     private func scrollToFeedFromCamera() {
         let posts = socialService.feedPosts
         withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
@@ -608,8 +630,18 @@ struct HeroPageView: View {
         defer { isPosting = false }
         // Flush the current working-copy (caption + place) into its draft.
         syncWorkingCopyToCurrentDraft()
+        // Audience: everyone unless the user deselected friends in the strip.
+        // nil = unrestricted; a subset = restricted to those friends (+ author,
+        // added in the service). Block posting to a fully-empty audience.
+        let friends = socialService.friendIds
+        let selected = friends.filter { !excludedFriendUids.contains($0) }
+        if !friends.isEmpty && selected.isEmpty {
+            postError = "Pick at least one person to share with."
+            return
+        }
+        let recipients: [String]? = (friends.isEmpty || selected.count == friends.count) ? nil : selected
         do {
-            try await socialService.uploadAndCreatePost(drafts: drafts)
+            try await socialService.uploadAndCreatePost(drafts: drafts, recipientUids: recipients)
             clearDraftTray()
             camera.discardCapture()
             loadLatestLibraryThumbnail()
@@ -702,6 +734,7 @@ struct HeroPageView: View {
         isCapturingMore = false
         previewCaption = ""
         pendingPlace = nil
+        excludedFriendUids = []
     }
 
     /// Copies the focused draft's place onto every draft (the common
@@ -1031,6 +1064,17 @@ struct HeroPageView: View {
                         RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                             .stroke(Color.white.opacity(0.12), lineWidth: 1)
                     }
+                    // Live aesthetic-score ring + chip (photo mode only). A live
+                    // preview of the on-device Discover gate as the user reframes.
+                    .overlay {
+                        if cameraMode == .polaroid {
+                            HeroAestheticIndicator(
+                                score: camera.liveAestheticScore,
+                                floor: PostClassifier.aestheticFloor,
+                                cornerRadius: HeroCameraLayout.viewfinderCornerRadius
+                            )
+                        }
+                    }
                     .overlay {
                         RoundedRectangle(cornerRadius: HeroCameraLayout.viewfinderCornerRadius, style: .continuous)
                             .stroke(Color.red.opacity(camera.isRecording ? 0.7 : 0), lineWidth: 2)
@@ -1077,26 +1121,50 @@ struct HeroPageView: View {
     @ViewBuilder
     private func captureReviewSquare(side: CGFloat) -> some View {
         let username = "@\(socialService.profile?.username ?? "you")"
-        if usePolaroidFrame {
-            PolaroidFrame(username: username, date: Date(), photoSide: side) {
-                captureReviewMedia
-            } topLeading: {
-                placeTagPill
-            } bottomCenter: {
-                captionPillBody
+        Group {
+            if usePolaroidFrame {
+                PolaroidFrame(username: username, date: Date(), photoSide: side) {
+                    captureReviewMedia
+                } topLeading: {
+                    placeTagPill
+                } bottomCenter: {
+                    captionPillBody
+                }
+            } else {
+                PlainFeedFrame(username: username, photoSide: side) {
+                    captureReviewMedia
+                } topLeading: {
+                    placeTagPill
+                } bottomCenter: {
+                    captionPillBody
+                }
             }
-            .frame(width: side, height: side)
-            .frame(maxWidth: .infinity)
-        } else {
-            PlainFeedFrame(username: username, photoSide: side) {
-                captureReviewMedia
-            } topLeading: {
-                placeTagPill
-            } bottomCenter: {
-                captionPillBody
-            }
-            .frame(width: side, height: side)
-            .frame(maxWidth: .infinity)
+        }
+        .frame(width: side, height: side)
+        .frame(maxWidth: .infinity)
+        // Audience selector floats ABOVE the preview square (in the slack above
+        // it) with an invisible background and centered avatars — pick which
+        // friends can see this post (everyone selected by default).
+        .overlay(alignment: .top) {
+            audienceSelector(width: side)
+                .offset(y: -(audienceStripHeight + 28))
+        }
+    }
+
+    private let audienceStripHeight: CGFloat = 64
+
+    /// Centered avatar scroller floated above the review preview. Hidden when
+    /// the user has no friends (nobody to restrict to). Hydrates lazily.
+    @ViewBuilder
+    private func audienceSelector(width: CGFloat) -> some View {
+        if !socialService.friendIds.isEmpty {
+            HeroAudienceStrip(rows: audienceLoader.rows,
+                              excludedUids: $excludedFriendUids,
+                              availableWidth: width)
+                .frame(height: audienceStripHeight)
+                .task(id: socialService.friendIds) {
+                    await audienceLoader.sync(with: socialService.friendIds)
+                }
         }
     }
 
@@ -1560,6 +1628,36 @@ private struct FeedPolaroidCard: View {
         .scaleEffect(isHighlighted ? 1.03 : 1)
         .shadow(color: AppTheme.cafeAccent.opacity(isHighlighted ? 0.55 : 0), radius: 18)
         .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isHighlighted)
+        // Audience badge for restricted (private) posts.
+        .overlay(alignment: .topTrailing) {
+            if let text = restrictedBadgeText {
+                HStack(spacing: 4) {
+                    Image(systemName: "lock.fill").font(.system(size: 9, weight: .bold))
+                    Text(text).font(.system(size: 10, weight: .bold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(AppTheme.accentAction.opacity(0.92)))
+                .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+                .padding(.top, 12)
+                .padding(.trailing, 12)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var myUid: String { Auth.auth().currentUser?.uid ?? "" }
+
+    /// Badge copy for a restricted post: the recipient sees "Shared with you";
+    /// the author sees who it went to. Nil for normal (everyone) posts.
+    private var restrictedBadgeText: String? {
+        guard post.restricted else { return nil }
+        if post.authorId == myUid {
+            let others = post.recipientUids.filter { $0 != myUid }.count
+            return others <= 1 ? "Shared privately" : "Shared with \(others)"
+        }
+        return "Shared with you"
     }
 
     @ViewBuilder

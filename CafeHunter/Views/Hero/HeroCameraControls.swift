@@ -157,6 +157,151 @@ struct HeroRecordingTimer: View {
     }
 }
 
+// MARK: - Live aesthetic score (colour ring, overlays the viewfinder in photo mode)
+
+/// Colour-only quality hint wrapping the viewfinder: the stroke shifts
+/// red → amber (at the Discover floor) → green as the live aesthetic score of
+/// the current frame rises. No number — just the colour. A calm, live preview
+/// of whether the shot would clear the on-device Discover gate. Fills the
+/// viewfinder square (applied as an `.overlay`).
+struct HeroAestheticIndicator: View {
+    /// 0…1, or `nil` while computing / disabled (ring hidden).
+    let score: Double?
+    /// `PostClassifier.aestheticFloor` — the pass line, shared with the gate.
+    let floor: Double
+    let cornerRadius: CGFloat
+
+    private var passes: Bool { (score ?? 0) >= floor }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .stroke(score.map { Self.color(for: $0, floor: floor) } ?? .clear, lineWidth: 3)
+            .opacity(score == nil ? 0 : 0.9)
+            // Glide the colour rather than snapping it as the score updates.
+            .animation(.easeInOut(duration: 0.4), value: score)
+            .animation(.easeInOut(duration: 0.4), value: score == nil)
+            // Purely informational — never intercept flash/zoom/shutter taps.
+            .allowsHitTesting(false)
+            // Colour alone isn't perceivable to VoiceOver users, so expose the
+            // same hint as an (invisible, qualitative) accessibility value — no
+            // on-screen number, per the design.
+            .accessibilityElement()
+            .accessibilityLabel("Photo quality")
+            .accessibilityValue(score == nil ? "measuring"
+                                : (passes ? "good, Discover-worthy" : "low"))
+            .accessibilityHidden(score == nil)
+    }
+
+    /// Red (low) → amber (at the floor) → green (high). Hue interpolation keeps
+    /// the transition smooth as the user reframes.
+    static func color(for score: Double, floor: Double) -> Color {
+        let hue: Double
+        if score < floor {
+            let t = floor <= 0 ? 1 : min(max(score, 0) / floor, 1)
+            hue = 0.0 + 0.11 * t          // red → amber
+        } else {
+            let denom = max(0.0001, 1 - floor)
+            let t = min((score - floor) / denom, 1)
+            hue = 0.11 + (0.33 - 0.11) * t // amber → green
+        }
+        return Color(hue: hue, saturation: 0.85, brightness: 0.95)
+    }
+}
+
+// MARK: - Audience selector (review screen — who can see this post)
+
+/// Horizontal scroller of friend avatars over the top of the capture preview.
+/// Everyone is selected by default (the app caps friends at 20, so the common
+/// case is "share with all"); tapping an avatar toggles it. Selected avatars
+/// carry the app accent ring; deselected ones dim with a slash marker. Drives
+/// `excludedUids` — empty means an unrestricted "everyone" post.
+struct HeroAudienceStrip: View {
+    let rows: [FriendRow]
+    @Binding var excludedUids: Set<String>
+    /// Width to center within: avatars center when they fit, scroll when they
+    /// overflow. 0 = unconstrained (left-aligned) fallback.
+    var availableWidth: CGFloat = 0
+
+    private let avatarSize: CGFloat = 56
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(rows) { row in
+                    let selected = !excludedUids.contains(row.id)
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        if selected { excludedUids.insert(row.id) } else { excludedUids.remove(row.id) }
+                    } label: {
+                        avatar(for: row)
+                            .frame(width: avatarSize, height: avatarSize)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle().stroke(selected ? AppTheme.accentAction : Color.white.opacity(0.3),
+                                                lineWidth: selected ? 2.5 : 1)
+                            )
+                            .overlay(alignment: .bottomTrailing) {
+                                if !selected {
+                                    Image(systemName: "minus.circle.fill")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(.white, .black.opacity(0.55))
+                                }
+                            }
+                            .opacity(selected ? 1 : 0.45)
+                            .scaleEffect(selected ? 1 : 0.92)
+                            .animation(.easeInOut(duration: 0.15), value: selected)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(row.titleText)
+                    .accessibilityValue(selected ? "can see this post" : "excluded")
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            // Stretch to the full width and center when the avatars fit; the
+            // wider intrinsic content wins (and scrolls) once they overflow.
+            .frame(minWidth: availableWidth, alignment: .center)
+        }
+        .frame(width: availableWidth > 0 ? availableWidth : nil)
+        // Invisible background — the avatars float above the preview square.
+        // Disable scroll clipping so selection rings / markers aren't cut off.
+        .scrollClipDisabled()
+    }
+
+    @ViewBuilder
+    private func avatar(for row: FriendRow) -> some View {
+        if let s = row.photoURL, let url = URL(string: s) {
+            CachedAsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img): img.resizable().scaledToFill()
+                default: initials(for: row)
+                }
+            }
+        } else {
+            initials(for: row)
+        }
+    }
+
+    private func initials(for row: FriendRow) -> some View {
+        ZStack {
+            LinearGradient(colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            Text(initialsText(row))
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(AppTheme.cream)
+        }
+    }
+
+    private func initialsText(_ row: FriendRow) -> String {
+        let src = row.displayName?.isEmpty == false ? row.displayName! : (row.username ?? "?")
+        return src.split(separator: " ").prefix(2)
+            .compactMap { $0.first.map(String.init) }
+            .joined()
+            .uppercased()
+    }
+}
+
 // MARK: - Zoom dial (collapsed chips ↔ scrubbable curved wheel)
 
 struct HeroZoomDial: View {
