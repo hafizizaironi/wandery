@@ -75,6 +75,13 @@ struct MainShellView: View {
     /// for everyone (existing users + brand-new accounts).
     @AppStorage("whatsNew.lastSeenKey") private var whatsNewLastSeen: String = ""
     @State private var showWhatsNew = false
+    /// One-time warm intro for testers (TestFlight/dev builds only — see
+    /// `AppEnvironment.isTester`). Auto-shows once per device, re-openable
+    /// from the "Welcome message" row in Profile.
+    @AppStorage("tester.welcome.seen") private var testerWelcomeSeen = false
+    @State private var showTesterWelcome = false
+    /// Admin-only: full-screen marketing-mockup pages for App Store screenshots.
+    @State private var showMarketingMockups = false
     /// Pulse-binding for the WhatsNew "Show me the map →" jump:
     /// MainShellView sets this true, MainMapView watches and opens the
     /// Trending sheet, then resets the flag.
@@ -130,7 +137,9 @@ struct MainShellView: View {
                                 photoURL: row.photoURL
                             )
                         },
-                        onPreviewWhatsNew:   { showWhatsNew = true }
+                        onPreviewWhatsNew:   { showWhatsNew = true },
+                        onShowTesterWelcome: { showTesterWelcome = true },
+                        onShowMarketingMockups: { showMarketingMockups = true }
                     )
                     .frame(width: geo.size.width, height: geo.size.height)
                     .offset(x: (2 - pageProgress) * geo.size.width)
@@ -299,6 +308,17 @@ struct MainShellView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showTesterWelcome) {
+            TesterWelcomeSheet(onDismiss: {
+                testerWelcomeSeen = true
+                showTesterWelcome = false
+            })
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
+        .fullScreenCover(isPresented: $showMarketingMockups) {
+            MarketingMockupsView(onClose: { showMarketingMockups = false })
+        }
         .onAppear {
             // Once per cold launch: surface the soft prompt to legacy
             // users (the hard gate in ContentView already handles new
@@ -325,6 +345,21 @@ struct MainShellView: View {
                 }
             }
 
+            // Tester welcome — once per device, testers only. Fires just
+            // before What's New so a fresh tester install sees the welcome
+            // first; What's New then defers to the next cold launch.
+            if AppEnvironment.isTester, !testerWelcomeSeen {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                    guard !testerWelcomeSeen else { return }
+                    guard !showPhonePromptPanel,
+                          !showContactsSuggestionPanel,
+                          !showPhoneOnboardingSheet,
+                          !showFriendFindSheet,
+                          chatPresentation == nil else { return }
+                    showTesterWelcome = true
+                }
+            }
+
             // What's New — once per release. Delayed longer than the phone/
             // contacts prompts so it never piles on; if either is up when
             // the timer fires, defer to next cold launch (the key won't
@@ -336,6 +371,7 @@ struct MainShellView: View {
                           !showContactsSuggestionPanel,
                           !showPhoneOnboardingSheet,
                           !showFriendFindSheet,
+                          !showTesterWelcome,
                           chatPresentation == nil else { return }
                     showWhatsNew = true
                 }

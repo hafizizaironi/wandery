@@ -25,6 +25,13 @@ struct ProfileHomeView: View {
     /// sheet without reinstalling. MainShellView toggles its own
     /// `showWhatsNew` from this closure.
     var onPreviewWhatsNew: () -> Void = {}
+    /// Re-open the one-time tester welcome sheet. MainShellView toggles its
+    /// own `showTesterWelcome`. Only surfaced on tester builds (the button
+    /// below is gated by `AppEnvironment.isTester`).
+    var onShowTesterWelcome: () -> Void = {}
+    /// Admin-only hook to open the marketing-mockup screenshot pages.
+    /// MainShellView toggles its own `showMarketingMockups`.
+    var onShowMarketingMockups: () -> Void = {}
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1087,6 +1094,74 @@ struct ProfileHomeView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Preview What's New tutorial")
+
+                // Admin-only: open the marketing-mockup pages to screenshot
+                // for the App Store listing.
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onShowMarketingMockups()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo.stack")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cafeAccent)
+                        Text("Marketing Mockups")
+                            .font(.caption).bold()
+                            .foregroundStyle(AppTheme.cafeAccent)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.cafeAccent.opacity(0.6))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.cafeAccent.opacity(0.1))
+                    .clipShape(.rect(cornerRadius: 20))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open marketing mockups")
+            }
+
+            // Tester-only: re-open the one-time welcome intro. Hidden on the
+            // production App Store build (AppEnvironment.isTester). Visible to
+            // every tester, not just admin — it's their message, after all.
+            if AppEnvironment.isTester {
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onShowTesterWelcome()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "flame.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.accentAction)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Welcome message")
+                                .font(.subheadline).bold()
+                                .foregroundStyle(AppTheme.textPrimary)
+                            Text("Re-read the tester intro")
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.textSecondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary.opacity(0.6))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(AppTheme.textPrimary.opacity(0.04))
+                    .clipShape(.rect(cornerRadius: 14))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Re-read the welcome message")
             }
 
             // (Manual "Recompute achievements" button was removed — the
