@@ -20,6 +20,20 @@ final class SocialService {
     private(set) var isLoadingProfile = true
     var errorMessage: String?
 
+    // MARK: - Background post upload
+    /// True while a post is uploading in the background (the user has already
+    /// returned to the camera). Drives the non-DI "Posting…" pill and the
+    /// Live Activity lifecycle.
+    private(set) var isUploadingPost = false
+    /// Real upload progress 0…1 across all media items (byte-accurate via
+    /// `StorageUploadTask`). Drives the Live Activity ring + non-DI pill.
+    private(set) var uploadProgress: Double = 0
+    /// Set when a background upload fails — surfaces the retry banner. Cleared
+    /// on retry / dismiss.
+    var pendingUploadError: String?
+    /// Drafts + audience kept so a failed upload can be retried verbatim.
+    private var savedUpload: (drafts: [MediaDraft], recipients: [String]?)?
+
     /// Raw posts from Firestore before blocked-user filtering. Kept private
     /// so callers always see the filtered `feedPosts`. Re-applied through
     /// `applyBlockedFilter()` whenever either input changes.
@@ -572,6 +586,95 @@ final class SocialService {
     }
 
     /// Back-compat shim — a single image OR video becomes a one-item draft.
+    // MARK: - Background upload entry points
+
+    /// Fire-and-forget a post upload. Returns immediately so the caller can run
+    /// its launch transition and let the user keep interacting; the upload runs
+    /// on a service-owned Task that outlives the capture view. On success the
+    /// post lands in the feed via the existing optimistic prepend; on failure
+    /// `pendingUploadError` is set (and the drafts are kept for `retryUpload`).
+    func enqueuePost(drafts: [MediaDraft], recipientUids: [String]?) {
+        savedUpload = (drafts, recipientUids)
+        pendingUploadError = nil
+        isUploadingPost = true
+        uploadProgress = 0
+        UploadLiveActivityController.shared.start()
+        Task { await runUpload() }
+    }
+
+    /// Re-run the last failed upload with the saved drafts/audience.
+    func retryUpload() {
+        guard let s = savedUpload else { return }
+        enqueuePost(drafts: s.drafts, recipientUids: s.recipients)
+    }
+
+    func dismissUploadError() { pendingUploadError = nil }
+
+    private func runUpload() async {
+        guard let s = savedUpload else { return }
+        do {
+            try await uploadAndCreatePost(drafts: s.drafts, recipientUids: s.recipients)
+            uploadProgress = 1
+            isUploadingPost = false
+            savedUpload = nil
+            UploadLiveActivityController.shared.finish(failed: false)
+        } catch {
+            isUploadingPost = false
+            pendingUploadError = Self.friendlyUploadError(error)
+            UploadLiveActivityController.shared.finish(failed: true)
+            // savedUpload retained so the banner's Retry can replay it.
+        }
+    }
+
+    private static func friendlyUploadError(_ error: Error) -> String {
+        let ns = error as NSError
+        let lower = ns.localizedDescription.lowercased()
+        if lower.contains("network") || lower.contains("offline") || lower.contains("internet") {
+            return "No internet — your post wasn't sent."
+        }
+        return "Couldn't post your moment."
+    }
+
+    /// Uploads `Data` to `ref` reporting byte-accurate fractional progress.
+    /// `nonisolated` so the Storage callbacks (main-queue) don't entangle the
+    /// actor; progress is hopped back to the main actor by the caller's closure.
+    nonisolated private func putDataTracked(
+        _ data: Data, to ref: StorageReference,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let task = ref.putData(data, metadata: nil)
+            task.observe(.progress) { snapshot in
+                if let p = snapshot.progress, p.totalUnitCount > 0 {
+                    onProgress(Double(p.completedUnitCount) / Double(p.totalUnitCount))
+                }
+            }
+            task.observe(.success) { _ in cont.resume() }
+            task.observe(.failure) { snapshot in
+                cont.resume(throwing: snapshot.error ?? SocialError.uploadFailed)
+            }
+        }
+    }
+
+    /// File variant of `putDataTracked` for video uploads.
+    nonisolated private func putFileTracked(
+        from url: URL, to ref: StorageReference,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let task = ref.putFile(from: url, metadata: nil)
+            task.observe(.progress) { snapshot in
+                if let p = snapshot.progress, p.totalUnitCount > 0 {
+                    onProgress(Double(p.completedUnitCount) / Double(p.totalUnitCount))
+                }
+            }
+            task.observe(.success) { _ in cont.resume() }
+            task.observe(.failure) { snapshot in
+                cont.resume(throwing: snapshot.error ?? SocialError.uploadFailed)
+            }
+        }
+    }
+
     func uploadAndCreatePost(image: UIImage?,
                              videoURL: URL?,
                              caption: String,
@@ -628,7 +731,15 @@ final class SocialService {
 
         // Upload each item in order → build the media array. A thrown error
         // aborts BEFORE any doc is written, so no half-post lands (already-
-        // uploaded blobs are orphaned but harmless).
+        // uploaded blobs are orphaned but harmless). Each item's byte progress
+        // is mapped into its 1/N slice so `uploadProgress` advances smoothly
+        // across the whole post (drives the DI ring + non-DI pill).
+        let itemCount = drafts.count
+        func reportProgress(item i: Int, fraction frac: Double) {
+            let overall = (Double(i) + min(max(frac, 0), 1)) / Double(itemCount)
+            uploadProgress = overall
+            UploadLiveActivityController.shared.update(progress: overall)
+        }
         var media: [PostMedia] = []
         var firstImageForClassify: UIImage?
         for (i, draft) in drafts.enumerated() {
@@ -642,7 +753,14 @@ final class SocialService {
                 let processed = CameraCaptureProcessing.preparePhotoForUpload(image) ?? image
                 guard let data = processed.jpegData(compressionQuality: 0.82) else { throw SocialError.uploadFailed }
                 let ref = Storage.storage().reference().child("social/\(authorUid)/\(postId)_\(i).jpg")
-                _ = try await ref.putDataAsync(data)
+                try await putDataTracked(data, to: ref) { frac in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        let overall = (Double(i) + min(max(frac, 0), 1)) / Double(itemCount)
+                        self.uploadProgress = overall
+                        UploadLiveActivityController.shared.update(progress: overall)
+                    }
+                }
                 let url = try await ref.downloadURL()
                 media.append(PostMedia(type: "image", url: url.absoluteString,
                                        placeId: place?.id, placeName: place?.name, caption: cap))
@@ -652,13 +770,21 @@ final class SocialService {
                     ? videoURL
                     : ((try? await CameraCaptureProcessing.exportSquareVideo(from: videoURL)) ?? videoURL)
                 let ref = Storage.storage().reference().child("social/\(authorUid)/\(postId)_\(i).mp4")
-                _ = try await ref.putFileAsync(from: squareURL)
+                try await putFileTracked(from: squareURL, to: ref) { frac in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        let overall = (Double(i) + min(max(frac, 0), 1)) / Double(itemCount)
+                        self.uploadProgress = overall
+                        UploadLiveActivityController.shared.update(progress: overall)
+                    }
+                }
                 let url = try await ref.downloadURL()
                 let thumb = try? await generateVideoThumbnail(videoURL: squareURL,
                                                               postId: "\(postId)_\(i)", authorUid: authorUid)
                 media.append(PostMedia(type: "video", url: url.absoluteString, thumbnailURL: thumb,
                                        placeId: place?.id, placeName: place?.name, caption: cap))
             }
+            reportProgress(item: i, fraction: 1)
         }
         guard let first = media.first else { throw SocialError.uploadFailed }
 

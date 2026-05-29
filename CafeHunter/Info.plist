@@ -29,6 +29,8 @@
 	<string>948965115871-q2m7h9odo34k3d8d0uln9j9kvj2qe7g5.apps.googleusercontent.com</string>
 	<key>GMSPlacesAPIKey</key>
 	<string>$(GMS_PLACES_API_KEY)</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

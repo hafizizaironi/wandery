@@ -12,6 +12,9 @@
 		C424C2E72FC15C97003256A0 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = C424C2E62FC15C97003256A0 /* FirebaseAppCheck */; };
 		C43CAA5C2F9B50EB00ABCA8A /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = C43CAA5B2F9B50EB00ABCA8A /* FirebaseFunctions */; };
 		C45CFB8A2FC96C9D003AEC18 /* WanderyNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		C45CFEB62FC9F90E003AEC18 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C45CFEB52FC9F90E003AEC18 /* WidgetKit.framework */; };
+		C45CFEB82FC9F90E003AEC18 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C45CFEB72FC9F90E003AEC18 /* SwiftUI.framework */; };
+		C45CFEC72FC9F90F003AEC18 /* WanderyUploadWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C45CFEB42FC9F90E003AEC18 /* WanderyUploadWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C4795F692F8AE41D002495D1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F682F8AE41D002495D1 /* GoogleSignIn */; };
 		C4795F6B2F8AE41D002495D1 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F6A2F8AE41D002495D1 /* GoogleSignInSwift */; };
 		C4795F712F8AE41D002495D1 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F702F8AE41D002495D1 /* FirebaseAuth */; };
@@ -30,6 +33,13 @@
 			remoteGlobalIDString = C45CFB822FC96C9C003AEC18;
 			remoteInfo = WanderyNotificationService;
 		};
+		C45CFEC52FC9F90F003AEC18 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C4795F2C2F8ADCC7002495D1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C45CFEB32FC9F90E003AEC18;
+			remoteInfo = WanderyUploadWidgetExtension;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -39,6 +49,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
+				C45CFEC72FC9F90F003AEC18 /* WanderyUploadWidgetExtension.appex in Embed Foundation Extensions */,
 				C45CFB8A2FC96C9D003AEC18 /* WanderyNotificationService.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
@@ -48,6 +59,9 @@
 
 /* Begin PBXFileReference section */
 		C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WanderyNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C45CFEB42FC9F90E003AEC18 /* WanderyUploadWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WanderyUploadWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C45CFEB52FC9F90E003AEC18 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		C45CFEB72FC9F90E003AEC18 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		C4795F342F8ADCC7002495D1 /* CafeHunter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CafeHunter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
 		D1E2F3A4B5C6D70080000002 /* Secrets.xcconfig.sample */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig.sample; sourceTree = "<group>"; };
@@ -69,6 +83,13 @@
 			);
 			target = C45CFB822FC96C9C003AEC18 /* WanderyNotificationService */;
 		};
+		C45CFECB2FC9F90F003AEC18 /* Exceptions for "WanderyUploadWidget" folder in "WanderyUploadWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = C45CFEB32FC9F90E003AEC18 /* WanderyUploadWidgetExtension */;
+		};
 		C4795F782F8ADCC8002495D1 /* Exceptions for "CafeHunter" folder in "CafeHunter" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -87,6 +108,14 @@
 			path = WanderyNotificationService;
 			sourceTree = "<group>";
 		};
+		C45CFEB92FC9F90E003AEC18 /* WanderyUploadWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				C45CFECB2FC9F90F003AEC18 /* Exceptions for "WanderyUploadWidget" folder in "WanderyUploadWidgetExtension" target */,
+			);
+			path = WanderyUploadWidget;
+			sourceTree = "<group>";
+		};
 		C4795F362F8ADCC7002495D1 /* CafeHunter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -103,6 +132,15 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C45CFEB12FC9F90E003AEC18 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C45CFEB82FC9F90E003AEC18 /* SwiftUI.framework in Frameworks */,
+				C45CFEB62FC9F90E003AEC18 /* WidgetKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -131,6 +169,8 @@
 		C43CAA5A2F9B50EB00ABCA8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				C45CFEB52FC9F90E003AEC18 /* WidgetKit.framework */,
+				C45CFEB72FC9F90E003AEC18 /* SwiftUI.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -142,6 +182,7 @@
 				D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */,
 				D1E2F3A4B5C6D70080000002 /* Secrets.xcconfig.sample */,
 				C45CFB842FC96C9C003AEC18 /* WanderyNotificationService */,
+				C45CFEB92FC9F90E003AEC18 /* WanderyUploadWidget */,
 				C43CAA5A2F9B50EB00ABCA8A /* Frameworks */,
 				C4795F352F8ADCC7002495D1 /* Products */,
 			);
@@ -152,6 +193,7 @@
 			children = (
 				C4795F342F8ADCC7002495D1 /* CafeHunter.app */,
 				C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */,
+				C45CFEB42FC9F90E003AEC18 /* WanderyUploadWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -181,6 +223,28 @@
 			productReference = C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		C45CFEB32FC9F90E003AEC18 /* WanderyUploadWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C45CFEC82FC9F90F003AEC18 /* Build configuration list for PBXNativeTarget "WanderyUploadWidgetExtension" */;
+			buildPhases = (
+				C45CFEB02FC9F90E003AEC18 /* Sources */,
+				C45CFEB12FC9F90E003AEC18 /* Frameworks */,
+				C45CFEB22FC9F90E003AEC18 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				C45CFEB92FC9F90E003AEC18 /* WanderyUploadWidget */,
+			);
+			name = WanderyUploadWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = WanderyUploadWidgetExtension;
+			productReference = C45CFEB42FC9F90E003AEC18 /* WanderyUploadWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		C4795F332F8ADCC7002495D1 /* CafeHunter */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = C4795F3F2F8ADCC8002495D1 /* Build configuration list for PBXNativeTarget "CafeHunter" */;
@@ -194,6 +258,7 @@
 			);
 			dependencies = (
 				C45CFB892FC96C9D003AEC18 /* PBXTargetDependency */,
+				C45CFEC62FC9F90F003AEC18 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				C4795F362F8ADCC7002495D1 /* CafeHunter */,
@@ -230,6 +295,9 @@
 					C45CFB822FC96C9C003AEC18 = {
 						CreatedOnToolsVersion = 26.5;
 					};
+					C45CFEB32FC9F90E003AEC18 = {
+						CreatedOnToolsVersion = 26.5;
+					};
 					C4795F332F8ADCC7002495D1 = {
 						CreatedOnToolsVersion = 26.4;
 					};
@@ -257,12 +325,20 @@
 			targets = (
 				C4795F332F8ADCC7002495D1 /* CafeHunter */,
 				C45CFB822FC96C9C003AEC18 /* WanderyNotificationService */,
+				C45CFEB32FC9F90E003AEC18 /* WanderyUploadWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		C45CFB812FC96C9C003AEC18 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C45CFEB22FC9F90E003AEC18 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -286,6 +362,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C45CFEB02FC9F90E003AEC18 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C4795F302F8ADCC7002495D1 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -301,6 +384,11 @@
 			target = C45CFB822FC96C9C003AEC18 /* WanderyNotificationService */;
 			targetProxy = C45CFB882FC96C9D003AEC18 /* PBXContainerItemProxy */;
 		};
+		C45CFEC62FC9F90F003AEC18 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C45CFEB32FC9F90E003AEC18 /* WanderyUploadWidgetExtension */;
+			targetProxy = C45CFEC52FC9F90F003AEC18 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -309,7 +397,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = WanderyNotificationService/WanderyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WanderyNotificationService/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = WanderyNotificationService;
@@ -338,7 +426,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = WanderyNotificationService/WanderyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WanderyNotificationService/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = WanderyNotificationService;
@@ -351,6 +439,66 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = TechVision.CafeHunter.WanderyNotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		C45CFEC92FC9F90F003AEC18 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WanderyUploadWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = WanderyUploadWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = TechVision.CafeHunter.WanderyUploadWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C45CFECA2FC9F90F003AEC18 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WanderyUploadWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = WanderyUploadWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = TechVision.CafeHunter.WanderyUploadWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -494,7 +642,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = CafeHunter/CafeHunter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CafeHunter/Info.plist;
@@ -537,7 +685,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = CafeHunter/CafeHunter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CafeHunter/Info.plist;
@@ -581,6 +729,15 @@
 			buildConfigurations = (
 				C45CFB8C2FC96C9D003AEC18 /* Debug */,
 				C45CFB8D2FC96C9D003AEC18 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C45CFEC82FC9F90F003AEC18 /* Build configuration list for PBXNativeTarget "WanderyUploadWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C45CFEC92FC9F90F003AEC18 /* Debug */,
+				C45CFECA2FC9F90F003AEC18 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

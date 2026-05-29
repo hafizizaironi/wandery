@@ -229,7 +229,22 @@ struct MainShellView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(15)
                 }
+
+                // ── Background-upload failure banner ── top-pinned, above the
+                // update banner. Retry replays the saved drafts.
+                if let uploadError = socialService.pendingUploadError, !showMyHunt {
+                    UploadErrorBanner(
+                        message: uploadError,
+                        onRetry: { socialService.retryUpload() },
+                        onDismiss: { socialService.dismissUploadError() }
+                    )
+                    .padding(.top, geo.safeAreaInsets.top + 6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(16)
+                }
             }
+            .animation(.easeInOut(duration: 0.25), value: socialService.pendingUploadError)
         }
         .ignoresSafeArea()
         // Soft check for a newer published build (config/app) — best-effort.

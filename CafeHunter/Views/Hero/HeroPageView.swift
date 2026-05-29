@@ -68,6 +68,19 @@ struct HeroPageView: View {
     @State private var isPosting = false
     @State private var postError = ""
 
+    // MARK: - Post launch choreography
+    /// Whole publish transition in flight (suppresses re-tap, drives the flight
+    /// overlay + chrome dissolve).
+    @State private var isLaunchingPost = false
+    /// Fades the review chrome (audience strip, filmstrip, Retake/Post/Save)
+    /// out during launch, then back in once the camera has returned.
+    @State private var chromeDissolved = false
+    /// First draft's image, rendered as the card that flies up toward the
+    /// Dynamic Island (or off the top on non-DI phones).
+    @State private var flightImage: UIImage?
+    /// Drives the flight card from its resting frame to its target.
+    @State private var flightActive = false
+
     /// Mirror of the system keyboard's visible height. Driven by
     /// `keyboardWillShow / keyboardWillHide` notifications because the
     /// parent chain (MainShellView's GeometryReader) applies
@@ -255,6 +268,16 @@ struct HeroPageView: View {
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: hasNewMoments)
+        // Non-DI phones have no Dynamic Island to fly into, so surface upload
+        // progress as a small top pill (DI phones use the Live Activity).
+        .overlay(alignment: .top) {
+            if isActive, !hasDynamicIsland, socialService.isUploadingPost {
+                postingPill
+                    .padding(.top, Self.topSafeAreaInset + 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: socialService.isUploadingPost)
         // Clear a notification-tap highlight after it has played briefly.
         .onChange(of: highlightedPostId) { _, id in
             guard id != nil else { return }
@@ -457,6 +480,24 @@ struct HeroPageView: View {
         .accessibilityLabel("New moments — jump to the latest post")
     }
 
+    /// Top progress pill for non-Dynamic-Island phones while a post uploads
+    /// in the background (DI phones get the Live Activity instead).
+    private var postingPill: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .tint(.white)
+                .scaleEffect(0.7)
+            Text("Posting… \(Int(socialService.uploadProgress * 100))%")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .liquidGlassChrome(in: Capsule())
+        .accessibilityLabel("Posting your moment")
+        .accessibilityValue("\(Int(socialService.uploadProgress * 100)) percent")
+    }
+
     // MARK: - Messages top button
 
     /// Reads the top safe-area inset directly from the key window. We do
@@ -649,14 +690,11 @@ struct HeroPageView: View {
         }
     }
 
-    private func postFromCapture() async {
-        // Re-entrancy guard: tap-to-post fires from a gesture that can deliver
-        // twice in quick succession. Without this we'd race two uploads + two
-        // findOrCreatePlace calls (the "GTMSessionFetcher already running" log).
-        guard !isPosting else { return }
+    private func postFromCapture() {
+        // Re-entrancy guard: tap-to-post can fire twice, and in the animated
+        // path the tray isn't cleared until the flight finishes (~450ms).
+        guard !isLaunchingPost, !drafts.isEmpty else { return }
         postError = ""
-        isPosting = true
-        defer { isPosting = false }
         // Flush the current working-copy (caption + place) into its draft.
         syncWorkingCopyToCurrentDraft()
         // Audience: everyone unless the user deselected friends in the strip.
@@ -669,30 +707,62 @@ struct HeroPageView: View {
             return
         }
         let recipients: [String]? = (friends.isEmpty || selected.count == friends.count) ? nil : selected
-        do {
-            try await socialService.uploadAndCreatePost(drafts: drafts, recipientUids: recipients)
-            clearDraftTray()
-            camera.discardCapture()
-            loadLatestLibraryThumbnail()
-        } catch {
-            postError = friendlyPostError(error)
-        }
+        // Hand the upload to the service (runs in the background); the
+        // choreography returns the user to the camera. Errors surface via the
+        // app-wide retry banner.
+        socialService.enqueuePost(drafts: drafts, recipientUids: recipients)
+        launchPostChoreography()
     }
 
-    /// Translate raw NSError / FunctionsError into something the user can act on.
-    private func friendlyPostError(_ error: Error) -> String {
-        let ns = error as NSError
-        let lower = ns.localizedDescription.lowercased()
-        if lower.contains("not found") || ns.code == 5 /* FunctionsErrorCode.notFound */ {
-            return "Couldn't reach the place service. Try again in a moment."
+    /// True on Dynamic Island phones (top inset ≈59 vs ≈47–50 notch / 20 classic).
+    private var hasDynamicIsland: Bool { Self.topSafeAreaInset >= 55 }
+
+    /// First draft's still image, used as the card that flies into the DI.
+    /// nil for a video-first draft (we fall back to a plain cross-fade).
+    private var flightSourceImage: UIImage? {
+        guard let first = drafts.first else { return nil }
+        if case .image(let img) = first.source { return img }
+        return nil
+    }
+
+    /// Choreographs the publish transition: a beat, chrome dissolves, the photo
+    /// card flies into the Dynamic Island (or up, on non-DI), the camera warms
+    /// up and springs back, then the chrome un-dissolves. Reduced-motion and
+    /// video-first drafts take a plain cross-fade.
+    private func launchPostChoreography() {
+        let img = flightSourceImage
+        guard !reduceMotion, let img else {
+            withAnimation(.easeInOut(duration: 0.28)) {
+                clearDraftTray()
+            }
+            camera.startSession()
+            camera.discardCapture()
+            loadLatestLibraryThumbnail()
+            return
         }
-        if lower.contains("network") || lower.contains("offline") {
-            return "No internet — your post wasn't saved."
+
+        isLaunchingPost = true
+        flightImage = img
+        camera.startSession() // warm up so the returning preview isn't black
+
+        // Beat + dissolve the chrome + launch the card.
+        withAnimation(.easeOut(duration: 0.28)) { chromeDissolved = true }
+        withAnimation(Motion.strongEaseInOut(duration: 0.55)) { flightActive = true }
+
+        Task { @MainActor in
+            // Deliberate, unrushed beat while the card travels up.
+            try? await Task.sleep(for: .milliseconds(450))
+            // Swap to the live camera, entering with a springy slide-up.
+            withAnimation(Motion.cozyReveal) { clearDraftTray() }
+            camera.discardCapture()
+            loadLatestLibraryThumbnail()
+            flightImage = nil
+            flightActive = false
+            // Un-dissolve the chrome as the preview settles.
+            try? await Task.sleep(for: .milliseconds(300))
+            withAnimation(.easeOut(duration: 0.3)) { chromeDissolved = false }
+            isLaunchingPost = false
         }
-        if pendingPlace != nil && lower.contains("location") {
-            return "Couldn't get your location to save the place. Enable Location and try again."
-        }
-        return "Couldn't post: \(ns.localizedDescription)"
     }
 
     private func retakeFromReview() {
@@ -886,16 +956,49 @@ struct HeroPageView: View {
         let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
         let side = HeroCameraLayout.viewfinderSide(in: geo)
 
-        return VStack(spacing: HeroCameraLayout.viewfinderShutterSpacing) {
-            viewfinder(side: side)
-            shutterArea
+        return ZStack {
+            VStack(spacing: HeroCameraLayout.viewfinderShutterSpacing) {
+                viewfinder(side: side)
+                shutterArea
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, HeroCameraLayout.horizontalPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, bottomChrome)
+            .offset(y: captureReviewKeyboardLift)
+            .animation(.easeOut(duration: 0.25), value: keyboardHeight)
+
+            // Launch flight: the captured card flies up into the Dynamic Island
+            // (or off the top, non-DI). Sits above the chrome so it travels
+            // freely while the viewfinder swaps to live camera underneath.
+            if let img = flightImage {
+                postFlightCard(image: img, geo: geo, side: side, bottomChrome: bottomChrome)
+                    .allowsHitTesting(false)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, HeroCameraLayout.horizontalPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .padding(.bottom, bottomChrome)
-        .offset(y: captureReviewKeyboardLift)
-        .animation(.easeOut(duration: 0.25), value: keyboardHeight)
+    }
+
+    /// The flying capture card. At rest it sits exactly over the viewfinder
+    /// square; `flightActive` animates it to the Dynamic Island capsule (top
+    /// centre) on DI phones, or up and off-screen on non-DI phones.
+    private func postFlightCard(image: UIImage, geo: GeometryProxy,
+                                side: CGFloat, bottomChrome: CGFloat) -> some View {
+        // Resting centre of the viewfinder square (bottom-anchored VStack).
+        let restingY = geo.size.height - bottomChrome - HeroCameraLayout.belowCardHeight - side / 2
+        let centerX = geo.size.width / 2
+        let di = hasDynamicIsland
+        // DI capsule centre ≈ 28pt from the top; non-DI flies off the top.
+        let targetY: CGFloat = di ? 28 : -side * 0.6
+        let targetScale: CGFloat = di ? max(0.12, 37 / side) : 0.5
+        let corner: CGFloat = di ? 19 : HeroCameraLayout.viewfinderCornerRadius
+        return Image(uiImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .scaleEffect(flightActive ? targetScale : 1)
+            .position(x: centerX, y: flightActive ? targetY : restingY)
+            .opacity(flightActive ? 0 : 1)
     }
 
     private func heroEmptyFeedPage(geometry geo: GeometryProxy) -> some View {
@@ -1085,6 +1188,9 @@ struct HeroPageView: View {
         Group {
             if isReviewingCapture {
                 captureReviewSquare(side: side)
+                    // Hidden during the flight so the moving copy (postFlightCard)
+                    // isn't doubled by the static square underneath.
+                    .opacity(flightActive ? 0 : 1)
             } else {
                 let cam = Bindable(camera)
                 CameraPreviewView(session: camera.session, isRunning: camera.isSessionRunning,
@@ -1142,6 +1248,8 @@ struct HeroPageView: View {
                         )
                         .padding(.bottom, 12)
                     }
+                    // Springy slide-up as the live camera returns after a post.
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
     }
@@ -1180,6 +1288,7 @@ struct HeroPageView: View {
         .overlay(alignment: .top) {
             audienceSelector(width: side)
                 .offset(y: -(audienceStripHeight + 28))
+                .opacity(chromeDissolved ? 0 : 1)
         }
     }
 
@@ -1403,6 +1512,9 @@ struct HeroPageView: View {
                     )
                 }
             }
+            // Dissolves the review actions out during launch, then un-dissolves
+            // the live camera controls once the preview has returned.
+            .opacity(chromeDissolved ? 0 : 1)
         }
         .frame(height: HeroCameraLayout.controlStackHeight)
     }
@@ -1575,7 +1687,7 @@ struct HeroPageView: View {
     private func reviewPostButton(disabled: Bool) -> some View {
         let idleAnimate = !disabled && !isPosting
         Button {
-            Task { await postFromCapture() }
+            postFromCapture()
         } label: {
             ZStack {
                 Circle()
