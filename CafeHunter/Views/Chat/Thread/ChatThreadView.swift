@@ -426,7 +426,8 @@ struct ChatThreadView: View {
             uid: otherUid,
             displayName: seedDisplayName,
             username: nil,
-            photoURL: seedPhotoURL
+            photoURL: seedPhotoURL,
+            publicKey: nil
         )
     }
 

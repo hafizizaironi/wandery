@@ -20,6 +20,8 @@ final class ParticipantHydrator {
         let displayName: String?
         let username: String?
         let photoURL: String?
+        /// Base64 X25519 public key for E2EE (nil if the user hasn't published one).
+        let publicKey: String?
 
         var titleText: String {
             if let n = displayName, !n.isEmpty { return n }
@@ -73,12 +75,13 @@ final class ParticipantHydrator {
                 uid: uid,
                 displayName: d["displayName"] as? String,
                 username: d["username"] as? String,
-                photoURL: d["photoURL"] as? String
+                photoURL: d["photoURL"] as? String,
+                publicKey: d["publicKey"] as? String
             )
         } catch {
             // Cache a placeholder so we don't retry on every render. The
             // user can still see the (uid-derived) initials fallback.
-            cache[uid] = Participant(uid: uid, displayName: nil, username: nil, photoURL: nil)
+            cache[uid] = Participant(uid: uid, displayName: nil, username: nil, photoURL: nil, publicKey: nil)
         }
     }
 

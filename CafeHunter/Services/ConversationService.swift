@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 @preconcurrency import FirebaseAuth
 import FirebaseFirestore
@@ -24,6 +25,66 @@ final class ConversationService {
 
     private var uid: String? { Auth.auth().currentUser?.uid }
 
+    // MARK: - E2EE
+
+    /// Derived per-conversation AES key cache (convId → key).
+    private var convKeyCache: [String: SymmetricKey] = [:]
+    /// Cache of OTHER users' published public keys (uid → base64). Only
+    /// present keys are cached, so a missing partner key is re-fetched on the
+    /// next send (lets encryption kick in once they publish).
+    private var publicKeyCache: [String: String] = [:]
+    private static let lockedPlaceholder = "🔒 Message can't be decrypted"
+
+    /// Derives the conversation key from my identity private key + the other
+    /// participant's published public key. Returns nil when E2EE isn't possible
+    /// (no signed-in user, malformed convId, or the partner has no published
+    /// key yet) — callers then fall back to plaintext.
+    private func conversationKey(convId: String) async -> SymmetricKey? {
+        if let cached = convKeyCache[convId] { return cached }
+        guard let me = uid else { return nil }
+        // convId is the two uids sorted + joined by "_"; Firebase uids contain
+        // no "_", so splitting recovers the other participant without a fetch.
+        let parts = convId.split(separator: "_").map(String.init)
+        guard let otherUid = parts.first(where: { $0 != me }) else { return nil }
+        do {
+            let myPriv = try MessageCrypto.loadOrCreateIdentityKey(uid: me)
+            let theirPub: String
+            if let cached = publicKeyCache[otherUid] {
+                theirPub = cached
+            } else {
+                let snap = try await db.collection("users").document(otherUid).getDocument()
+                guard let pub = snap.data()?["publicKey"] as? String, !pub.isEmpty else { return nil }
+                publicKeyCache[otherUid] = pub
+                theirPub = pub
+            }
+            let key = try MessageCrypto.conversationKey(
+                myPrivateKey: myPriv, theirPublicKeyBase64: theirPub, convId: convId)
+            convKeyCache[convId] = key
+            return key
+        } catch {
+            return nil
+        }
+    }
+
+    /// Returns a copy of `m` with its encrypted fields decrypted. Legacy
+    /// (`encv == 0`) and deleted messages pass through untouched. A decrypt
+    /// failure (e.g. the key rotated after a reinstall) renders the locked
+    /// placeholder rather than raw ciphertext.
+    private func decrypted(_ m: ChatMessage, key: SymmetricKey?) -> ChatMessage {
+        guard m.encv >= 1, !m.deleted, let key else { return m }
+        let text = (try? MessageCrypto.open(m.text, key: key)) ?? Self.lockedPlaceholder
+        let reply = m.replyToText.flatMap { try? MessageCrypto.open($0, key: key) } ?? m.replyToText
+        let preview = m.postPreview.flatMap { try? MessageCrypto.open($0, key: key) } ?? m.postPreview
+        return ChatMessage(
+            id: m.id, senderId: m.senderId, text: text, kind: m.kind,
+            postId: m.postId, postPreview: preview, emoji: m.emoji,
+            postMediaURL: m.postMediaURL, postIsVideo: m.postIsVideo,
+            createdAt: m.createdAt, reactions: m.reactions,
+            replyToId: m.replyToId, replyToText: reply,
+            deleted: m.deleted, postDeleted: m.postDeleted, encv: m.encv
+        )
+    }
+
     func start(for user: FirebaseAuth.User?) {
         reset()
         guard let user else { return }
@@ -38,6 +99,8 @@ final class ConversationService {
         inbox = []
         activeMessages = []
         activeConvId = nil
+        convKeyCache.removeAll()
+        publicKeyCache.removeAll()
     }
 
     private func attachInboxListener(uid: String) {
@@ -57,7 +120,17 @@ final class ConversationService {
                         return
                     }
                     let convs = snap?.documents.compactMap { Conversation(document: $0) } ?? []
-                    self.inbox = convs.sorted {
+                    var resolved: [Conversation] = []
+                    resolved.reserveCapacity(convs.count)
+                    for c in convs {
+                        if c.lastMessageEnc, let key = await self.conversationKey(convId: c.id) {
+                            let plain = (try? MessageCrypto.open(c.lastMessage, key: key)) ?? Self.lockedPlaceholder
+                            resolved.append(c.withLastMessage(plain))
+                        } else {
+                            resolved.append(c)
+                        }
+                    }
+                    self.inbox = resolved.sorted {
                         ($0.lastMessageAt ?? .distantPast) > ($1.lastMessageAt ?? .distantPast)
                     }
                 }
@@ -79,7 +152,9 @@ final class ConversationService {
             .addSnapshotListener { [weak self] snap, _ in
                 Task { @MainActor in
                     guard let self, self.activeConvId == convId else { return }
-                    self.activeMessages = snap?.documents.compactMap { ChatMessage(document: $0) } ?? []
+                    let raw = snap?.documents.compactMap { ChatMessage(document: $0) } ?? []
+                    let key = await self.conversationKey(convId: convId)
+                    self.activeMessages = raw.map { self.decrypted($0, key: key) }
                 }
             }
     }
@@ -176,28 +251,52 @@ final class ConversationService {
             return String(trimmed.prefix(120))
         }()
 
-        let convRef = db.collection("conversations").document(convId)
-        let msgRef = convRef.collection("messages").document()
+        // E2EE: encrypt human-readable fields when we can derive the
+        // conversation key. Falls back to plaintext when the partner hasn't
+        // published a key yet (rollout) or sealing fails — messaging keeps
+        // working either way. Metadata (senderId/kind/emoji/postMediaURL/etc.)
+        // is never encrypted.
+        let key = await conversationKey(convId: convId)
         var msgData: [String: Any] = [
             "senderId": me,
-            "text": trimmed,
             "kind": kind,
             "createdAt": FieldValue.serverTimestamp(),
         ]
+        var lastMessageValue = preview
+        var encrypted = false
+        if let key, !trimmed.isEmpty {
+            do {
+                msgData["text"] = try MessageCrypto.seal(trimmed, key: key)
+                if let postPreview { msgData["postPreview"] = try MessageCrypto.seal(postPreview, key: key) }
+                if let replyToText { msgData["replyToText"] = try MessageCrypto.seal(replyToText, key: key) }
+                lastMessageValue = try MessageCrypto.seal(preview, key: key)
+                msgData["encv"] = 1
+                encrypted = true
+            } catch {
+                encrypted = false
+            }
+        }
+        if !encrypted {
+            msgData["text"] = trimmed
+            if let postPreview { msgData["postPreview"] = postPreview }
+            if let replyToText { msgData["replyToText"] = replyToText }
+            lastMessageValue = preview
+        }
         if let postId { msgData["postId"] = postId }
-        if let postPreview { msgData["postPreview"] = postPreview }
         if let emoji { msgData["emoji"] = emoji }
         if let postMediaURL { msgData["postMediaURL"] = postMediaURL }
         if postIsVideo { msgData["postIsVideo"] = true }
         if let replyToId { msgData["replyToId"] = replyToId }
-        if let replyToText { msgData["replyToText"] = replyToText }
 
+        let convRef = db.collection("conversations").document(convId)
+        let msgRef = convRef.collection("messages").document()
         let batch = db.batch()
         batch.setData(msgData, forDocument: msgRef)
         batch.updateData([
-            "lastMessage": preview,
+            "lastMessage": lastMessageValue,
             "lastMessageSenderId": me,
             "lastMessageAt": FieldValue.serverTimestamp(),
+            "lastMessageEnc": encrypted,
         ], forDocument: convRef)
         try await batch.commit()
     }

@@ -9,6 +9,10 @@ struct UserProfile: Equatable {
     /// When true, this user's visits do NOT contribute to other users'
     /// friend-of-friend Discover. Default false (treat absent as opted in).
     var optedOutOfDiscovery: Bool = false
+    /// Base64 X25519 public key for E2EE messaging. Published by
+    /// `SocialService.ensureIdentityKey()`. Nil for users who haven't
+    /// run the E2EE-capable build yet (their messages fall back to plaintext).
+    var publicKey: String?
 }
 
 /// One media item within a post. A post carries 1…6 of these in display
@@ -205,6 +209,11 @@ struct Conversation: Identifiable, Equatable {
     /// mean "never marked read on this server" — readers fall back to
     /// the local stamp for backwards compatibility on legacy convs.
     let lastReadAt: [String: Date]
+    /// True when `lastMessage` holds E2EE ciphertext (sealed with the
+    /// conversation key). The inbox decrypts it before display. False for
+    /// legacy/plaintext previews, reaction-mirror templates, and "Message
+    /// deleted".
+    let lastMessageEnc: Bool
 
     static func id(for a: String, _ b: String) -> String {
         [a, b].sorted().joined(separator: "_")
@@ -229,6 +238,28 @@ struct Conversation: Identifiable, Equatable {
         } else {
             lastReadAt = [:]
         }
+        lastMessageEnc = d["lastMessageEnc"] as? Bool ?? false
+    }
+
+    private init(id: String, participantIds: [String], lastMessage: String,
+                 lastMessageSenderId: String, lastMessageAt: Date?, createdAt: Date?,
+                 lastReadAt: [String: Date], lastMessageEnc: Bool) {
+        self.id = id
+        self.participantIds = participantIds
+        self.lastMessage = lastMessage
+        self.lastMessageSenderId = lastMessageSenderId
+        self.lastMessageAt = lastMessageAt
+        self.createdAt = createdAt
+        self.lastReadAt = lastReadAt
+        self.lastMessageEnc = lastMessageEnc
+    }
+
+    /// Returns a copy with `lastMessage` replaced (used after decrypting the
+    /// inbox preview); clears `lastMessageEnc` since the held value is now plain.
+    func withLastMessage(_ newValue: String) -> Conversation {
+        Conversation(id: id, participantIds: participantIds, lastMessage: newValue,
+                     lastMessageSenderId: lastMessageSenderId, lastMessageAt: lastMessageAt,
+                     createdAt: createdAt, lastReadAt: lastReadAt, lastMessageEnc: false)
     }
 }
 
@@ -279,6 +310,11 @@ struct ChatMessage: Identifiable, Equatable {
     /// reply/reaction mirror, so the chat stops showing the dead image. The
     /// reply text stays; only the post preview becomes "no longer available".
     let postDeleted: Bool
+    /// E2EE version flag. `0` (or absent) = legacy plaintext; `>= 1` = `text`
+    /// (and `replyToText`/`postPreview` when present) hold AES-GCM ciphertext
+    /// that `ConversationService` decrypts before publishing. Set to `0` for
+    /// optimistic/pending bubbles (they hold plaintext locally).
+    let encv: Int
 
     var isPostReaction: Bool { kind == "reaction" }
     var isPostReply: Bool { kind == "reply" }
@@ -304,6 +340,7 @@ struct ChatMessage: Identifiable, Equatable {
         replyToText = d["replyToText"] as? String
         deleted = d["deleted"] as? Bool ?? false
         postDeleted = d["postDeleted"] as? Bool ?? false
+        encv = d["encv"] as? Int ?? 0
         if let ts = d["createdAt"] as? Timestamp {
             createdAt = ts.dateValue()
         } else {

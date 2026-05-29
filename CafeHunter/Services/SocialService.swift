@@ -62,7 +62,8 @@ final class SocialService {
                     usernameLower: data["usernameLower"] as? String,
                     displayName: data["displayName"] as? String,
                     photoURL: data["photoURL"] as? String,
-                    optedOutOfDiscovery: data["optedOutOfDiscovery"] as? Bool ?? false
+                    optedOutOfDiscovery: data["optedOutOfDiscovery"] as? Bool ?? false,
+                    publicKey: data["publicKey"] as? String
                 )
             }
         }
@@ -70,6 +71,34 @@ final class SocialService {
         attachIncomingRequestsListener(uid: user.uid)
         attachOutgoingRequestsListener(uid: user.uid)
         attachBlockedUsersListener(uid: user.uid)
+        ensureIdentityKey()
+    }
+
+    /// Generate (if needed) the device's E2EE identity keypair and publish the
+    /// public half to `users/{uid}.publicKey`. Idempotent and runs for every
+    /// user on every launch (existing users predate the username-reservation
+    /// hook). On reinstall the Keychain is wiped → a new keypair is generated
+    /// and republished (the key rotation that makes prior ciphertext in a
+    /// thread unreadable — see MessageCrypto). Failures are non-fatal: sends
+    /// fall back to plaintext when no key is available.
+    func ensureIdentityKey() {
+        guard let uid else { return }
+        Task {
+            do {
+                let priv = try MessageCrypto.loadOrCreateIdentityKey(uid: uid)
+                let pub = MessageCrypto.publicKeyBase64(for: priv)
+                let snap = try await db.collection("users").document(uid).getDocument()
+                let stored = snap.data()?["publicKey"] as? String
+                if stored != pub {
+                    try await db.collection("users").document(uid)
+                        .setData(["publicKey": pub], merge: true)
+                }
+            } catch {
+                #if DEBUG
+                print("[SocialService] ensureIdentityKey failed: \(error.localizedDescription)")
+                #endif
+            }
+        }
     }
 
     func reset() {

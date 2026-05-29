@@ -138,6 +138,11 @@ final class AuthService {
 
     func signOut() throws {
         NotificationService.shared.removeAllTokensForCurrentUser()
+        // Drop the E2EE identity key so a different account on this device
+        // can't reuse it. (Same-account re-login regenerates + republishes.)
+        if let uid = Auth.auth().currentUser?.uid {
+            MessageCrypto.deleteIdentityKey(uid: uid)
+        }
         try Auth.auth().signOut()
     }
 
@@ -161,6 +166,7 @@ final class AuthService {
         // the FCM token locally now avoids a stale device receiving
         // notifications until the next launch.
         NotificationService.shared.removeAllTokensForCurrentUser()
+        MessageCrypto.deleteIdentityKey(uid: user.uid)
 
         let callable = Functions.functions().httpsCallable("deleteMyAccount")
         _ = try await callable.call([:])

@@ -190,7 +190,8 @@ extension ChatMessage {
         replyToId: String? = nil,
         replyToText: String? = nil,
         deleted: Bool = false,
-        postDeleted: Bool = false
+        postDeleted: Bool = false,
+        encv: Int = 0
     ) {
         self.id = id
         self.senderId = senderId
@@ -207,5 +208,6 @@ extension ChatMessage {
         self.replyToText = replyToText
         self.deleted = deleted
         self.postDeleted = postDeleted
+        self.encv = encv
     }
 }

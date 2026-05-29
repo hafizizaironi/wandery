@@ -465,16 +465,16 @@ exports.onNewMessage = functions.firestore
       });
     }
 
-    // Mirror the inbox preview shape so the push body matches what the
-    // user sees in the conversation list when they open the app.
+    // Generic body only — message text is end-to-end encrypted, so the
+    // server can't (and shouldn't) read it. The recipient's device shows the
+    // real content once they open the thread.
     let body;
     if (m.kind === "reaction") {
-      body = `Reacted ${m.emoji || "•"} to your post`;
+      body = "Reacted to your post";
     } else if (m.kind === "reply") {
-      const snippet = (m.text || "").trim().slice(0, 80);
-      body = snippet ? `Replied: ${snippet}` : "Replied to your post";
+      body = "Replied to your post";
     } else {
-      body = (m.text || "").trim().slice(0, 120) || "New message";
+      body = "New message";
     }
 
     await sendToUser(recipient, senderName, body, {
