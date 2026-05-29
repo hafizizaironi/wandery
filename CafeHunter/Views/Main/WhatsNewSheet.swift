@@ -14,7 +14,7 @@ import SwiftUI
 
 /// Bump when the body of `WhatsNewSheet` changes meaningfully — the
 /// AppStorage gate re-presents the sheet on next launch for everyone.
-let whatsNewReleaseKey = "2026.05-network-discover"
+let whatsNewReleaseKey = "2026.05-private-posts"
 
 /// Features the sheet can deep-link the user into.
 enum WhatsNewFeature: String {
@@ -135,15 +135,29 @@ extension Array where Element == WhatsNewPage {
     static var v2026_05: [WhatsNewPage] {
         [
             WhatsNewPage(
-                icon: "camera.aperture",
+                icon: "person.2.fill",
                 accentIcons: [
-                    AccentIcon(name: "bolt.fill",       offset: CGSize(width:  44, height: -42), scale: 0.36, anim: .bounce),
-                    AccentIcon(name: "record.circle",   offset: CGSize(width: -46, height:  46), scale: 0.36, anim: .pulse),
+                    AccentIcon(name: "lock.fill",             offset: CGSize(width:  44, height: -42), scale: 0.34, anim: .bounce),
+                    AccentIcon(name: "checkmark.circle.fill", offset: CGSize(width: -46, height:  44), scale: 0.32, anim: .pulse),
                 ],
                 accent: AppTheme.cafeAccent,
                 symbolAnim: .pulse,
-                headline: "A camera that gets out of the way",
-                body: "Swipe between Polaroid and Video right under the shutter. Drag the zoom dial at the bottom of the viewfinder to glide from 0.5× to 8×. Flash up top, your latest library shots peeking from the side.",
+                headline: "Pick who sees each post",
+                body: "Before you share, tap the faces in the new picker above your photo to choose which friends it goes to. Everyone's in by default — deselect anyone to leave them out. The friends you keep see a quiet “Shared with you.”",
+                footnote: "Only the friends you pick can see it.",
+                feature: .camera,
+                jumpCTA: "Try it →"
+            ),
+            WhatsNewPage(
+                icon: "camera.aperture",
+                accentIcons: [
+                    AccentIcon(name: "sparkles",      offset: CGSize(width:  46, height: -40), scale: 0.32, anim: .variableColor),
+                    AccentIcon(name: "circle.dashed", offset: CGSize(width: -46, height:  44), scale: 0.34, anim: .pulse),
+                ],
+                accent: AppTheme.cafeAccent,
+                symbolAnim: .pulse,
+                headline: "Your camera scores the shot",
+                body: "A soft ring around the viewfinder slides from red to green as you frame — green means it's bright and crisp enough to shine in Discover. No numbers, just a gentle nudge toward your best photo.",
                 footnote: nil,
                 feature: .camera,
                 jumpCTA: "Open the camera →"
