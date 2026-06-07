@@ -93,6 +93,7 @@ final class SocialService {
                 defer { self.isLoadingProfile = false }
                 guard let data = snap?.data() else {
                     self.profile = UserProfile(username: nil, usernameLower: nil, displayName: nil, photoURL: nil)
+                    SharedFeedStore.writeMyPhotoURL(nil)
                     return
                 }
                 self.profile = UserProfile(
@@ -103,6 +104,9 @@ final class SocialService {
                     optedOutOfDiscovery: data["optedOutOfDiscovery"] as? Bool ?? false,
                     publicKey: data["publicKey"] as? String
                 )
+                // Mirror the user's photo so the Nearby widget's "you" marker
+                // can show their profile picture instead of a plain dot.
+                SharedFeedStore.writeMyPhotoURL(data["photoURL"] as? String)
             }
         }
         attachFriendsListener(uid: user.uid)

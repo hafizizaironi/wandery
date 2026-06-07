@@ -495,6 +495,22 @@ struct MainShellView: View {
                 selectedPage = .hero
                 pageProgress = 1
             }
+        case .place(let placeId):
+            // Nearby Map widget tap on a spot — open the map, then jump to the
+            // place (reuses the existing place-jump → PlaceDetailSheet path).
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                selectedPage = .map
+                pageProgress = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                pendingMapJumpPlaceId = placeId
+            }
+        case .nearby:
+            // Nearby Map widget tap on the map — surface the live map.
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                selectedPage = .map
+                pageProgress = 0
+            }
         }
         NotificationRouter.shared.pending = nil
     }

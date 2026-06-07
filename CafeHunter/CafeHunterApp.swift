@@ -45,6 +45,14 @@ struct CafeHunterApp: App {
                             NotificationRouter.shared.pending = .post(postId: id)
                             return
                         }
+                        if url.host == "place", let id = url.pathComponents.last(where: { $0 != "/" }) {
+                            NotificationRouter.shared.pending = .place(placeId: id)
+                            return
+                        }
+                        if url.host == "nearby" {
+                            NotificationRouter.shared.pending = .nearby
+                            return
+                        }
                         if url.host == "feed" {
                             NotificationRouter.shared.pending = .feed
                             return

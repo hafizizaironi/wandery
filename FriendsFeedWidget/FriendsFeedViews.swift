@@ -7,8 +7,12 @@ import AppIntents
 
 enum WanderyTheme {
     static let espresso  = Color(red: 0.086, green: 0.059, blue: 0.035)   // #160F09
+    static let ink       = Color(red: 0.122, green: 0.102, blue: 0.090)   // #1F1A17
     static let cream     = Color(red: 0.937, green: 0.902, blue: 0.824)   // #EFE6D2
-    static let persimmon = Color(red: 0.851, green: 0.416, blue: 0.247)   // #D96A3F
+    static let paper     = Color(red: 0.984, green: 0.965, blue: 0.925)   // #FBF6EC
+    static let persimmon = Color(red: 0.851, green: 0.416, blue: 0.247)   // #D96A3F  recent · you-dot
+    static let olive     = Color(red: 0.486, green: 0.561, blue: 0.337)   // #7C8F56  hunt
+    static let honey     = Color(red: 0.788, green: 0.569, blue: 0.247)   // #C9913F  trend
 }
 
 /// Shared widget kind id — must match the `reloadTimelines(ofKind:)` calls.

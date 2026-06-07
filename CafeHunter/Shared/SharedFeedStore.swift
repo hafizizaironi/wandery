@@ -83,6 +83,9 @@ enum SharedFeedStore {
         static let uid = "feed.uid"
         static let friendIds = "feed.friendIds"
         static let friends = "feed.friends"
+        static let nearbyPlaces = "feed.nearbyPlaces"
+        static let trendingPlaces = "feed.trendingPlaces"
+        static let myPhotoURL = "feed.myPhotoURL"
     }
 
     /// Minimal friend record for the widget's "Show photos from" picker
@@ -92,6 +95,22 @@ enum SharedFeedStore {
     struct FriendSummary: Codable, Equatable {
         let id: String
         let name: String
+    }
+
+    /// A nearby place for the Nearby Map widget. The app mirrors a broad
+    /// candidate set (friend-tagged "recent" + saved "hunt"); the widget filters
+    /// by the user's live location + radius and drops the pins.
+    struct WidgetPlace: Codable, Equatable {
+        let id: String
+        let name: String
+        let lat: Double
+        let lng: Double
+        let category: String        // "recent" | "hunt" | "trend"
+        /// recent: who tagged it (for the avatar halo). nil otherwise.
+        let friendName: String?
+        let friendId: String?
+        /// trend: 🔥 count. nil otherwise.
+        let trendCount: Int?
     }
 
     /// Snapshot lives in a container file (not UserDefaults) to avoid the
@@ -132,6 +151,39 @@ enum SharedFeedStore {
               let friends = try? JSONDecoder().decode([FriendSummary].self, from: data) else { return [] }
         return friends
     }
+
+    // MARK: - Nearby places (Nearby Map widget)
+
+    static func writeNearbyPlaces(_ places: [WidgetPlace]) {
+        defaults?.set(try? JSONEncoder().encode(places), forKey: Key.nearbyPlaces)
+    }
+
+    static func readNearbyPlaces() -> [WidgetPlace] {
+        guard let data = defaults?.data(forKey: Key.nearbyPlaces),
+              let places = try? JSONDecoder().decode([WidgetPlace].self, from: data) else { return [] }
+        return places
+    }
+
+    /// Trending places — written separately by `CircleDiscoverService` (a
+    /// different owner than the recent/hunt mirror), merged in the widget.
+    static func writeTrendingPlaces(_ places: [WidgetPlace]) {
+        defaults?.set(try? JSONEncoder().encode(places), forKey: Key.trendingPlaces)
+    }
+
+    static func readTrendingPlaces() -> [WidgetPlace] {
+        guard let data = defaults?.data(forKey: Key.trendingPlaces),
+              let places = try? JSONDecoder().decode([WidgetPlace].self, from: data) else { return [] }
+        return places
+    }
+
+    // MARK: - Signed-in user's profile photo (Nearby "you" marker)
+
+    static func writeMyPhotoURL(_ url: String?) {
+        if let url, !url.isEmpty { defaults?.set(url, forKey: Key.myPhotoURL) }
+        else { defaults?.removeObject(forKey: Key.myPhotoURL) }
+    }
+
+    static func readMyPhotoURL() -> String? { defaults?.string(forKey: Key.myPhotoURL) }
 
     // MARK: - Carousel photo index (interactive tap-to-advance)
 
@@ -217,6 +269,9 @@ enum SharedFeedStore {
         defaults?.removeObject(forKey: Key.uid)
         defaults?.removeObject(forKey: Key.friendIds)
         defaults?.removeObject(forKey: Key.friends)
+        defaults?.removeObject(forKey: Key.nearbyPlaces)
+        defaults?.removeObject(forKey: Key.trendingPlaces)
+        defaults?.removeObject(forKey: Key.myPhotoURL)
         if let url = snapshotURL { try? FileManager.default.removeItem(at: url) }
         if let dir = thumbsDir { try? FileManager.default.removeItem(at: dir) }
     }

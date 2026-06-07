@@ -2,6 +2,7 @@ import Foundation
 import FirebaseFirestore
 import CoreLocation
 import MapKit
+import WidgetKit
 
 /// Aggregated representation of one tagged place + all the friend posts at it.
 /// Drives both the map annotation layer and the place-detail card stack.
@@ -280,6 +281,69 @@ final class FriendPlacesService {
 
         // Fill in any still-missing city labels by reverse-geocoding lat/lng.
         resolveMissingCities()
+
+        // Hand nearby places (coords + category) to the Nearby Map widget.
+        mirrorNearbyPlacesToWidget()
+    }
+
+    // MARK: - Nearby Map widget mirror
+
+    private var lastNearbyMirror: Date?
+    /// Cache of place name+coords for saved-only places (not in `places`), so
+    /// the saved-place doc reads happen at most once per place per session.
+    private var savedPlaceCoords: [String: (name: String, lat: Double, lng: Double)] = [:]
+
+    /// Mirror a candidate set of nearby places (recent friend-tagged + saved
+    /// hunt) to the App Group for the Nearby Map widget. Debounced — the widget
+    /// then filters by the user's live location + radius.
+    func mirrorNearbyPlacesToWidget() {
+        let now = Date()
+        if let last = lastNearbyMirror, now.timeIntervalSince(last) < 20 { return }
+        lastNearbyMirror = now
+        Task { await buildAndMirrorNearby() }
+    }
+
+    private func buildAndMirrorNearby() async {
+        var out: [SharedFeedStore.WidgetPlace] = []
+        var seen = Set<String>()
+
+        // Recent — friend-tagged places (carry the tagging friend for the halo).
+        for p in places {
+            out.append(.init(id: p.id, name: p.name, lat: p.lat, lng: p.lng,
+                             category: "recent",
+                             friendName: p.mostRecent?.authorUsername,
+                             friendId: p.mostRecent?.authorId, trendCount: nil))
+            seen.insert(p.id)
+            savedPlaceCoords[p.id] = (p.name, p.lat, p.lng)
+        }
+
+        // Hunt — saved places not already shown as recent. Resolve coords from
+        // the cache, else read the place docs once (batched).
+        let savedOnly = savedPlaceIds.subtracting(seen)
+        let needFetch = savedOnly.filter { savedPlaceCoords[$0] == nil }
+        if !needFetch.isEmpty {
+            let ids = Array(needFetch)
+            for start in stride(from: 0, to: ids.count, by: 30) {
+                let chunk = Array(ids[start..<min(start + 30, ids.count)])
+                guard let snap = try? await db.collection("places")
+                    .whereField(FieldPath.documentID(), in: chunk).getDocuments() else { continue }
+                for doc in snap.documents {
+                    let d = doc.data()
+                    if let name = d["name"] as? String,
+                       let lat = d["lat"] as? Double, let lng = d["lng"] as? Double {
+                        savedPlaceCoords[doc.documentID] = (name, lat, lng)
+                    }
+                }
+            }
+        }
+        for id in savedOnly {
+            guard let c = savedPlaceCoords[id] else { continue }
+            out.append(.init(id: id, name: c.name, lat: c.lat, lng: c.lng,
+                             category: "hunt", friendName: nil, friendId: nil, trendCount: nil))
+        }
+
+        SharedFeedStore.writeNearbyPlaces(out)
+        WidgetCenter.shared.reloadTimelines(ofKind: "WanderyNearbyMap")
     }
 
     // MARK: - My visits
@@ -356,7 +420,10 @@ final class FriendPlacesService {
             .collection("savedPlaces")
             .addSnapshotListener { [weak self] snap, _ in
                 guard let self, let docs = snap?.documents else { return }
-                Task { @MainActor in self.savedPlaceIds = Set(docs.map(\.documentID)) }
+                Task { @MainActor in
+                    self.savedPlaceIds = Set(docs.map(\.documentID))
+                    self.mirrorNearbyPlacesToWidget()
+                }
             }
 
         hiddenListener = db.collection("users").document(uid)

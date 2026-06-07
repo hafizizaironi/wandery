@@ -8,6 +8,11 @@ enum NotificationDeepLink: Equatable {
     /// Open the friends feed (the Hero page). Set by a widget tap
     /// (`wandery://feed`) — see `CafeHunterApp.onOpenURL`.
     case feed
+    /// Open a specific place's detail. Set by a Nearby Map widget tap
+    /// (`wandery://place/<id>`) → jumps the map + opens `PlaceDetailSheet`.
+    case place(placeId: String)
+    /// Open the live map centered on the user (`wandery://nearby` widget tap).
+    case nearby
 }
 
 /// Bridges notification taps (handled in the non-SwiftUI `NotificationService`

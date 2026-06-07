@@ -2,6 +2,7 @@ import Foundation
 import FirebaseFunctions
 import CoreLocation
 import Observation
+import WidgetKit
 
 // MARK: - Wire models
 
@@ -102,6 +103,15 @@ final class CircleDiscoverService {
             // Persist a slim snapshot for the signed-out login fly-over, which
             // can't fetch trending itself (auth + App Check gated).
             EntryTrendingStore.save(trending)
+            // Mirror trending places (coords + 🔥 count) to the Nearby Map
+            // widget's separate App-Group key (merged with recent/hunt there).
+            SharedFeedStore.writeTrendingPlaces(trending.map {
+                SharedFeedStore.WidgetPlace(
+                    id: $0.id, name: $0.name, lat: $0.lat, lng: $0.lng,
+                    category: "trend", friendName: nil, friendId: nil,
+                    trendCount: $0.globalVisitCount)
+            })
+            WidgetCenter.shared.reloadTimelines(ofKind: "WanderyNearbyMap")
         } catch {
             // Don't blow away an existing cached payload on transient errors —
             // just record the message; the pins keep showing what we have.

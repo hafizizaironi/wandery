@@ -11,6 +11,7 @@ import SwiftUI
 @main
 struct FriendsFeedWidgetBundle: WidgetBundle {
     var body: some Widget {
-        FriendsFeedWidget()
+        FriendsFeedWidget()      // Photo Feed
+        NearbyMapWidget()        // Nearby Map
     }
 }
