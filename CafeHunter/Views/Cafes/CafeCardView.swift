@@ -123,7 +123,7 @@ struct CafeCardView: View {
     @ViewBuilder
     private var photoOrGradient: some View {
         if let first = cafe.photos.first, !first.isEmpty, let url = URL(string: first) {
-            AsyncImage(url: url) { phase in
+            CachedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let img): img.resizable().scaledToFill()
                 default:

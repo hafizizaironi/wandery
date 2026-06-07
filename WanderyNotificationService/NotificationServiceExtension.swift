@@ -1,5 +1,6 @@
 import UserNotifications
 import CryptoKit
+import WidgetKit
 
 /// Notification Service Extension principal class. Named distinctly (NOT
 /// `NotificationService`) so it can never collide with the app's
@@ -37,6 +38,9 @@ final class NotificationServiceExtension: UNNotificationServiceExtension {
             contentHandler(attempt)
 
         case "newPost":
+            // A friend posted — nudge the Home Screen widget to pull the new
+            // post even while the app is closed (the background-fresh path).
+            WidgetCenter.shared.reloadAllTimelines()
             if let urlString = info["imageURL"] as? String, let url = URL(string: urlString) {
                 attachImage(from: url, to: attempt) { contentHandler(attempt) }
             } else {
@@ -57,15 +61,28 @@ final class NotificationServiceExtension: UNNotificationServiceExtension {
     private func decryptBody(into content: UNMutableNotificationContent, info: [AnyHashable: Any]) {
         guard
             let encText = info["encText"] as? String,
-            let senderPub = info["senderPublicKey"] as? String,
-            let convId = info["convId"] as? String,
             // Readable only while unlocked → this is the "only when unlocked" gate.
             let privData = Keychain.loadShared(account: MessageCrypto.sharedIdentityAccount),
-            let priv = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privData),
-            let key = try? MessageCrypto.conversationKey(
-                myPrivateKey: priv, theirPublicKeyBase64: senderPub, convId: convId),
-            let plain = try? MessageCrypto.open(encText, key: key)
+            let priv = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privData)
         else { return }   // leave the generic body on any failure (incl. locked)
+
+        // encv comes through APNs as a number (NSNumber) or string — accept both.
+        let encv = (info["encv"] as? Int) ?? Int(info["encv"] as? String ?? "") ?? 0
+
+        let key: SymmetricKey?
+        if encv >= 2, let ek = info["cekEk"] as? String, let ct = info["cekCt"] as? String {
+            // Current: unwrap the per-conversation content key wrapped to me.
+            key = try? MessageCrypto.unwrap(ek: ek, ct: ct, myPrivateKey: priv)
+        } else if let senderPub = info["senderPublicKey"] as? String,
+                  let convId = info["convId"] as? String {
+            // Legacy encv 1: static-ECDH conversation key from the sender's pub.
+            key = try? MessageCrypto.conversationKey(
+                myPrivateKey: priv, theirPublicKeyBase64: senderPub, convId: convId)
+        } else {
+            key = nil
+        }
+
+        guard let key, let plain = try? MessageCrypto.open(encText, key: key) else { return }
         content.body = plain
     }
 

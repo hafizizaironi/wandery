@@ -83,7 +83,7 @@ struct PinAvatarBubble: View {
     var body: some View {
         Group {
             if let s = urlString, let url = URL(string: s) {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
                     default: initialsBackground
@@ -135,7 +135,7 @@ struct UserLocationAvatar: View {
             // Avatar
             Group {
                 if let s = photoURL, let url = URL(string: s) {
-                    AsyncImage(url: url) { phase in
+                    CachedAsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let img): img.resizable().scaledToFill()
                         default: fallback

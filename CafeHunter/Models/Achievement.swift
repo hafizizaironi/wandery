@@ -56,22 +56,6 @@ extension Achievement {
             condition: { $0.cafesVisited >= 10 }
         ),
         Achievement(
-            id: "scout",
-            icon: "🗺️",
-            title: "Scout",
-            subtitle: "Add a new place to the map",
-            flavourText: "You found it first",
-            condition: { $0.placesAdded >= 1 }
-        ),
-        Achievement(
-            id: "regular",
-            icon: "⭐",
-            title: "Regular",
-            subtitle: "Visit the same spot 3 times",
-            flavourText: "They know your order",
-            condition: { $0.favoritePlaceVisits >= 3 }
-        ),
-        Achievement(
             id: "night_owl",
             icon: "🌙",
             title: "Night Owl",

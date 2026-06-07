@@ -14,6 +14,10 @@
 	</array>
 	<key>com.apple.developer.devicecheck.appattest-environment</key>
 	<string>production</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.TechVision.CafeHunter</string>
+	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)TechVision.CafeHunter.shared</string>

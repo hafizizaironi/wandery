@@ -406,7 +406,11 @@ final class CameraService: NSObject {
     /// real range. Called from the dial on the main actor; the device write
     /// runs on `sessionQueue`. Bumps `zoomRampGeneration` so a stale lens-toggle
     /// ramp can't fight the scrub.
-    func setZoom(displayed: CGFloat) {
+    /// `animated: false` (live drag) writes `videoZoomFactor` directly for a 1:1
+    /// follow; `animated: true` (chip tap / release snap) glides via the manual
+    /// `scheduleSmoothZoom` ramp. Either way `zoomRampGeneration` is bumped, so a
+    /// scrub frame cleanly cancels any glide started by a preceding chip tap.
+    func setZoom(displayed: CGFloat, animated: Bool = false) {
         let clamped = min(max(displayed, minDisplayedZoom), maxDisplayedZoom)
         displayedZoom = clamped
         sessionQueue.async { [weak self] in
@@ -415,12 +419,17 @@ final class CameraService: NSObject {
             let zf = min(max(clamped * oneX, device.minAvailableVideoZoomFactor),
                          device.maxAvailableVideoZoomFactor)
             self.zoomRampGeneration += 1
+            let gen = self.zoomRampGeneration
             device.cancelVideoZoomRamp()
-            do {
-                try device.lockForConfiguration()
-                device.videoZoomFactor = zf
-                device.unlockForConfiguration()
-            } catch {}
+            if animated {
+                self.scheduleSmoothZoom(device: device, from: device.videoZoomFactor, to: zf, generation: gen)
+            } else {
+                do {
+                    try device.lockForConfiguration()
+                    device.videoZoomFactor = zf
+                    device.unlockForConfiguration()
+                } catch {}
+            }
         }
     }
 

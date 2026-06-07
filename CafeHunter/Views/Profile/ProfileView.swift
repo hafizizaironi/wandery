@@ -13,13 +13,6 @@ struct ProfileView: View {
         user.displayName ?? user.email?.components(separatedBy: "@").first ?? "User"
     }
 
-    private var initials: String {
-        displayName.split(separator: " ").prefix(2)
-            .compactMap { $0.first.map(String.init) }
-            .joined()
-            .uppercased()
-    }
-
     private var providerLabel: String {
         user.providerData.first?.providerID == "google.com"
             ? "🔐 Google account"
@@ -193,31 +186,8 @@ struct ProfileView: View {
 
     // MARK: - Sub views
 
-    @ViewBuilder
     private var avatarView: some View {
-        if let url = user.photoURL {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default: initialsAvatar
-                }
-            }
-        } else {
-            initialsAvatar
-        }
-    }
-
-    private var initialsAvatar: some View {
-        ZStack {
-            LinearGradient(
-                colors: [AppTheme.cafeAccent, AppTheme.cafeAccent.opacity(0.75)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Text(initials)
-                .font(.system(size: 28, weight: .bold))
-                .foregroundColor(AppTheme.textOnAccent)
-        }
+        AvatarView(url: user.photoURL, name: displayName, size: 80)
     }
 
     private var divider: some View {

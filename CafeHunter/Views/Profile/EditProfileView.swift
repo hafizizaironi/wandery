@@ -5,6 +5,7 @@ import FirebaseAuth
 struct EditProfileView: View {
     let user: FirebaseAuth.User
     var authService: AuthService
+    var userPrivateService: UserPrivateService
     /// Required when presented outside NavigationStack/sheet (e.g. floating panel).
     var onClose: () -> Void
 
@@ -15,11 +16,13 @@ struct EditProfileView: View {
     @State private var errorMessage: String?
     @AccessibilityFocusState private var errorFocused: Bool
 
-    init(user: FirebaseAuth.User, authService: AuthService, onClose: @escaping () -> Void) {
-        self.user        = user
-        self.authService = authService
-        self.onClose     = onClose
-        _displayName     = State(initialValue: user.displayName ?? "")
+    init(user: FirebaseAuth.User, authService: AuthService,
+         userPrivateService: UserPrivateService, onClose: @escaping () -> Void) {
+        self.user               = user
+        self.authService        = authService
+        self.userPrivateService = userPrivateService
+        self.onClose            = onClose
+        _displayName            = State(initialValue: user.displayName ?? "")
     }
 
     // MARK: - Body
@@ -124,6 +127,13 @@ struct EditProfileView: View {
                             }
                     }
 
+                    // MARK: Account info (read-only — fixed)
+                    VStack(spacing: 16) {
+                        infoRow(label: "EMAIL", value: user.email ?? "—")
+                        infoRow(label: "PHONE", value: phoneText)
+                        infoRow(label: "BIRTHDATE", value: birthdateText)
+                    }
+
                     // MARK: Error
                     if let msg = errorMessage {
                         Text(msg)
@@ -148,37 +158,46 @@ struct EditProfileView: View {
     private var avatarPreview: some View {
         if let img = pendingImage {
             Image(uiImage: img).resizable().scaledToFill()
-        } else if let url = user.photoURL {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default: initialsCircle
-                }
-            }
-            .id(url.absoluteString)
         } else {
-            initialsCircle
-        }
-    }
-
-    private var initialsCircle: some View {
-        ZStack {
-            LinearGradient(
-                colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+            AvatarView(
+                url: user.photoURL,
+                name: displayName.isEmpty ? user.displayName : displayName,
+                size: 104
             )
-            Text(initials)
-                .font(.largeTitle).bold()
-                .foregroundStyle(AppTheme.cream)
         }
     }
 
-    private var initials: String {
-        let name = displayName.isEmpty ? (user.displayName ?? "") : displayName
-        return name.split(separator: " ").prefix(2)
-            .compactMap { $0.first.map(String.init) }
-            .joined().uppercased()
+    // MARK: - Read-only account info
+
+    private var phoneText: String {
+        let p = userPrivateService.profile?.phoneNumber
+        return (p?.isEmpty == false) ? p! : "Not added"
+    }
+
+    private var birthdateText: String {
+        guard let d = userPrivateService.profile?.birthdate else { return "Not set" }
+        return d.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    /// A fixed (non-editable) labelled field — muted vs the editable name field.
+    private func infoRow(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.caption2).bold()
+                .tracking(2)
+                .contrastAware(AppTheme.cream, opacity: 0.35)
+            Text(value)
+                .font(.callout)
+                .foregroundStyle(AppTheme.cream.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(AppTheme.cream.opacity(0.03))
+                .clipShape(.rect(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                }
+        }
     }
 
     // MARK: - Save

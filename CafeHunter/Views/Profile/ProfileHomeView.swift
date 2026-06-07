@@ -80,8 +80,12 @@ struct ProfileHomeView: View {
     /// Presents the Creator's Pick curation surface (admin-only).
     @State private var showCreatorPicksAdmin = false
     @State private var showClassifierTuning = false
+    /// DEV/admin-only: the Wandery Code detector spike (see WanderyCodeSpikeView).
+    @State private var showWanderyCodeSpike = false
     /// Presents the FriendFind contact-scan surface.
     @State private var showFriendFind = false
+    /// Presents the "how to add the Home Screen widget" tutorial.
+    @State private var showWidgetTutorial = false
 
     /// Memoized derived state. Recomputed via the .task(id:) at the bottom
     /// of body, not on every body re-render.
@@ -174,10 +178,7 @@ struct ProfileHomeView: View {
     // MARK: - Body
 
     var body: some View {
-        ZStack {
-            AppTheme.espresso.ignoresSafeArea()
-
-            ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
                         heroHeader
@@ -222,10 +223,10 @@ struct ProfileHomeView: View {
                     }
                 }
             }
-        }
+        .background(AppTheme.espresso.ignoresSafeArea())
         .floatingPanel(isPresented: $showEditProfile) {
             if let u = user {
-                EditProfileView(user: u, authService: authService) {
+                EditProfileView(user: u, authService: authService, userPrivateService: userPrivateService) {
                     showEditProfile = false
                 }
             }
@@ -304,12 +305,23 @@ struct ProfileHomeView: View {
         .fullScreenCover(isPresented: $showClassifierTuning) {
             AdminClassifierTuningView(onClose: { showClassifierTuning = false })
         }
+        .fullScreenCover(isPresented: $showWanderyCodeSpike) {
+            WanderyCodeSpikeView(
+                displayName: displayName,
+                username: socialService.profile?.username,
+                photoURL: user?.photoURL?.absoluteString,
+                onClose: { showWanderyCodeSpike = false }
+            )
+        }
         .fullScreenCover(isPresented: $showFriendFind) {
             FriendFindView(
                 socialService:      socialService,
                 userPrivateService: userPrivateService,
                 onClose:            { showFriendFind = false }
             )
+        }
+        .sheet(isPresented: $showWidgetTutorial) {
+            WidgetTutorialView()
         }
         // Pre-hydrate friend profiles while the user is still on the
         // profile page, so opening the Friends panel feels instant
@@ -409,23 +421,6 @@ struct ProfileHomeView: View {
                         .contrastAware(AppTheme.cream, opacity: 0.3)
                 }
 
-                // Share username if set
-                if let name = socialService.profile?.username, !name.isEmpty {
-                    ShareLink(item: "Add me on Wandery: @\(name)") {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                            .font(.caption).bold()
-                            .foregroundStyle(AppTheme.cafeAccent)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                            .background(AppTheme.cafeAccent.opacity(0.1))
-                            .clipShape(.rect(cornerRadius: 20))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 20)
-                                    .stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1)
-                            }
-                    }
-                }
-
                 Button { showEditProfile = true } label: {
                     Text("Edit Profile")
                         .font(.footnote).bold()
@@ -449,38 +444,11 @@ struct ProfileHomeView: View {
 
     // MARK: - Avatar
 
-    @ViewBuilder
     private var avatarView: some View {
-        if let url = user?.photoURL {
-            CachedAsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default: initialsCircle
-                }
-            }
-            .id(url.absoluteString)
-        } else {
-            initialsCircle
-        }
-    }
-
-    private var initialsCircle: some View {
-        ZStack {
-            LinearGradient(
-                colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Text(initials)
-                .font(.largeTitle).bold()
-                .foregroundStyle(AppTheme.cream)
-        }
-    }
-
-    private var initials: String {
-        displayName.split(separator: " ").prefix(2)
-            .compactMap { $0.first.map(String.init) }
-            .joined().uppercased()
+        // Gradient-initials fallback + the shared memory/disk image cache both
+        // live in `AvatarView` now. The caller wraps this in the gradient ring
+        // and glow, so no stroke is requested here.
+        AvatarView(url: user?.photoURL, name: displayName, size: 100)
     }
 
     // MARK: - Stats row
@@ -808,6 +776,8 @@ struct ProfileHomeView: View {
                 }
                 .buttonStyle(.scalePress)
                 .disabled(friendBusy || addFriendQuery.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                profileCodeButton
             }
 
             if shouldShowSuggestions {
@@ -984,6 +954,65 @@ struct ProfileHomeView: View {
 
     // MARK: - Settings
 
+    /// Shared full-width settings-row style (icon · title · subtitle · chevron).
+    private func settingsRow(icon: String, title: String, subtitle: String,
+                             action: @escaping () -> Void) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            action()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.accentAction)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.subheadline).bold()
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text(subtitle).font(.caption2)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textSecondary.opacity(0.5))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(AppTheme.textPrimary.opacity(0.04))
+            .clipShape(.rect(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+
+    /// Wandery Profile Code entry (show + scan), sized to sit beside the Add
+    /// button in the friends section.
+    private var profileCodeButton: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showWanderyCodeSpike = true
+        } label: {
+            Image(systemName: "qrcode")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(AppTheme.cafeAccent)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(AppTheme.cafeAccent.opacity(0.12))
+                .clipShape(.rect(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.scalePress)
+        .accessibilityLabel("Wandery Profile Code")
+    }
+
     private var settingsSection: some View {
         VStack(spacing: 12) {
             Button {
@@ -1020,123 +1049,21 @@ struct ProfileHomeView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Find friends from contacts")
 
+            settingsRow(icon: "apps.iphone",
+                        title: "Add the Home Screen widget",
+                        subtitle: "Show friends' latest posts at a glance") {
+                showWidgetTutorial = true
+            }
+
             if authService.isAdmin {
-                Button {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    showCreatorPicksAdmin = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "sparkles")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.cafeAccent)
-                        Text("Manage Creator's Pick")
-                            .font(.caption).bold()
-                            .foregroundStyle(AppTheme.cafeAccent)
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.cafeAccent.opacity(0.6))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(AppTheme.cafeAccent.opacity(0.1))
-                    .clipShape(.rect(cornerRadius: 20))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 20)
-                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                    }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Manage Creator's Pick")
-
-                // Admin-only: inspect on-device classifier scores for
-                // recent placed-tagged posts. Lets the admin slide a
-                // hypothetical aesthetic floor and see how each photo
-                // would be classified — used to pick a real threshold.
-                Button {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    showClassifierTuning = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "wand.and.stars")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.cafeAccent)
-                        Text("Classifier Tuning")
-                            .font(.caption).bold()
-                            .foregroundStyle(AppTheme.cafeAccent)
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.cafeAccent.opacity(0.6))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(AppTheme.cafeAccent.opacity(0.1))
-                    .clipShape(.rect(cornerRadius: 20))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 20)
-                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                    }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open classifier tuning")
-
-                // Admin-only: re-open the "What's New" tour. Bypasses the
-                // once-per-release AppStorage gate so we can preview copy/
-                // animations on the spot.
-                Button {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    onPreviewWhatsNew()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "sparkles.rectangle.stack.fill")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.cafeAccent)
-                        Text("Preview What's New")
-                            .font(.caption).bold()
-                            .foregroundStyle(AppTheme.cafeAccent)
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.cafeAccent.opacity(0.6))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(AppTheme.cafeAccent.opacity(0.1))
-                    .clipShape(.rect(cornerRadius: 20))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 20)
-                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                    }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Preview What's New tutorial")
-
-                // Admin-only: open the marketing-mockup pages to screenshot
-                // for the App Store listing.
-                Button {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    onShowMarketingMockups()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "photo.stack")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.cafeAccent)
-                        Text("Marketing Mockups")
-                            .font(.caption).bold()
-                            .foregroundStyle(AppTheme.cafeAccent)
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.cafeAccent.opacity(0.6))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(AppTheme.cafeAccent.opacity(0.1))
-                    .clipShape(.rect(cornerRadius: 20))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 20)
-                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                    }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open marketing mockups")
+                settingsRow(icon: "sparkles", title: "Manage Creator's Pick",
+                            subtitle: "Curate featured places") { showCreatorPicksAdmin = true }
+                settingsRow(icon: "wand.and.stars", title: "Classifier Tuning",
+                            subtitle: "Inspect on-device photo scores") { showClassifierTuning = true }
+                settingsRow(icon: "sparkles.rectangle.stack.fill", title: "Preview What's New",
+                            subtitle: "Re-open the release tour") { onPreviewWhatsNew() }
+                settingsRow(icon: "photo.stack", title: "Marketing Mockups",
+                            subtitle: "Open the screenshot pages") { onShowMarketingMockups() }
             }
 
             // Tester-only: re-open the one-time welcome intro. Hidden on the
@@ -1325,7 +1252,7 @@ struct ProfileHomeView: View {
                 Text("Help your circle discover")
                     .font(.subheadline).bold()
                     .foregroundStyle(AppTheme.textPrimary)
-                Text("Your visits may appear (blurred) to friends-of-friends.")
+                Text("Shares your visits with friends-of-friends and your Discover photos to Trending. Off also stops circle pins on your map.")
                     .font(.caption2)
                     .foregroundStyle(AppTheme.textSecondary)
             }
@@ -1350,6 +1277,7 @@ struct ProfileHomeView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Help your circle discover")
         .accessibilityValue(helping ? "On" : "Off")
+        .accessibilityHint("When on, friends-of-friends see places you've been and your Discover photos can appear in Trending for anyone. When off, circle pins are also hidden from your map.")
     }
 
     @ViewBuilder
@@ -1472,575 +1400,3 @@ struct ProfileHomeView: View {
     }
 }
 
-// MARK: - Stat cell
-
-private struct ProfileStatCell: View {
-    let value: String
-    let label: String
-    let icon:  String
-
-    var body: some View {
-        VStack(spacing: 5) {
-            Text(icon).font(.title3)
-            Text(value)
-                .font(.title2).bold()
-                .foregroundStyle(AppTheme.cream)
-            Text(label)
-                .font(.caption2)
-                .contrastAware(AppTheme.cream, opacity: 0.4)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
-        .background(AppTheme.cream.opacity(0.04))
-        .clipShape(.rect(cornerRadius: 14))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(AppTheme.cafeAccent.opacity(0.14), lineWidth: 1)
-        }
-    }
-}
-
-// MARK: - Friend search (autocomplete dropdown)
-
-/// One row in the username-autocomplete dropdown under the "Add friend"
-/// input. Hydrated from `users/{uid}` after a prefix match on the
-/// lowercased `usernames` collection.
-struct FriendSearchHit: Identifiable, Equatable {
-    let id: String   // = uid
-    let username: String?
-    let displayName: String?
-    let photoURL: String?
-}
-
-@MainActor
-@Observable
-final class FriendSearchModel {
-    private(set) var suggestions: [FriendSearchHit] = []
-    private(set) var isSearching = false
-
-    private var searchTask: Task<Void, Never>?
-    private let db = Firestore.firestore()
-
-    /// Debounce + fan-out search. `usernames/{lowercase}` doc IDs are the
-    /// canonical case-insensitive index — a doc-ID prefix range there
-    /// gives us matching uids in one query, then we fetch each user's
-    /// public profile in parallel. Excludes self + existing friends so
-    /// the dropdown only ever shows actionable add-targets.
-    func queryChanged(_ text: String, excludeUids: Set<String>) {
-        let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
-        searchTask?.cancel()
-        guard trimmed.count >= 2 else {
-            suggestions = []
-            isSearching = false
-            return
-        }
-        searchTask = Task { [weak self] in
-            // Debounce — keystrokes within 220ms collapse to one query so
-            // typing a 6-char name doesn't trigger six round-trips.
-            try? await Task.sleep(for: .milliseconds(220))
-            if Task.isCancelled { return }
-            await self?.run(trimmed, excludeUids: excludeUids)
-        }
-    }
-
-    func clear() {
-        searchTask?.cancel()
-        suggestions = []
-        isSearching = false
-    }
-
-    private func run(_ q: String, excludeUids: Set<String>) async {
-        isSearching = true
-        defer { isSearching = false }
-        do {
-            let upper = q + "\u{f8ff}"
-            let snap = try await db.collection("usernames")
-                .whereField(FieldPath.documentID(), isGreaterThanOrEqualTo: q)
-                .whereField(FieldPath.documentID(), isLessThan: upper)
-                .limit(to: 10)
-                .getDocuments()
-            if Task.isCancelled { return }
-            let uids = snap.documents.compactMap { ($0.data()["uid"] as? String) }
-                .filter { !excludeUids.contains($0) }
-            let hits = await fetchProfiles(uids: uids)
-            if Task.isCancelled { return }
-            suggestions = hits.sorted { ($0.username ?? "") < ($1.username ?? "") }
-        } catch {
-            #if DEBUG
-            print("[FriendSearch] query '\(q)' failed: \(error.localizedDescription)")
-            #endif
-            suggestions = []
-        }
-    }
-
-    private func fetchProfiles(uids: [String]) async -> [FriendSearchHit] {
-        await withTaskGroup(of: FriendSearchHit?.self) { group in
-            for uid in uids {
-                group.addTask { [db] in
-                    guard let doc = try? await db.collection("users").document(uid).getDocument(),
-                          let data = doc.data() else { return nil }
-                    return FriendSearchHit(
-                        id: uid,
-                        username: data["username"] as? String,
-                        displayName: data["displayName"] as? String,
-                        photoURL: data["photoURL"] as? String
-                    )
-                }
-            }
-            var arr: [FriendSearchHit] = []
-            for await item in group { if let item { arr.append(item) } }
-            return arr
-        }
-    }
-}
-
-// MARK: - Friend avatar chip (horizontal strip on profile)
-
-/// One circle in the profile's friend strip. Renders the friend's photo if
-/// available, falls back to gradient initials. Username text under the
-/// avatar so the user recognises faces *and* handles at a glance.
-private struct FriendAvatarChip: View {
-    let row: FriendRow
-
-    var body: some View {
-        VStack(spacing: 6) {
-            avatar
-                .frame(width: 60, height: 60)
-                .clipShape(Circle())
-                .overlay {
-                    Circle().stroke(AppTheme.cafeAccent.opacity(0.35), lineWidth: 2)
-                }
-
-            Text(labelText)
-                .font(.caption2)
-                .foregroundStyle(AppTheme.cream)
-                .lineLimit(1)
-                .frame(maxWidth: 72)
-        }
-        .frame(width: 72)
-    }
-
-    @ViewBuilder
-    private var avatar: some View {
-        if let urlString = row.photoURL, let url = URL(string: urlString) {
-            CachedAsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default: initialsCircle
-                }
-            }
-        } else {
-            initialsCircle
-        }
-    }
-
-    private var initialsCircle: some View {
-        ZStack {
-            LinearGradient(
-                colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Text(initials)
-                .font(.headline).bold()
-                .foregroundStyle(.white)
-        }
-    }
-
-    private var labelText: String {
-        if let u = row.username, !u.isEmpty { return "@\(u)" }
-        if let n = row.displayName, !n.isEmpty { return n }
-        return "Friend"
-    }
-
-    private var initials: String {
-        let source = row.displayName ?? row.username ?? "?"
-        return source.split(separator: " ").prefix(2)
-            .compactMap { $0.first.map(String.init) }
-            .joined().uppercased()
-    }
-}
-
-// MARK: - Story teaser card
-
-private struct StoryTeaserCard: View {
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "sparkles")
-                .font(.title2)
-                .foregroundStyle(AppTheme.cafeAccent.opacity(0.5))
-                .accessibilityHidden(true)
-            Text("More milestones\nawaiting you ✨")
-                .font(.caption2)
-                .contrastAware(AppTheme.cream, opacity: 0.35)
-                .multilineTextAlignment(.center)
-        }
-        .frame(width: 148, height: 160)
-        .background(AppTheme.cream.opacity(0.03))
-        .clipShape(.rect(cornerRadius: 16))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(AppTheme.cream.opacity(0.07), lineWidth: 1)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
-        }
-    }
-}
-
-// MARK: - Achievement badge (grid cell)
-
-struct AchievementBadge: View {
-    let achievement: Achievement
-    let isUnlocked:  Bool
-
-    var body: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(isUnlocked
-                          ? AppTheme.cafeAccent.opacity(0.15)
-                          : AppTheme.cream.opacity(0.04))
-                    .frame(width: 64, height: 64)
-                    .overlay {
-                        Circle().stroke(
-                            isUnlocked
-                                ? AppTheme.cafeAccent.opacity(0.55)
-                                : AppTheme.cream.opacity(0.08),
-                            lineWidth: isUnlocked ? 2 : 1
-                        )
-                    }
-                    .shadow(
-                        color: isUnlocked ? AppTheme.cafeAccent.opacity(0.35) : .clear,
-                        radius: 10
-                    )
-
-                if isUnlocked {
-                    Text(achievement.icon)
-                        .font(.title)
-                } else {
-                    Image(systemName: "lock.fill")
-                        .font(.title3)
-                        .contrastAware(AppTheme.cream, opacity: 0.18)
-                }
-            }
-
-            Text(achievement.title)
-                .font(.caption2)
-                .foregroundStyle(isUnlocked ? AppTheme.cream : AppTheme.cream.opacity(0.28))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .opacity(isUnlocked ? 1.0 : 0.65)
-        .animation(.easeInOut(duration: 0.3), value: isUnlocked)
-    }
-}
-
-// MARK: - Achievement detail sheet
-
-struct AchievementDetailSheet: View {
-    let achievement:  Achievement
-    let isUnlocked:   Bool
-    let unlockedDate: Date?
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        ZStack {
-            AppTheme.espresso.ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                Capsule()
-                    .fill(AppTheme.cream.opacity(0.2))
-                    .frame(width: 38, height: 4)
-                    .padding(.top, 14)
-                    .padding(.bottom, 32)
-
-                ZStack {
-                    Circle()
-                        .fill(isUnlocked
-                              ? AppTheme.cafeAccent.opacity(0.15)
-                              : AppTheme.cream.opacity(0.05))
-                        .frame(width: 108, height: 108)
-                        .overlay {
-                            Circle().stroke(
-                                isUnlocked
-                                    ? AppTheme.cafeAccent.opacity(0.55)
-                                    : AppTheme.cream.opacity(0.1),
-                                lineWidth: 2
-                            )
-                        }
-                        .shadow(
-                            color: isUnlocked ? AppTheme.cafeAccent.opacity(0.45) : .clear,
-                            radius: 22
-                        )
-
-                    if isUnlocked {
-                        Text(achievement.icon).font(.largeTitle)
-                    } else {
-                        Image(systemName: "lock.fill")
-                            .font(.largeTitle)
-                            .contrastAware(AppTheme.cream, opacity: 0.2)
-                    }
-                }
-
-                Spacer().frame(height: 24)
-
-                Text(achievement.title)
-                    .font(.title2).bold()
-                    .foregroundStyle(AppTheme.cream)
-
-                Spacer().frame(height: 8)
-
-                Text(isUnlocked ? achievement.flavourText : achievement.subtitle)
-                    .font(.subheadline)
-                    .contrastAware(AppTheme.cream, opacity: 0.55)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-
-                Spacer().frame(height: 20)
-
-                if let date = unlockedDate {
-                    Text("Unlocked \(date.formatted(.dateTime.day().month(.abbreviated).year()))")
-                        .font(.caption2).bold()
-                        .foregroundStyle(AppTheme.cafeAccent)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(AppTheme.cafeAccent.opacity(0.12))
-                        .clipShape(.rect(cornerRadius: 20))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 20)
-                                .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                        }
-                } else {
-                    Text("How to unlock: \(achievement.subtitle)")
-                        .font(.caption)
-                        .contrastAware(AppTheme.cream, opacity: 0.35)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
-
-                Spacer()
-            }
-        }
-    }
-}
-
-// MARK: - Section header (shared)
-
-/// Small reusable header for the labelled sections in this profile. Promoted
-/// to a fileprivate View so the extracted private subviews below
-/// (StatsRow, StorySection, AchievementsSection) can share it without
-/// reaching into ProfileHomeView's private methods.
-fileprivate struct SectionHeader: View {
-    let title: String
-    var trailing: String?
-
-    var body: some View {
-        HStack {
-            Text(title)
-                .font(.caption2).bold()
-                .tracking(2)
-                .contrastAware(AppTheme.cream, opacity: 0.35)
-                .accessibilityAddTraits(.isHeader)
-            Spacer()
-            if let t = trailing {
-                Text(t)
-                    .font(.caption2).bold()
-                    .foregroundStyle(AppTheme.cafeAccent)
-            }
-        }
-    }
-}
-
-// MARK: - StatsRow (extracted)
-
-/// 3-tile row at the top of the profile (Cafés / Stalls / Days). Equatable
-/// so SwiftUI's `.equatable()` modifier can skip body re-evaluation when
-/// the three integer inputs are unchanged from the previous render — which
-/// is the common case while surrounding state churns (friend strip,
-/// requests, story timeline, etc).
-fileprivate struct StatsRow: View, Equatable {
-    let cafes: Int
-    let stalls: Int
-    let days: Int
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ProfileStatCell(value: "\(cafes)",  label: "Cafés",  icon: "☕")
-            ProfileStatCell(value: "\(stalls)", label: "Stalls", icon: "🍜")
-            ProfileStatCell(value: "\(days)",   label: "Days",   icon: "📅")
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 20)
-        .padding(.bottom, 8)
-    }
-}
-
-// MARK: - StorySection (extracted)
-
-/// Horizontal "Your Story So Far" strip showing one card per distinct
-/// place the user has personally tagged. Sole dependency is the
-/// `[VisitedPlaceItem]` array — when unchanged, SwiftUI skips
-/// re-evaluation. Photo source is the user's own post photo for that
-/// place, so the section feels like a personal hunting log.
-fileprivate struct StorySection: View {
-    let places: [VisitedPlaceItem]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                SectionHeader(title: "YOUR STORY SO FAR")
-                Text("Places you've tagged on your hunt.")
-                    .font(.caption2)
-                    .contrastAware(AppTheme.cream, opacity: 0.35)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 16)
-
-            if places.isEmpty {
-                Text("Your story is just beginning —\ngo find your first spot! ☕")
-                    .font(.footnote)
-                    .contrastAware(AppTheme.cream, opacity: 0.4)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 24)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(places) { place in
-                            VisitedPlaceCard(item: place)
-                        }
-                        if places.count < 4 {
-                            StoryTeaserCard()
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 4)
-                }
-            }
-        }
-        .padding(.top, 24)
-    }
-}
-
-// MARK: - Visited place card (story strip)
-
-/// Card model for one place in "Your Story So Far". Identified by
-/// placeId so re-renders are stable across feed updates that don't
-/// change the underlying place set.
-struct VisitedPlaceItem: Identifiable, Equatable {
-    let id: String           // = placeId
-    let placeName: String
-    let mediaURL: String
-    let visitedAt: Date
-}
-
-/// One card in the story strip — photo of the place from the user's own
-/// post, place name overlay, visit-date caption. Tappable feel matches
-/// the friend-strip avatar style (scale-press) so the whole section
-/// feels like the same interaction surface.
-private struct VisitedPlaceCard: View {
-    let item: VisitedPlaceItem
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let url = URL(string: item.mediaURL) {
-                CachedAsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: Color.black.opacity(0.2)
-                    }
-                }
-                .frame(width: 148, height: 116)
-                .clipped()
-            } else {
-                Color.black.opacity(0.2)
-                    .frame(width: 148, height: 116)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.placeName)
-                    .font(.subheadline).bold()
-                    .foregroundStyle(AppTheme.cream)
-                    .lineLimit(1)
-                Text(item.visitedAt, format: .dateTime.day().month(.abbreviated))
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.cafeAccent.opacity(0.85))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-        }
-        .frame(width: 148, height: 164, alignment: .topLeading)
-        .background(AppTheme.cream.opacity(0.05))
-        .clipShape(.rect(cornerRadius: 16))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(AppTheme.cafeAccent.opacity(0.18), lineWidth: 1)
-        }
-    }
-}
-
-// MARK: - AchievementsSection (extracted)
-
-/// Achievement grid. Receives the full `UserStats` value + the account
-/// creation date so it can apply the same two-source unlock test the
-/// parent's `isUnlocked` uses:
-///   1. Stored unlock-timestamp on `users/{uid}.unlockedAchievements`.
-///   2. Fallback — the current stats meet the achievement's condition.
-/// The fallback is what keeps badges illuminated when the stored unlock
-/// never made it into Firestore (e.g. the previous version's broken
-/// strict-cast parse silently dropped the map). Both parent and section
-/// route through `achievementIsUnlocked(...)` so behavior stays
-/// identical to the pre-extraction code.
-fileprivate struct AchievementsSection: View {
-    let stats: UserStats
-    let accountCreatedAt: Date?
-    let unlockedCount: Int
-    let onTap: (Achievement) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SectionHeader(
-                title: "ACHIEVEMENTS",
-                trailing: "\(unlockedCount) / \(Achievement.definitions.count)"
-            )
-
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
-                spacing: 16
-            ) {
-                ForEach(Achievement.definitions) { achievement in
-                    Button { onTap(achievement) } label: {
-                        AchievementBadge(
-                            achievement: achievement,
-                            isUnlocked: achievementIsUnlocked(
-                                achievement,
-                                stats: stats,
-                                accountCreatedAt: accountCreatedAt
-                            )
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(16)
-        .padding(.top, 12)
-    }
-}
-
-/// Single source of truth for "is this achievement unlocked?". Shared by
-/// `ProfileHomeView.isUnlocked` and `AchievementsSection` so the two
-/// can't drift apart again the way they did during the perf-pass
-/// extraction.
-fileprivate func achievementIsUnlocked(
-    _ achievement: Achievement,
-    stats: UserStats,
-    accountCreatedAt: Date?
-) -> Bool {
-    if achievement.id == "anniversary" {
-        guard let created = accountCreatedAt else { return false }
-        return Date.now.timeIntervalSince(created) >= 365 * 24 * 3600
-    }
-    return stats.unlockedAchievements[achievement.id] != nil
-        || achievement.condition(stats)
-}

@@ -1,7 +1,7 @@
 import SwiftUI
 import MapKit
 import UIKit
-import FirebaseFirestore
+import FirebaseAuth
 
 // MARK: - Liquid-glass shine (specular highlight)
 
@@ -213,7 +213,7 @@ extension View {
 // MARK: - Filter type
 
 enum FilterType: String, CaseIterable {
-    case all, cafe, restaurant, stall
+    case all, cafe, restaurant, stall, saved
 
     var label: String {
         switch self {
@@ -221,6 +221,7 @@ enum FilterType: String, CaseIterable {
         case .cafe: "Cafés"
         case .restaurant: "Restaurants"
         case .stall: "Stalls"
+        case .saved: "Saved"
         }
     }
     var emoji: String {
@@ -229,6 +230,7 @@ enum FilterType: String, CaseIterable {
         case .cafe: "☕"
         case .restaurant: "🍽️"
         case .stall: "🍜"
+        case .saved: "🔖"
         }
     }
 }
@@ -253,12 +255,6 @@ struct MainMapView: View {
 
     @State private var friendPlacesService = FriendPlacesService()
     @State private var activeFriendPlace: FriendPlace?
-    /// Shuffled order of `filteredPlaces` used by the Tinder card stack.
-    /// Recomputed whenever the filter or the underlying places list
-    /// changes. The first element is guaranteed to differ from the first
-    /// element of the *list view* so the carousel + list don't show the
-    /// same top item.
-    @State private var carouselOrder: [FriendPlace] = []
     /// Set when the user taps a multi-place cluster pin (e.g. a mall). Drives
     /// a small picker sheet that lets them pick which of the bundled places
     /// to actually open.
@@ -329,11 +325,32 @@ struct MainMapView: View {
     /// The sheet list is now driven by FriendPlace (places that the user or
     /// their friends have tagged in a post). No more curated-cafe details.
     private var filteredPlaces: [FriendPlace] {
+        let base: [FriendPlace]
         switch filter {
-        case .all:        return friendPlacesService.places
-        case .cafe:       return friendPlacesService.places.filter { $0.type == .cafe }
-        case .restaurant: return friendPlacesService.places.filter { $0.type == .restaurant }
-        case .stall:      return friendPlacesService.places.filter { $0.type == .stall }
+        case .all:        base = friendPlacesService.places
+        case .cafe:       base = friendPlacesService.places.filter { $0.type == .cafe }
+        case .restaurant: base = friendPlacesService.places.filter { $0.type == .restaurant }
+        case .stall:      base = friendPlacesService.places.filter { $0.type == .stall }
+        case .saved:      base = friendPlacesService.places.filter { friendPlacesService.savedPlaceIds.contains($0.id) }
+        }
+        // List + deck rank by total visits (descending); ties broken by most
+        // recent activity so the order stays stable across snapshots.
+        return base.sorted {
+            if $0.globalVisitCount != $1.globalVisitCount {
+                return $0.globalVisitCount > $1.globalVisitCount
+            }
+            return ($0.mostRecent?.createdAt ?? .distantPast) > ($1.mostRecent?.createdAt ?? .distantPast)
+        }
+    }
+
+    /// Places awaiting a swipe: the current filter's places minus the ones the
+    /// user already saved (swiped right) or hid (swiped left). Already
+    /// visits-sorted via `friendPlacesService.places`. When this is empty the
+    /// carousel shows `SwipeDeckEmptyState`.
+    private var deckPlaces: [FriendPlace] {
+        filteredPlaces.filter {
+            !friendPlacesService.savedPlaceIds.contains($0.id) &&
+            !friendPlacesService.hiddenPlaceIds.contains($0.id)
         }
     }
 
@@ -373,11 +390,16 @@ struct MainMapView: View {
                 try? await Task.sleep(for: .seconds(30))
                 await circleService.load(force: true)
             }
-            // Reshuffle the carousel order whenever the filter or the
-            // visible places change. Runs on first appearance + every
-            // time the place-id set or the active filter changes.
-            .task(id: "\(filter.rawValue):\(filteredPlaces.map(\.id).joined())") {
-                refreshCarouselOrder()
+            // Live-sync the user's saved / "less likely" decisions onto THIS
+            // service instance (the map + card stack read from it, distinct
+            // from MainShellView's instance). Re-runs on sign-in/out so the
+            // deck state never leaks across accounts.
+            .task(id: authService.user?.uid) {
+                if let uid = authService.user?.uid, !uid.isEmpty {
+                    friendPlacesService.subscribeToPlacePrefs(uid: uid)
+                } else {
+                    friendPlacesService.unsubscribePlacePrefs()
+                }
             }
             .sheet(item: $activeFriendPlace) { place in
                 PlaceDetailSheet(place: place) {
@@ -721,9 +743,7 @@ struct MainMapView: View {
         if filteredPlaces.isEmpty {
             VStack {
                 Spacer(minLength: 32)
-                Text(filter == .all
-                     ? "No places shared yet — tag a place when you post."
-                     : "No \(filter.label.lowercased()) shared yet.")
+                Text(emptyListMessage)
                     .font(.system(size: 13))
                     .multilineTextAlignment(.center)
                     .foregroundColor(.secondary)
@@ -732,22 +752,30 @@ struct MainMapView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            // Card carousel up top — shrinks + fades out as the user
-            // scrolls the list below. Uses `carouselOrder` (shuffled)
-            // so the top card never matches the top of the list.
-            FriendPlaceCarousel(places: carouselOrder) { place in
-                selectFriendPlace(place)
-            }
-            .frame(height: dynamicCarouselHeight)
-            .opacity(carouselOpacity)
-            .clipped()
-            .padding(.bottom, 6)
-            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: expansionProgress)
-
-            Divider()
-                .background(Color.primary.opacity(0.10))
-                .padding(.horizontal, 14)
+            // Tinder swipe deck up top — shrinks + fades out as the user
+            // scrolls the list below. Hidden on the Saved tab, which is a
+            // list-only view of places the user already swiped right on.
+            if filter != .saved {
+                FriendPlaceCarousel(places: deckPlaces, onSwipe: { place, direction in
+                    guard let uid = authService.user?.uid else { return }
+                    switch direction {
+                    case .save: friendPlacesService.savePlace(place.id, uid: uid)
+                    case .skip: friendPlacesService.hidePlace(place.id, uid: uid)
+                    }
+                }) { place in
+                    selectFriendPlace(place)
+                }
+                .frame(height: dynamicCarouselHeight)
                 .opacity(carouselOpacity)
+                .clipped()
+                .padding(.bottom, 6)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: expansionProgress)
+
+                Divider()
+                    .background(Color.primary.opacity(0.10))
+                    .padding(.horizontal, 14)
+                    .opacity(carouselOpacity)
+            }
 
             ScrollView {
                 LazyVStack(spacing: 6) {
@@ -791,23 +819,6 @@ struct MainMapView: View {
                 }
             }
         }
-    }
-
-    /// Re-shuffles the carousel order so the top card is randomised AND
-    /// distinct from the top of the list. Called via `.task(id:)` on the
-    /// view body whenever the filter or place list changes.
-    private func refreshCarouselOrder() {
-        let source = filteredPlaces
-        guard source.count > 1 else {
-            carouselOrder = source
-            return
-        }
-        var shuffled = source.shuffled()
-        // If shuffle happened to put the list-top first, swap with index 1.
-        if shuffled.first?.id == source.first?.id {
-            shuffled.swapAt(0, 1)
-        }
-        carouselOrder = shuffled
     }
 
     /// Compact list row used under the Tinder carousel — same places, but
@@ -900,21 +911,31 @@ struct MainMapView: View {
         return label
     }
 
-    private var filterCounts: (all: Int, cafe: Int, restaurant: Int, stall: Int) {
+    /// Message for the empty list / empty Saved tab.
+    private var emptyListMessage: String {
+        switch filter {
+        case .all:   return "No places shared yet — tag a place when you post."
+        case .saved: return "Swipe right on a place to save it — your saves show up here."
+        default:     return "No \(filter.label.lowercased()) shared yet."
+        }
+    }
+
+    private var filterCounts: (all: Int, cafe: Int, restaurant: Int, stall: Int, saved: Int) {
         let p = friendPlacesService.places
         return (
             all:        p.count,
             cafe:       p.filter { $0.type == .cafe }.count,
             restaurant: p.filter { $0.type == .restaurant }.count,
-            stall:      p.filter { $0.type == .stall }.count
+            stall:      p.filter { $0.type == .stall }.count,
+            saved:      p.filter { friendPlacesService.savedPlaceIds.contains($0.id) }.count
         )
     }
 
     // MARK: - Navigation helpers
 
     /// Reaction to `pendingPlaceJumpId` being set externally. Looks up the
-    /// place in the local cache; falls back to a Firestore fetch if it isn't
-    /// yet hydrated (e.g. user tapped a pill before the feed listener fired).
+    /// place in the local cache; on a miss asks `FriendPlacesService` to fetch
+    /// and synthesize it (e.g. user tapped a pill before the feed listener fired).
     private func consumePlaceJump(placeId: String) async {
         defer { pendingPlaceJumpId = nil }
 
@@ -928,117 +949,18 @@ struct MainMapView: View {
             return
         }
 
-        // 2. Cache miss — fetch the place doc directly + synthesize a
-        //    one-post FriendPlace so the sheet still opens.
-        let db = Firestore.firestore()
-        do {
-            let doc = try await db.collection("places")
-                .document(placeId)
-                .getDocument(as: Place.self)
-            let friendPosts = socialService.feedPosts.filter { $0.distinctPlaceIds.contains(placeId) }
-            // Trending-place / new-user path: the friend graph has no posts
-            // at this place, so the card stack would render empty. Fall back
-            // to public posts (clear AND blurred) so the sheet has content.
-            // PostStackCard renders non-discoverable ones with a blur based
-            // on `postsAreFallback` below.
-            let postsAtPlace: [FriendPost]
-            let postsAreFallback: Bool
-            if friendPosts.isEmpty {
-                postsAtPlace = await fetchDiscoverablePostsAtPlace(placeId, db: db)
-                postsAreFallback = true
-            } else {
-                postsAtPlace = friendPosts.sorted { $0.createdAt > $1.createdAt }
-                postsAreFallback = false
-            }
-            let synthesized = FriendPlace(
-                id: placeId,
-                name: doc.name,
-                type: doc.type,
-                lat: doc.lat,
-                lng: doc.lng,
-                posts: postsAtPlace,
-                // Pass through the global counters so the detail sheet shows
-                // "N visits" instead of "0 visits by 0 friends" when the user
-                // landed here from a non-friend surface (e.g. Trending).
-                globalVisitCount: doc.globalVisitCount,
-                globalEngagementCount: doc.globalEngagementCount,
-                address: doc.address,
-                postsAreFallback: postsAreFallback
-            )
-            targetCoordinate = CLLocationCoordinate2D(
-                latitude: doc.lat - 0.00375,
-                longitude: doc.lng
-            )
-            activeFriendPlace = synthesized
-        } catch {
-            // Place was deleted or unreadable — silently no-op so the user
-            // isn't stranded with a confusing error after a UI tap.
-        }
-    }
-
-    /// Pulls public posts at a place when the friend feed has none. Used by
-    /// the trending → place-detail flow so the sheet never renders an empty
-    /// card stack. Includes BOTH discoverable=true (rendered clear) AND
-    /// discoverable=false (rendered blurred via PostStackCard's blur
-    /// modifier). Posts authored by users who toggled "Help your circle
-    /// discover" OFF are dropped entirely — we respect that opt-out by
-    /// hiding the card, not blurring it. The `containsFaces == false` and
-    /// `restricted == false` filters are required to match the Firestore rule
-    /// (a restricted/audience-limited post must never surface in this public
-    /// place-detail fallback).
-    private func fetchDiscoverablePostsAtPlace(_ placeId: String,
-                                               db: Firestore) async -> [FriendPost] {
-        do {
-            let snap = try await db.collection("posts")
-                .whereField("placeId", isEqualTo: placeId)
-                .whereField("restricted", isEqualTo: false)
-                .whereField("containsFaces", isEqualTo: false)
-                .order(by: "createdAt", descending: true)
-                .limit(to: 20)
-                .getDocuments()
-            let posts = snap.documents.compactMap(FriendPost.init(document:))
-            let optedOut = await fetchOptedOutAuthorSet(
-                authorIds: Array(Set(posts.map(\.authorId))),
-                db: db
-            )
-            return posts.filter { !optedOut.contains($0.authorId) }
-        } catch {
-            #if DEBUG
-            print("[MainMapView] place-posts fallback fetch failed: \(error.localizedDescription)")
-            #endif
-            return []
-        }
-    }
-
-    /// Bulk-fetches `users/{uid}.optedOutOfDiscovery` for the given authors
-    /// and returns the set of UIDs that have the toggle OFF (= opted out).
-    /// Used to hide opted-out authors' cards in the place-detail panel —
-    /// mirrors how the trending Cloud Function drops them. Splits into
-    /// chunks of 30 because that's Firestore's `in:` query cap.
-    private func fetchOptedOutAuthorSet(authorIds: [String],
-                                        db: Firestore) async -> Set<String> {
-        guard !authorIds.isEmpty else { return [] }
-        var result: Set<String> = []
-        let chunks = stride(from: 0, to: authorIds.count, by: 30).map {
-            Array(authorIds[$0..<min($0 + 30, authorIds.count)])
-        }
-        for chunk in chunks {
-            do {
-                let snap = try await db.collection("users")
-                    .whereField(FieldPath.documentID(), in: chunk)
-                    .getDocuments()
-                for doc in snap.documents {
-                    if (doc.data()["optedOutOfDiscovery"] as? Bool) == true {
-                        result.insert(doc.documentID)
-                    }
-                }
-            } catch {
-                #if DEBUG
-                print("[MainMapView] opt-out batch read failed: \(error.localizedDescription)")
-                #endif
-            }
-        }
-        return result
+        // 2. Cache miss — ask the service to fetch the place doc + synthesize a
+        //    FriendPlace (friend posts, else a public-post fallback) so the
+        //    sheet still opens. Returns nil if the place is gone/unreadable.
+        guard let synthesized = await friendPlacesService.placeForJump(
+            placeId: placeId,
+            friendFeedPosts: socialService.feedPosts
+        ) else { return }
+        targetCoordinate = CLLocationCoordinate2D(
+            latitude: synthesized.lat - 0.00375,
+            longitude: synthesized.lng
+        )
+        activeFriendPlace = synthesized
     }
 
     private func selectFriendPlace(_ place: FriendPlace) {
@@ -1323,7 +1245,7 @@ struct ClusterPickerSheet: View {
 
 struct FilterTabBar: View {
     @Binding var active: FilterType
-    let counts: (all: Int, cafe: Int, restaurant: Int, stall: Int)
+    let counts: (all: Int, cafe: Int, restaurant: Int, stall: Int, saved: Int)
     let onChange: (FilterType) -> Void
 
     private func count(for type: FilterType) -> Int {
@@ -1332,6 +1254,7 @@ struct FilterTabBar: View {
         case .cafe:       return counts.cafe
         case .restaurant: return counts.restaurant
         case .stall:      return counts.stall
+        case .saved:      return counts.saved
         }
     }
 
@@ -1340,6 +1263,7 @@ struct FilterTabBar: View {
         case .cafe:       return AppTheme.cafeAccent
         case .stall:      return AppTheme.stallAccent
         case .restaurant: return AppTheme.accentAction
+        case .saved:      return AppTheme.accentAction
         case .all:        return nil
         }
     }

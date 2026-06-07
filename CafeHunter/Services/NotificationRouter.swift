@@ -5,6 +5,9 @@ enum NotificationDeepLink: Equatable {
     case thread(otherUid: String)
     case post(postId: String)
     case friendRequests
+    /// Open the friends feed (the Hero page). Set by a widget tap
+    /// (`wandery://feed`) — see `CafeHunterApp.onOpenURL`.
+    case feed
 }
 
 /// Bridges notification taps (handled in the non-SwiftUI `NotificationService`

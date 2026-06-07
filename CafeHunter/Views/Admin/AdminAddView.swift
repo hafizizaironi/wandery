@@ -309,7 +309,7 @@ struct AdminAddView: View {
     private func photoThumb(url: String, onRemove: @escaping () -> Void) -> some View {
         ZStack(alignment: .topTrailing) {
             if let u = URL(string: url) {
-                AsyncImage(url: u) { phase in
+                CachedAsyncImage(url: u) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
                     default: AppTheme.espresso

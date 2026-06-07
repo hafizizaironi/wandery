@@ -22,8 +22,11 @@ final class CafeHunterAppCheckProviderFactory: NSObject, AppCheckProviderFactory
         #if DEBUG
         return AppCheckDebugProvider(app: app)
         #else
-        // App Attest is iOS 14+; CafeHunter targets 26.4 so the
-        // availability check is satisfied without a fallback.
+        // App Attest is iOS 14+; CafeHunter's deployment target is iOS 18.0
+        // so the availability check is satisfied without a fallback.
+        // NOTE: App Attest is unavailable on the Simulator and on
+        // "Designed for iPad"/Apple-Silicon-Mac runs — Phone Auth on those
+        // environments must rely on a registered debug token instead.
         return AppAttestProvider(app: app)
         #endif
     }

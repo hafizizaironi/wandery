@@ -33,8 +33,11 @@ final class AuthService {
     @ObservationIgnored nonisolated(unsafe) private var handle: AuthStateDidChangeListenerHandle?
 
     init() {
-        // `appVerificationDisabledForTesting` is set up in `CafeHunterApp.init`
-        // so the flag lands before any other code touches Auth.
+        // Firebase is configured in `AppDelegate.didFinishLaunchingWithOptions`
+        // (not App.init) so APNs token forwarding is deterministic; phone-auth
+        // verification is real (`appVerificationDisabledForTesting` is
+        // deliberately NOT set — see AppDelegate). By the time this listener
+        // is attached, `FirebaseApp.configure()` has already run.
         handle = Auth.auth().addStateDidChangeListener { [weak self] _, user in
             Task { @MainActor [weak self] in
                 self?.user = user
@@ -57,11 +60,32 @@ final class AuthService {
     // MARK: - Google Sign-In
 
     func signInWithGoogle() async throws {
-        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let rootVC = windowScene.windows.first?.rootViewController else {
+        // Prefer the foreground-active scene's key window. `connectedScenes
+        // .first` / `windows.first` are unordered and can hand back a
+        // background or non-key window, which makes the consent sheet
+        // present against the wrong anchor (and can leave a half-torn-down
+        // presentation that trips up the *next* provider, e.g. Apple).
+        guard let windowScene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive })
+                ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene),
+              let rootVC = windowScene.keyWindow?.rootViewController
+                        ?? windowScene.windows.first?.rootViewController else {
             throw AuthServiceError.noViewController
         }
-        let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: rootVC)
+        let result: GIDSignInResult
+        do {
+            result = try await GIDSignIn.sharedInstance.signIn(withPresenting: rootVC)
+        } catch let error as NSError
+            where error.domain == kGIDSignInErrorDomain && error.code == -5 {
+            // -5 == kGIDSignInErrorCodeCanceled: the user backed out of the
+            // Google consent sheet. Surface a typed cancellation so the
+            // caller no-ops silently (mirrors Apple's .canceled path)
+            // instead of flashing a scary error — critically, this also
+            // stops a stale errorMessage from lingering and making the
+            // *next* provider attempt look like it failed.
+            throw AuthServiceError.cancelled
+        }
         guard let idToken = result.user.idToken?.tokenString else {
             throw AuthServiceError.missingToken
         }
@@ -277,14 +301,18 @@ enum AuthServiceError: LocalizedError {
     case missingToken
     case notSignedIn
     case recentLoginRequired
+    /// User dismissed the provider's sheet. Callers should treat this as a
+    /// silent no-op, not an error to surface.
+    case cancelled
 
     var errorDescription: String? {
         switch self {
-        case .noViewController: return "Unable to present sign-in screen."
-        case .missingToken: return "Google sign-in failed. Please try again."
-        case .notSignedIn: return "No user is signed in."
+        case .noViewController: return "Couldn't pull up the sign-in screen. One more try?"
+        case .missingToken: return "Google sign-in didn't go through. Give it another shot ☕"
+        case .notSignedIn: return "Looks like you're not signed in."
         case .recentLoginRequired:
-            return "For security, please sign out and sign back in before deleting your account."
+            return "Quick security check — sign out and back in, then you can delete your account."
+        case .cancelled: return "No worries, cancelled that one."
         }
     }
 }

@@ -21,15 +21,32 @@ enum MessageCrypto {
 
     private static let info = Data("wandery-msg-v1".utf8)
 
+    // HPKE suite used to wrap the per-conversation content key (CEK) to each
+    // participant's X25519 identity public key. Reuses the identity keys — no
+    // new key type. iOS 17+ (deploy target is 18.0).
+    private static let hpkeSuite = HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly
+    private static let cekInfo = Data("wandery-cek-v1".utf8)
+
     private static func account(_ uid: String) -> String { "identityPrivateKey.\(uid)" }
 
     // MARK: - Identity
 
     /// Returns the device's identity private key for `uid`, generating and
     /// persisting one in the Keychain on first use.
+    ///
+    /// Uses `Keychain.read` (not `load`) so a transient read failure — e.g. the
+    /// device is locked, or iCloud-Keychain sync hasn't propagated yet — THROWS
+    /// instead of being mistaken for "no key". That distinction matters: silently
+    /// regenerating here would publish a new public key and orphan every existing
+    /// thread's history ("🔒 can't decrypt"). We only ever generate when the
+    /// item is genuinely absent (`errSecItemNotFound` → `read` returns nil).
     static func loadOrCreateIdentityKey(uid: String) throws -> Curve25519.KeyAgreement.PrivateKey {
-        if let data = Keychain.load(account: account(uid)),
-           let key = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data) {
+        if let data = try Keychain.read(account: account(uid)) {
+            let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data)
+            // Migrate a legacy local-only key to the iCloud-syncing copy so it
+            // survives reinstall / new device (safe: adds the synced copy before
+            // deleting the local one — no window where the key is missing).
+            Keychain.ensureSynced(data, account: account(uid))
             return key
         }
         let key = Curve25519.KeyAgreement.PrivateKey()
@@ -84,6 +101,43 @@ enum MessageCrypto {
             sharedInfo: info,
             outputByteCount: 32
         )
+    }
+
+    // MARK: - Content key (CEK) — encv 2
+
+    /// A fresh random 256-bit content key for a conversation. Stays stable for
+    /// the life of the thread; messages are sealed with it, so a participant
+    /// rotating identity keys no longer changes the message key — history
+    /// survives as long as the CEK can be re-wrapped to their new identity key.
+    static func newContentKey() -> SymmetricKey { SymmetricKey(size: .bits256) }
+
+    /// HPKE-wrapped CEK for one recipient. `ek` is the encapsulated key, `ct`
+    /// the sealed CEK — both base64. Stored on the conversation doc under
+    /// `cek.{uid}` alongside `forPub` (the identity key it was wrapped to).
+    struct WrappedKey: Equatable { let ek: String; let ct: String }
+
+    /// Seal `cek` to a recipient's identity public key (base64 X25519).
+    static func wrap(_ cek: SymmetricKey, toPublicKeyBase64 pub: String) throws -> WrappedKey {
+        guard let pubData = Data(base64Encoded: pub),
+              let recipientPub = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: pubData) else {
+            throw CryptoError.badPublicKey
+        }
+        let cekData = cek.withUnsafeBytes { Data($0) }
+        var sender = try HPKE.Sender(recipientKey: recipientPub, ciphersuite: hpkeSuite, info: cekInfo)
+        let ct = try sender.seal(cekData)
+        return WrappedKey(ek: sender.encapsulatedKey.base64EncodedString(),
+                          ct: ct.base64EncodedString())
+    }
+
+    /// Recover the CEK from my wrapped entry using my identity private key.
+    static func unwrap(ek: String, ct: String,
+                       myPrivateKey: Curve25519.KeyAgreement.PrivateKey) throws -> SymmetricKey {
+        guard let ekData = Data(base64Encoded: ek), let ctData = Data(base64Encoded: ct) else {
+            throw CryptoError.badEnvelope
+        }
+        var recipient = try HPKE.Recipient(privateKey: myPrivateKey, ciphersuite: hpkeSuite,
+                                           info: cekInfo, encapsulatedKey: ekData)
+        return SymmetricKey(data: try recipient.open(ctData))
     }
 
     // MARK: - Message body

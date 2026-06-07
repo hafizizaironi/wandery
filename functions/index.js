@@ -223,6 +223,35 @@ exports.onPostCreatePlaceVisit = functions.firestore
       return;
     }
     const uid = d.authorId;
+    const db = admin.firestore();
+    const userRef = db.collection("users").doc(uid);
+
+    // Per-post achievement counters — independent of place tagging, so they
+    // run BEFORE the no-place early-return below (a photo with no place tag
+    // still counts toward "photos shared"):
+    //   photosShared  → Aesthetic Eye (count image media items in this post)
+    //   nightCheckIns → Night Owl (post stamped with a device-local hour ≥ 21)
+    // Plain increments, mirroring reactionsReceived — an occasional duplicate
+    // trigger delivery just unlocks a hair early, which is harmless here.
+    const photoCount = Array.isArray(d.media)
+      ? d.media.filter((m) => m && m.type === "image").length
+      : (d.mediaType === "image" ? 1 : 0);
+    const isNight = typeof d.localHour === "number" && d.localHour >= 21;
+    const statUpdates = {};
+    if (photoCount > 0) {
+      statUpdates.photosShared = admin.firestore.FieldValue.increment(photoCount);
+    }
+    if (isNight) {
+      statUpdates.nightCheckIns = admin.firestore.FieldValue.increment(1);
+    }
+    if (Object.keys(statUpdates).length > 0) {
+      await userRef.set(statUpdates, { merge: true }).catch((err) => {
+        logger.warn("[VISIT] stat counter update failed", {
+          postId, uid, message: err && err.message,
+        });
+      });
+    }
+
     // A post can tag several photos at different places; open/refresh a visit
     // for EACH distinct place. Legacy single-place posts fall back to d.placeId.
     const placeIds = Array.isArray(d.media)
@@ -232,8 +261,6 @@ exports.onPostCreatePlaceVisit = functions.firestore
       logger.warn("[VISIT] aborted — no placeId(s)", { postId });
       return;
     }
-    const db = admin.firestore();
-    const userRef = db.collection("users").doc(uid);
 
     for (const placeId of placeIds) {
       const placeRef = db.collection("places").doc(placeId);
@@ -301,15 +328,15 @@ exports.onPostCreatePlaceVisit = functions.firestore
             const updates = {
               uniquePlacesVisited: admin.firestore.FieldValue.increment(1),
             };
-            // Type-specific counters that power the profile page's
-            // "Cafés N / Stalls N" stats row and the Coffee Crawler /
-            // Stall Stalker achievements. Restaurants don't have a
-            // dedicated tile in the UI — they only roll up into
-            // uniquePlacesVisited above.
+            // Type-specific counters that power the profile stats, the
+            // Coffee Crawler / Stall Stalker achievements, and the scanned
+            // friend-code card's hunt chips.
             if (place.type === "cafe") {
               updates.cafesVisited = admin.firestore.FieldValue.increment(1);
             } else if (place.type === "stall") {
               updates.stallsVisited = admin.firestore.FieldValue.increment(1);
+            } else if (place.type === "restaurant") {
+              updates.restaurantsVisited = admin.firestore.FieldValue.increment(1);
             }
             if (typeof place.lat === "number" && typeof place.lng === "number") {
               const area = geofire.geohashForLocation([place.lat, place.lng], 5);
@@ -501,24 +528,41 @@ exports.onNewMessage = functions.firestore
       body = "New message";
     }
 
-    // The extension needs the ciphertext + the sender's public key to derive
-    // the conversation key. Ciphertext is already encrypted at rest, so this
-    // leaks nothing the server didn't already hold. Only sent for encrypted
-    // text messages (encv >= 1); reactions/replies stay generic.
+    // The extension decrypts on-device. We send the ciphertext plus the key
+    // material it needs — all already-encrypted, so this leaks nothing the
+    // server didn't already hold (the server can't read the message either):
+    //   • encv >= 2 (current): the recipient's HPKE-wrapped content key
+    //     (`cek.{recipient}` from the conversation doc) — the extension unwraps
+    //     it with the recipient's identity private key, then opens the body.
+    //   • encv == 1 (legacy): the sender's public key for the old static-ECDH
+    //     derivation.
+    // Reactions/replies stay generic.
     const extra = {
       type: "message",
       convId: context.params.convId,
       senderId,
     };
-    const encrypted = (m.encv || 0) >= 1 && m.kind === "text" &&
-      typeof m.text === "string" && senderPublicKey;
-    if (encrypted) {
-      extra.encText = m.text;
-      extra.encv = m.encv;
-      extra.senderPublicKey = senderPublicKey;
+    const encv = m.encv || 0;
+    let mutable = false;
+    if (m.kind === "text" && typeof m.text === "string") {
+      if (encv >= 2) {
+        const wrapped = conv.cek && conv.cek[recipient];
+        if (wrapped && wrapped.ek && wrapped.ct) {
+          extra.encText = m.text;
+          extra.encv = encv;
+          extra.cekEk = wrapped.ek;
+          extra.cekCt = wrapped.ct;
+          mutable = true;
+        }
+      } else if (encv === 1 && senderPublicKey) {
+        extra.encText = m.text;
+        extra.encv = encv;
+        extra.senderPublicKey = senderPublicKey;
+        mutable = true;
+      }
     }
 
-    await sendToUser(recipient, senderName, body, extra, { mutableContent: encrypted });
+    await sendToUser(recipient, senderName, body, extra, { mutableContent: mutable });
   });
 
 exports.onReaction = functions.firestore
@@ -699,11 +743,13 @@ exports.backfillMyStats = onCall(
     const uniquePlacesVisited = placeDocs.filter((p) => p.exists).length;
     let cafesVisited = 0;
     let stallsVisited = 0;
+    let restaurantsVisited = 0;
     for (const p of placeDocs) {
       if (!p.exists) continue;
       const t = (p.data() || {}).type;
       if (t === "cafe") cafesVisited += 1;
       else if (t === "stall") stallsVisited += 1;
+      else if (t === "restaurant") restaurantsVisited += 1;
     }
 
     // `topPlaceVisitCount` still comes from the visits subcollection — it
@@ -762,6 +808,7 @@ exports.backfillMyStats = onCall(
       reactionsReceived,
       cafesVisited,
       stallsVisited,
+      restaurantsVisited,
     }, { merge: true });
 
     logger.info("backfillMyStats committed", {
@@ -774,6 +821,7 @@ exports.backfillMyStats = onCall(
       reactionsReceived,
       cafesVisited,
       stallsVisited,
+      restaurantsVisited,
     });
     return {
       pioneerCount,
@@ -783,6 +831,7 @@ exports.backfillMyStats = onCall(
       reactionsReceived,
       cafesVisited,
       stallsVisited,
+      restaurantsVisited,
     };
   },
 );
@@ -1671,5 +1720,184 @@ exports.discoverFeed = onCall(
       partial,
     });
     return await writeCache(payload);
+  },
+);
+
+// ─── Wandery Code — friend-code identity ─────────────────────────────────
+// A user's "Wandery Code" carries a permanent, opaque 44-bit account id — the
+// number the circular code encodes. These callables mint that id, mark a short
+// "presenting" window while the owner is showing their code, and resolve a
+// scanned id into a connection (instant mutual add in person, else a friend
+// request to approve). Mirrors acceptFriendRequest (mutual-add transaction +
+// FRIENDS_MAX cap) and findOrCreatePlace (collision-safe create).
+
+const ACCOUNT_ID_MAX = 2 ** 44; // ids live in [1, 2^44) — fits the codec + a JS Number
+const PRESENTING_WINDOW_MS = 60 * 1000; // ≤60s "showing my code" window
+const MINT_ATTEMPTS = 5;
+
+function randomAccountId() {
+  return Math.floor(Math.random() * (ACCOUNT_ID_MAX - 1)) + 1; // [1, 2^44)
+}
+
+// Idempotent: returns the caller's permanent account id, minting one on first
+// call. The id and its reverse lookup are server-owned (clients can never read
+// `userCodes`/`accountIds` directly), so an id can't be forged or claimed.
+exports.ensureWanderyCode = onCall(
+  { timeoutSeconds: 15, memory: "256MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+
+    const db = admin.firestore();
+    const codeRef = db.collection("userCodes").doc(uid);
+
+    const existing = await codeRef.get();
+    if (existing.exists && typeof existing.data().accountId === "number") {
+      return { accountId: existing.data().accountId };
+    }
+
+    // Collisions in a ~17.6T space are astronomically rare; a few attempts is
+    // ample (the findOrCreatePlace race-guard idea applied to a random id).
+    for (let attempt = 0; attempt < MINT_ATTEMPTS; attempt++) {
+      const candidate = randomAccountId();
+      const idRef = db.collection("accountIds").doc(String(candidate));
+      try {
+        const minted = await db.runTransaction(async (tx) => {
+          const codeSnap = await tx.get(codeRef);
+          if (codeSnap.exists && typeof codeSnap.data().accountId === "number") {
+            return codeSnap.data().accountId; // concurrent call already minted
+          }
+          const idSnap = await tx.get(idRef);
+          if (idSnap.exists) throw new Error("collision");
+          const now = admin.firestore.FieldValue.serverTimestamp();
+          tx.set(idRef, { uid, createdAt: now });
+          tx.set(codeRef, { accountId: candidate, createdAt: now }, { merge: true });
+          return candidate;
+        });
+        return { accountId: minted };
+      } catch (err) {
+        if (err && err.message === "collision") continue;
+        throw err;
+      }
+    }
+    throw new HttpsError("internal", "Couldn't mint a code, try again.");
+  },
+);
+
+// Mark the caller as actively presenting their code (≤60s). Scans during this
+// window add instantly; outside it they become a request to approve.
+exports.beginPresenting = onCall(
+  { timeoutSeconds: 10, memory: "128MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const until = admin.firestore.Timestamp.fromMillis(Date.now() + PRESENTING_WINDOW_MS);
+    await admin.firestore().collection("userCodes").doc(uid)
+      .set({ presentingUntil: until }, { merge: true });
+    return { ok: true, until: until.toMillis() };
+  },
+);
+
+// Resolve a scanned account id into a connection.
+//   • own code / blocked          → error
+//   • already friends             → { status: "alreadyFriends" }
+//   • target already requested me → accept it → { status: "added" }
+//   • target is presenting        → instant mutual add → { status: "added" }
+//   • otherwise                   → create a friend request → { status: "requested" }
+exports.resolveWanderyCode = onCall(
+  { timeoutSeconds: 15, memory: "256MiB" },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const accountId = request.data?.accountId;
+    if (typeof accountId !== "number" || !Number.isFinite(accountId)) {
+      throw new HttpsError("invalid-argument", "Missing accountId.");
+    }
+
+    const db = admin.firestore();
+    const idSnap = await db.collection("accountIds").doc(String(accountId)).get();
+    const targetUid = idSnap.exists ? idSnap.data().uid : null;
+    if (!targetUid) throw new HttpsError("not-found", "That code isn't active.");
+    if (targetUid === uid) {
+      throw new HttpsError("invalid-argument", "That's your own code 🙂");
+    }
+
+    const meRef = db.collection("users").doc(uid);
+    const targetRef = db.collection("users").doc(targetUid);
+
+    // Public profile of who was scanned — returned so the client can show a
+    // proper card. Only world-readable fields (cafés / stalls / restaurants
+    // hunt counts + name + photo).
+    const targetData = (await targetRef.get()).data() || {};
+    const profile = {
+      username: targetData.username || null,
+      displayName: targetData.displayName || null,
+      photoURL: targetData.photoURL || null,
+      cafesVisited: targetData.cafesVisited || 0,
+      stallsVisited: targetData.stallsVisited || 0,
+      restaurantsVisited: targetData.restaurantsVisited || 0,
+    };
+
+    // Blocks (either direction) → refuse.
+    const [iBlockedThem, theyBlockedMe] = await Promise.all([
+      meRef.collection("blockedUsers").doc(targetUid).get(),
+      targetRef.collection("blockedUsers").doc(uid).get(),
+    ]);
+    if (iBlockedThem.exists || theyBlockedMe.exists) {
+      throw new HttpsError("permission-denied", "Can't add this person.");
+    }
+
+    // Already friends?
+    const friendDoc = await meRef.collection("friends").doc(targetUid).get();
+    if (friendDoc.exists) return { status: "alreadyFriends", profile };
+
+    // Did they already request me? (mutual intent → instant friends)
+    const inbound = await db.collection("friendRequests")
+      .where("toUid", "==", uid).where("status", "==", "pending").get();
+    const theirReq = inbound.docs.find((d) => d.data().fromUid === targetUid);
+
+    const presentingUntil = (await db.collection("userCodes").doc(targetUid).get())
+      .data()?.presentingUntil;
+    const isPresenting = !!presentingUntil && presentingUntil.toMillis() > Date.now();
+
+    if (theirReq || isPresenting) {
+      // Instant mutual add — same atomic write + cap check as acceptFriendRequest.
+      await db.runTransaction(async (tx) => {
+        const [mySize, otherSize] = await Promise.all([
+          tx.get(meRef.collection("friends")).then((s) => s.size),
+          tx.get(targetRef.collection("friends")).then((s) => s.size),
+        ]);
+        if (mySize >= FRIENDS_MAX) {
+          throw new HttpsError("resource-exhausted",
+            `You're at the ${FRIENDS_MAX}-friend limit.`);
+        }
+        if (otherSize >= FRIENDS_MAX) {
+          throw new HttpsError("resource-exhausted",
+            `They're at the ${FRIENDS_MAX}-friend limit.`);
+        }
+        const now = admin.firestore.FieldValue.serverTimestamp();
+        tx.set(meRef.collection("friends").doc(targetUid), { createdAt: now });
+        tx.set(targetRef.collection("friends").doc(uid), { createdAt: now });
+        if (theirReq) tx.update(theirReq.ref, { status: "accepted" });
+      });
+      return { status: "added", profile };
+    }
+
+    // Not in person → friend request to approve. Dedup against my own pendings.
+    const myOutbound = await db.collection("friendRequests")
+      .where("fromUid", "==", uid).where("status", "==", "pending").get();
+    if (myOutbound.docs.some((d) => d.data().toUid === targetUid)) {
+      return { status: "requested", profile };
+    }
+
+    const myProfile = (await meRef.get()).data() || {};
+    await db.collection("friendRequests").add({
+      fromUid: uid,
+      toUid: targetUid,
+      fromUsername: myProfile.username || "",
+      status: "pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return { status: "requested" };
   },
 );

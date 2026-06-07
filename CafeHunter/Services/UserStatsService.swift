@@ -8,10 +8,8 @@ struct UserStats: Equatable {
     var cafesVisited:        Int = 0
     var stallsVisited:       Int = 0
     var photosShared:        Int = 0
-    var placesAdded:         Int = 0
     var friendsHunted:       Int = 0
     var nightCheckIns:       Int = 0
-    var favoritePlaceVisits: Int = 0
 
     // Phase 5 — discovery achievement counters. All bumped server-side.
     /// Number of brand-new places this user was the first to create
@@ -62,10 +60,8 @@ final class UserStatsService {
                     s.cafesVisited        = data["cafesVisited"]        as? Int ?? 0
                     s.stallsVisited       = data["stallsVisited"]       as? Int ?? 0
                     s.photosShared        = data["photosShared"]        as? Int ?? 0
-                    s.placesAdded         = data["placesAdded"]         as? Int ?? 0
                     s.friendsHunted       = data["friendsHunted"]       as? Int ?? 0
                     s.nightCheckIns       = data["nightCheckIns"]       as? Int ?? 0
-                    s.favoritePlaceVisits = data["favoritePlaceVisits"]  as? Int ?? 0
                     s.pioneerCount        = data["pioneerCount"]        as? Int ?? 0
                     s.uniquePlacesVisited = data["uniquePlacesVisited"] as? Int ?? 0
                     s.topAreaPlaceCount   = data["topAreaPlaceCount"]   as? Int ?? 0
@@ -131,8 +127,6 @@ final class UserStatsService {
     func recordCafeVisit(uid: String)        { increment("cafesVisited",        uid: uid) }
     func recordStallVisit(uid: String)       { increment("stallsVisited",       uid: uid) }
     func recordPhotoShared(uid: String)      { increment("photosShared",        uid: uid) }
-    func recordPlaceAdded(uid: String)       { increment("placesAdded",         uid: uid) }
     func recordFriendHunt(uid: String)       { increment("friendsHunted",       uid: uid) }
     func recordNightCheckIn(uid: String)     { increment("nightCheckIns",       uid: uid) }
-    func recordFavoritePlaceVisit(uid: String){ increment("favoritePlaceVisits", uid: uid) }
 }

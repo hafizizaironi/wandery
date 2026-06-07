@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 /// Bottom sheet shown when a friend pin on the map is tapped.
 /// Header = place metadata. Body = card stack of every friend post at the
@@ -27,7 +28,14 @@ struct PlaceDetailSheet: View {
     /// back card with its AsyncImage loaded) becomes the front WITHOUT
     /// SwiftUI swapping the URL on the front-slot view — that swap is what
     /// was producing the mid-swipe image flicker.
-    @State private var flyingPost: FriendPost?
+    @State private var flyingCard: PlaceCard?
+    /// True while we resolve a Google `place_id` for an app-created place
+    /// before opening Google Maps (shows a spinner on that button).
+    @State private var resolvingMaps = false
+
+    private var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: place.lat, longitude: place.lng)
+    }
     @State private var flyingOffset: CGSize = .zero
     @State private var flyingRotation: Double = 0
     /// Shared hydrator for post-author avatars. Prefetched on appear so the
@@ -94,22 +102,38 @@ struct PlaceDetailSheet: View {
     /// which both Google and Waze redirect to their app via universal links
     /// when present (or open in the browser otherwise).
     private var navButtons: some View {
-        HStack(spacing: 10) {
-            navButton(
-                title: "Google Maps",
-                systemImage: "map.fill",
-                appURL: URL(string: "comgooglemaps://?q=\(place.lat),\(place.lng)&center=\(place.lat),\(place.lng)&zoom=16"),
-                webURL: URL(string: "https://www.google.com/maps/search/?api=1&query=\(place.lat),\(place.lng)")
-            )
-            navButton(
-                title: "Waze",
-                systemImage: "car.fill",
-                appURL: URL(string: "waze://?ll=\(place.lat),\(place.lng)&navigate=yes"),
-                webURL: URL(string: "https://waze.com/ul?ll=\(place.lat),\(place.lng)&navigate=yes")
-            )
+        let waze = MapsNavigation.waze(name: place.name, coordinate: coordinate)
+        return HStack(spacing: 10) {
+            // Google Maps: route to the exact POI by Google place_id. For an
+            // app-created place (no stored id) we first resolve one by
+            // name+coordinate — hence the async tap + spinner — and fall back
+            // to the coordinate if there's no confident match.
+            navButtonLabel(title: "Google Maps", systemImage: "map.fill", loading: resolvingMaps) {
+                Task { await openGoogleMaps() }
+            }
+            .disabled(resolvingMaps)
+
+            // Waze has no place-id concept: search the name centered on the
+            // coordinate; Waze matches the named POI near there or routes to
+            // the coordinate when there's no distinct match.
+            navButton(title: "Waze", systemImage: "car.fill", appURL: waze.app, webURL: waze.web)
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
+    }
+
+    /// Google Maps: use the stored `googlePlaceId` when present, otherwise
+    /// resolve one by name+coordinate; `MapsNavigation` falls back to the
+    /// coordinate when there's still no id.
+    private func openGoogleMaps() async {
+        var placeId = place.googlePlaceId
+        if placeId?.isEmpty ?? true {
+            resolvingMaps = true
+            placeId = await PlacePickerService.shared.resolveGooglePlaceId(name: place.name, near: coordinate)
+            resolvingMaps = false
+        }
+        let urls = MapsNavigation.googleMaps(name: place.name, coordinate: coordinate, googlePlaceId: placeId)
+        openMapsURL(appURL: urls.app, webURL: urls.web)
     }
 
     private func navButton(title: String, systemImage: String,
@@ -129,6 +153,31 @@ struct PlaceDetailSheet: View {
             .padding(.vertical, 10)
             // Project-wide Liquid Glass chrome — matches the sheet
             // panel + every other floating button in the app.
+            .liquidGlassChrome(in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Same chrome as `navButton`, but driven by an action closure and able to
+    /// show a spinner (used by the Google Maps button while it resolves a
+    /// place_id).
+    private func navButtonLabel(title: String, systemImage: String, loading: Bool,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if loading {
+                    ProgressView().controlSize(.small).tint(.white)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.footnote).bold()
+                }
+                Text(title)
+                    .font(.footnote).bold()
+            }
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
             .liquidGlassChrome(in: Capsule())
         }
         .buttonStyle(.plain)
@@ -162,7 +211,7 @@ struct PlaceDetailSheet: View {
 
     @ViewBuilder
     private var stack: some View {
-        if place.posts.isEmpty {
+        if cards.isEmpty {
             emptyStack
         } else {
             populatedStack
@@ -178,20 +227,22 @@ struct PlaceDetailSheet: View {
             let dragMagnitude = max(abs(dragOffset.width), abs(dragOffset.height))
             let progress = min(dragMagnitude / 140, 1)
             ZStack {
-                // Resident stack — keyed by post.id so each card retains its
-                // identity (and loaded image) across topIndex changes.
-                ForEach(visiblePosts, id: \.post.id) { entry in
-                    cardView(post: entry.post,
+                // Resident stack — keyed by the (post, media) card id so each
+                // card retains its identity (and loaded image) across topIndex
+                // changes, even when several cards come from the same post.
+                ForEach(visibleCards, id: \.card.id) { entry in
+                    cardView(card: entry.card,
                              stackPos: entry.stackPos,
                              side: cardSide,
                              progress: progress)
                 }
                 // Departing card during a swipe-off, rendered above the stack.
-                if let flying = flyingPost {
+                if let flying = flyingCard {
                     PostStackCard(
-                        post: flying,
+                        post: flying.post,
+                        media: flying.media,
                         hydrator: hydrator,
-                        shouldBlur: place.postsAreFallback && !flying.discoverable
+                        shouldBlur: place.postsAreFallback && !flying.post.discoverable
                     )
                         .frame(width: cardSide, height: cardSide)
                         .offset(flyingOffset)
@@ -227,28 +278,55 @@ struct PlaceDetailSheet: View {
         .frame(height: 360)
     }
 
-    private struct StackEntry {
+    /// One card in the stack = a single tagged photo at this place. A post
+    /// with several photos tagged here fans out into several cards.
+    private struct PlaceCard: Identifiable, Equatable {
         let post: FriendPost
+        let media: PostMedia
+        // post.id is unique per post; media.url is unique within a post →
+        // the composite is globally unique AND stable, so the AsyncImage
+        // identity is retained across topIndex changes (no mid-swipe flicker).
+        var id: String { "\(post.id)|\(media.url)" }
+    }
+
+    private struct StackEntry {
+        let card: PlaceCard
         let stackPos: Int
     }
 
+    /// Flattened deck for this place: one card per photo tagged here, in
+    /// post-recency then display order. `place.posts` stays the source for the
+    /// visit/friend counts (`visitsLine`) — a post is one visit, not one per
+    /// photo — so we only fan out for the card stack.
+    private var cards: [PlaceCard] {
+        place.posts.flatMap { post -> [PlaceCard] in
+            let tagged = post.media.filter { $0.placeId == place.id }
+            // Legacy / untagged-media posts reach this place only via the
+            // top-level placeId fallback in `distinctPlaceIds` → show their
+            // single primary item.
+            let items = tagged.isEmpty ? Array(post.media.prefix(1)) : tagged
+            return items.map { PlaceCard(post: post, media: $0) }
+        }
+    }
+
     /// Up to 3 cards (front + 2 peeks), starting at `topIndex` and wrapping.
-    private var visiblePosts: [StackEntry] {
-        let n = place.posts.count
+    private var visibleCards: [StackEntry] {
+        let deck = cards
+        let n = deck.count
         guard n > 0 else { return [] }
         let depth = min(3, n)
         return (0..<depth).map { i in
             let idx = (topIndex + i) % n
-            return StackEntry(post: place.posts[idx], stackPos: i)
+            return StackEntry(card: deck[idx], stackPos: i)
         }
     }
 
-    private func cardView(post: FriendPost, stackPos: Int,
+    private func cardView(card: PlaceCard, stackPos: Int,
                           side: CGFloat, progress: CGFloat) -> some View {
         // While a fly-off is mid-flight, no resident card claims `isFront` —
         // the new top card sits flush at scale=1, y=0 thanks to its baseline
         // values, and the lifted card on top owns the drag/rotation state.
-        let isFront = stackPos == 0 && flyingPost == nil
+        let isFront = stackPos == 0 && flyingCard == nil
         let baseScale = 1.0 - CGFloat(stackPos) * 0.04
         let baseOffsetY = CGFloat(stackPos) * 12
         // Back cards lerp toward (scale=1, y=0) as the front is dragged away,
@@ -264,9 +342,10 @@ struct PlaceDetailSheet: View {
         // spinner. Always attach the same DragGesture and gate behavior
         // inside its handlers.
         return PostStackCard(
-            post: post,
+            post: card.post,
+            media: card.media,
             hydrator: hydrator,
-            shouldBlur: place.postsAreFallback && !post.discoverable
+            shouldBlur: place.postsAreFallback && !card.post.discoverable
         )
             .frame(width: side, height: side)
             .scaleEffect(isFront ? 1.0 : advancedScale)
@@ -279,16 +358,16 @@ struct PlaceDetailSheet: View {
             .rotationEffect(isFront ? .degrees(Double(frontX) / 22) : .zero)
             .opacity(isFront ? 1 : (0.85 + 0.15 * progress))
             .zIndex(Double(3 - stackPos))
-            .gesture(cardGesture(post: post, stackPos: stackPos))
+            .gesture(cardGesture(card: card, stackPos: stackPos))
     }
 
     /// Single gesture attached to every card. Drag-to-swipe when `stackPos`
     /// is 0; tap-to-front when it's a back card. Kept as one gesture so the
     /// modifier chain doesn't restructure when `stackPos` changes.
-    private func cardGesture(post: FriendPost, stackPos: Int) -> some Gesture {
+    private func cardGesture(card: PlaceCard, stackPos: Int) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard stackPos == 0, flyingPost == nil else { return }
+                guard stackPos == 0, flyingCard == nil else { return }
                 if !didHint {
                     didHint = true
                     hintOffset = 0
@@ -299,7 +378,7 @@ struct PlaceDetailSheet: View {
                 let dragMag = max(abs(value.translation.width),
                                   abs(value.translation.height))
                 if stackPos == 0 {
-                    guard flyingPost == nil else { return }
+                    guard flyingCard == nil else { return }
                     let throwMag = max(abs(value.predictedEndTranslation.width),
                                        abs(value.predictedEndTranslation.height))
                     if dragMag > 90 || throwMag > 220 {
@@ -311,7 +390,7 @@ struct PlaceDetailSheet: View {
                     }
                 } else if dragMag <= 4 {
                     // Treat near-stationary drag as a tap on a back card.
-                    guard let target = place.posts.firstIndex(where: { $0.id == post.id }) else { return }
+                    guard let target = cards.firstIndex(where: { $0.id == card.id }) else { return }
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
                         topIndex = target
                         dragOffset = .zero
@@ -321,9 +400,10 @@ struct PlaceDetailSheet: View {
     }
 
     private func completeSwipe(direction: CGSize) {
-        let n = place.posts.count
+        let deck = cards
+        let n = deck.count
         guard n > 0 else { return }
-        let frontPost = place.posts[topIndex]
+        let frontCard = deck[topIndex]
         let dx = direction.width
         let dy = direction.height
         let useHorizontal = abs(dx) >= abs(dy)
@@ -335,7 +415,7 @@ struct PlaceDetailSheet: View {
         // touching topIndex/dragOffset, so the user sees no positional jump.
         flyingOffset = dragOffset
         flyingRotation = Double(dragOffset.width) / 22
-        flyingPost = frontPost
+        flyingCard = frontCard
         // Advance the resident stack instantly. The next card was already
         // mounted as a back card with progress≈1 → scale=1, y=0; it now
         // simply becomes stackPos=0. Its AsyncImage is untouched.
@@ -353,7 +433,7 @@ struct PlaceDetailSheet: View {
         }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
-            flyingPost = nil
+            flyingCard = nil
             flyingOffset = .zero
             flyingRotation = 0
         }
@@ -363,7 +443,7 @@ struct PlaceDetailSheet: View {
     /// user knows it's swipeable. Skipped if there's only one card or if the
     /// user has already touched the stack.
     private func runHintIfNeeded() async {
-        guard !didHint, place.posts.count > 1 else { return }
+        guard !didHint, cards.count > 1 else { return }
         try? await Task.sleep(for: .milliseconds(450))
         guard !didHint else { return }
         withAnimation(.easeInOut(duration: 0.45)) { hintOffset = 14 }
@@ -375,9 +455,12 @@ struct PlaceDetailSheet: View {
     }
 }
 
-/// Single post card inside the place-detail stack.
+/// Single photo card inside the place-detail stack. `media` is the specific
+/// item tagged to this place (a post can contribute several), so the card
+/// shows that photo rather than always the post's primary one.
 private struct PostStackCard: View {
     let post: FriendPost
+    let media: PostMedia
     let hydrator: ParticipantHydrator
     /// True when the parent stack came from the public-discoverable fallback
     /// AND this specific post wasn't approved by the classifier. Renders the
@@ -415,8 +498,9 @@ private struct PostStackCard: View {
 
     private var mediaLayer: some View {
         Group {
-            if let urlString = post.thumbnailURL ?? .some(post.mediaURL),
-               let url = URL(string: urlString) {
+            // `displayURL` resolves to the video thumbnail for videos and the
+            // image url otherwise — the specific photo tagged to this place.
+            if let url = URL(string: media.displayURL) {
                 CachedAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img):
@@ -471,8 +555,10 @@ private struct PostStackCard: View {
     private var metaOverlay: some View {
         VStack(alignment: .leading, spacing: 4) {
             Spacer(minLength: 0)
-            if !post.caption.isEmpty {
-                Text(post.caption)
+            // Prefer this photo's own caption; fall back to the post caption.
+            if let caption = media.caption ?? (post.caption.isEmpty ? nil : post.caption),
+               !caption.isEmpty {
+                Text(caption)
                     .font(.subheadline)
                     .foregroundStyle(.white)
                     .lineLimit(2)

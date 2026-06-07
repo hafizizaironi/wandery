@@ -211,7 +211,8 @@ struct MainShellView: View {
                 let navbarHeight = ArcNavBar.frameContentHeight + geo.safeAreaInsets.bottom
                 ArcNavBar(
                     selectedPage: $selectedPage,
-                    pageProgress: $pageProgress
+                    pageProgress: $pageProgress,
+                    authService: authService
                 )
                 .frame(height: navbarHeight)
                 .zIndex(10)
@@ -487,6 +488,12 @@ struct MainShellView: View {
             // the What's New jumps use).
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
                 scrollToRequestsToken += 1
+            }
+        case .feed:
+            // Widget tap — surface the friends feed.
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                selectedPage = .hero
+                pageProgress = 1
             }
         }
         NotificationRouter.shared.pending = nil

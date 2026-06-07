@@ -44,6 +44,11 @@ final class VideoFillContainerView: UIView {
     /// Strong reference so looping keeps working (`AVPlayerLooper` does not retain the template item forever in all cases).
     private var looper: AVPlayerLooper?
     private var muted = false
+    /// Identifies the latest load request so a slow async build for a now-stale
+    /// URL can't clobber a newer one when the user scrolls quickly.
+    private var buildToken = UUID()
+    /// Latest desired play state — applied when the async-built player attaches.
+    private var desiredPlaying = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -55,29 +60,40 @@ final class VideoFillContainerView: UIView {
 
     required init?(coder: NSCoder) { nil }
 
+    /// Builds the player **off the main thread** so swapping a feed card's video
+    /// never blocks the scroll. Constructing the `AVPlayerItem` parses the clip
+    /// header (disk or network I/O) — doing that synchronously inside
+    /// `makeUIView` froze the slide mid-page as the paging window shifted. The
+    /// previous player stays attached (showing its last frame) until the new one
+    /// is ready, so the swap has no black gap.
     func setLoopingVideo(url: URL, shouldPlay: Bool) {
-        (playerLayer.player as? AVQueuePlayer)?.pause()
-        looper = nil
-        // Play the locally-cached file when we have it (instant, no network);
-        // otherwise stream the remote URL. `VideoCache.cachedFileURL` is a
-        // synchronous existence check, safe to call here.
-        let playURL = VideoCache.shared.cachedFileURL(for: url) ?? url
-        let item = AVPlayerItem(url: playURL)
-        let queuePlayer = AVQueuePlayer()
-        queuePlayer.isMuted = muted
-        // Start as soon as there's anything to show rather than waiting to
-        // build a large buffer — these clips are short and loop.
-        queuePlayer.automaticallyWaitsToMinimizeStalling = false
-        looper = AVPlayerLooper(player: queuePlayer, templateItem: item)
-        playerLayer.player = queuePlayer
-        if shouldPlay {
-            queuePlayer.play()
-        } else {
-            queuePlayer.pause()
+        desiredPlaying = shouldPlay
+        let token = UUID()
+        buildToken = token
+        let isMuted = muted
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // Play the locally-cached file when we have it (instant, no network);
+            // otherwise stream the remote URL. `cachedFileURL` is a synchronous
+            // existence check — now off-main, so it's free of the scroll.
+            let playURL = VideoCache.shared.cachedFileURL(for: url) ?? url
+            let item = AVPlayerItem(asset: AVURLAsset(url: playURL))
+            DispatchQueue.main.async {
+                guard let self, self.buildToken == token else { return }
+                (self.playerLayer.player as? AVQueuePlayer)?.pause()
+                let queuePlayer = AVQueuePlayer()
+                queuePlayer.isMuted = isMuted
+                // Start as soon as there's anything to show rather than waiting
+                // to build a large buffer — these clips are short and loop.
+                queuePlayer.automaticallyWaitsToMinimizeStalling = false
+                self.looper = AVPlayerLooper(player: queuePlayer, templateItem: item)
+                self.playerLayer.player = queuePlayer
+                if self.desiredPlaying { queuePlayer.play() } else { queuePlayer.pause() }
+            }
         }
     }
 
     func setPlayback(shouldPlay: Bool) {
+        desiredPlaying = shouldPlay
         guard let q = playerLayer.player as? AVQueuePlayer else { return }
         if shouldPlay {
             q.play()

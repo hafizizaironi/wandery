@@ -1,4 +1,12 @@
 import SwiftUI
+import UIKit
+
+/// Direction the user committed on a card. `.save` = swiped right (save the
+/// place), `.skip` = swiped left ("less likely to visit").
+enum SwipeDirection {
+    case save
+    case skip
+}
 
 /// Tinder-style hero card for one `FriendPlace`. Used inside the visited-
 /// places sheet carousel — photo fills the card, name + social proof
@@ -140,14 +148,28 @@ struct FriendPlaceCard: View {
     }
 }
 
-/// Tinder-style card stack of `FriendPlaceCard`s. The top card responds to
-/// a horizontal `DragGesture` with rotation; the next two cards peek behind
-/// with reduced scale + downward offset, rising forward as the drag
-/// progresses. Past `exitThreshold`, the top card flies off and the deck
-/// advances by one (modulo for free wrap-around). Tap on the top card →
-/// `onTap(place)`.
+/// One mounted card in the deck: the place plus its current depth (`rel`,
+/// 0 = front). Identified by place id so SwiftUI keeps a card's view — and its
+/// loaded image — stable as it rises from the back to the front.
+private struct DeckCard: Identifiable {
+    let place: FriendPlace
+    let rel: Int
+    var id: String { place.id }
+}
+
+/// Tinder-style swipe deck of `FriendPlaceCard`s. The top card responds to a
+/// horizontal `DragGesture` with rotation; the next two cards peek behind with
+/// reduced scale + downward offset, rising forward as the drag progresses. Past
+/// `exitThreshold`, the top card flies off and `onSwipe` fires with the
+/// committed direction — RIGHT = save, LEFT = "less likely". The deck is owned
+/// by the parent: each committed swipe is persisted, which removes the place
+/// from `places`, so the deck depletes until empty (→ `SwipeDeckEmptyState`).
+/// Tap on the top card → `onTap(place)`.
 struct FriendPlaceCarousel: View {
     let places: [FriendPlace]
+    /// Fired when the top card is flung past threshold. The parent persists the
+    /// decision and removes the place from `places`.
+    let onSwipe: (FriendPlace, SwipeDirection) -> Void
     let onTap: (FriendPlace) -> Void
 
     @State private var topIndex: Int = 0
@@ -167,6 +189,13 @@ struct FriendPlaceCarousel: View {
     /// and springs to off-screen.
     @State private var exitTranslation: CGSize = .zero
 
+    /// One-time swipe tutorial. Mirrors `ShutterControl`'s `hasSeenGuide` gate:
+    /// shown on first use, auto-retires after a few seconds, and clears the
+    /// instant the user starts a real drag.
+    @AppStorage("swipeDeck.hasSeenGuide") private var hasSeenGuide = false
+    @State private var coachPulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// Horizontal drag distance at which we commit to flying the top card
     /// off-screen instead of snapping back. Slow drags must reach this.
     private let exitDistanceThreshold: CGFloat = 55
@@ -183,37 +212,79 @@ struct FriendPlaceCarousel: View {
     private let stackDepth: Int = 3
 
     private var visibleDepth: Int { min(stackDepth, places.count) }
+    private var showCoach: Bool { !hasSeenGuide && !places.isEmpty && exitingPlace == nil }
+
+    /// The mounted cards, ordered back-to-front, each tagged with its depth and
+    /// identified by place id (see `DeckCard`) so a rising card keeps its
+    /// already-loaded image instead of being recycled by stack position.
+    private var visibleCards: [DeckCard] {
+        guard !places.isEmpty else { return [] }
+        var cards: [DeckCard] = []
+        for rel in 0..<visibleDepth {
+            let idx = topIndex + rel
+            guard idx < places.count else { break }
+            cards.append(DeckCard(place: places[idx], rel: rel))
+        }
+        // Back-to-front so the ZStack lays deeper cards down first; zIndex is
+        // still set explicitly as a backstop.
+        return cards.reversed()
+    }
 
     var body: some View {
-        VStack(spacing: 10) {
-            cardStack
-            indicator
+        Group {
+            // Keep the deck mounted while a card is still flying off, even once
+            // `places` has emptied, so the last swipe animates out before the
+            // empty state takes over.
+            if places.isEmpty && exitingPlace == nil {
+                SwipeDeckEmptyState()
+            } else {
+                VStack(spacing: 10) {
+                    cardStack
+                    if !places.isEmpty { indicator }
+                }
+            }
         }
         .onChange(of: places.map(\.id)) { _, _ in
-            // Filter switched — reset to the top of the new list.
+            // Deck shrank (a swipe persisted) or the filter switched — keep the
+            // front card pinned at index 0 so the next card slides forward.
             topIndex = 0
             dragOffset = .zero
+        }
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                coachPulse = true
+            }
+        }
+        // Auto-retire the coachmark after a few seconds if the user hasn't
+        // swiped yet (mirrors ShutterControl). Re-armed whenever it reappears.
+        .task(id: showCoach) {
+            guard showCoach else { return }
+            try? await Task.sleep(for: .seconds(6))
+            hasSeenGuide = true
         }
     }
 
     private var cardStack: some View {
         ZStack {
-            // Reversed so back cards are laid down first; zIndex still
-            // explicitly set in case ZStack ordering inverts.
-            ForEach((0..<visibleDepth).reversed(), id: \.self) { rel in
-                let idx = (topIndex + rel) % max(places.count, 1)
-                FriendPlaceCard(place: places[idx]) {
+            // Keyed by place id (not stack position) so a card keeps its
+            // identity — and its loaded image — as it rises to the front.
+            // Position-based identity recycled the view when the deck advanced,
+            // which let the name update a frame ahead of the async image.
+            ForEach(visibleCards) { card in
+                FriendPlaceCard(place: card.place) {
                     // Only the top card opens place-detail on tap — back
                     // cards are non-interactive. Also bail if a drag
                     // happened: a Button inside a parent
                     // `.simultaneousGesture` fires its tap on touch-up
                     // even after meaningful drag motion, which would
                     // misfire place-detail every time the user swiped.
-                    guard rel == 0, !dragHappened else { return }
-                    onTap(places[idx])
+                    guard card.rel == 0, !dragHappened else { return }
+                    onTap(card.place)
                 }
-                .modifier(StackTransform(rel: rel, dragOffset: dragOffset))
-                .zIndex(Double(visibleDepth - rel))
+                .overlay { if card.rel == 0 { swipeStamp } }
+                .modifier(StackTransform(rel: card.rel, dragOffset: dragOffset))
+                .zIndex(Double(visibleDepth - card.rel))
             }
             // Card flying off-screen lives outside the stack so the deck
             // can advance instantly without inheriting the spring.
@@ -228,6 +299,8 @@ struct FriendPlaceCarousel: View {
         .padding(.horizontal, 14)
         .padding(.top, 4)
         .padding(.bottom, 6)
+        .overlay { if showCoach { coachOverlay } }
+        .animation(.easeOut(duration: 0.2), value: showCoach)
         // simultaneousGesture so the top card's Button tap still fires
         // when the user taps without dragging more than `minimumDistance`.
         .simultaneousGesture(swipeGesture)
@@ -241,6 +314,8 @@ struct FriendPlaceCarousel: View {
                     (abs(value.translation.width) > dragRecognitionThreshold ||
                      abs(value.translation.height) > dragRecognitionThreshold) {
                     dragHappened = true
+                    // First real interaction retires the tutorial.
+                    if !hasSeenGuide { hasSeenGuide = true }
                 }
             }
             .onEnded { value in
@@ -250,7 +325,7 @@ struct FriendPlaceCarousel: View {
                 let shouldExit =
                     (absDistance > exitDistanceThreshold ||
                      absPredicted > exitVelocityThreshold) &&
-                    places.count > 1
+                    topIndex < places.count
 
                 if shouldExit {
                     // Use the predicted translation to decide direction
@@ -279,17 +354,22 @@ struct FriendPlaceCarousel: View {
     }
 
     private func flyOff(translation: CGSize, direction: CGFloat) {
+        guard topIndex < places.count else { return }
         let leaving = places[topIndex]
+        let swipe: SwipeDirection = direction > 0 ? .save : .skip
         // Atomic instant: move the leaving card into the exiting overlay
         // (starting at the current drag translation, so the hand-off is
-        // seamless), advance the stack, and reset the drag. No animation
-        // context wraps this — the deck snaps into its new state.
+        // seamless), advance the visible stack by one so the next card is
+        // already in front (no one-frame double-render), and reset the drag.
+        // We do NOT wrap — `onSwipe` persists the decision, which removes this
+        // place from `places`; the resulting `onChange` resets `topIndex` to 0
+        // and the indices realign on the same front card.
         var t = Transaction()
         t.disablesAnimations = true
         withTransaction(t) {
             exitingPlace = leaving
             exitTranslation = translation
-            topIndex = (topIndex + 1) % max(places.count, 1)
+            topIndex += 1
             dragOffset = .zero
         }
         // Glide the exiting card off-screen with a snappy curve so light
@@ -301,6 +381,8 @@ struct FriendPlaceCarousel: View {
                 height: translation.height + translation.height * 0.2
             )
         }
+        Self.swipeHaptic(swipe)
+        onSwipe(leaving, swipe)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
             var clearT = Transaction()
             clearT.disablesAnimations = true
@@ -311,18 +393,127 @@ struct FriendPlaceCarousel: View {
         }
     }
 
+    private static func swipeHaptic(_ direction: SwipeDirection) {
+        switch direction {
+        case .save:
+            let g = UINotificationFeedbackGenerator()
+            g.notificationOccurred(.success)
+        case .skip:
+            let g = UIImpactFeedbackGenerator(style: .light)
+            g.impactOccurred()
+        }
+    }
+
+    /// Heart (save) / skip stamp that fades in on the top card as it's
+    /// dragged, signalling what releasing now will do.
+    @ViewBuilder
+    private var swipeStamp: some View {
+        let w = dragOffset.width
+        let mag = Double(min(abs(w) / 90, 1))
+        ZStack {
+            if w > 6 {
+                stampBadge("heart.fill", color: AppTheme.successGreen)
+                    .rotationEffect(.degrees(-12))
+                    .opacity(mag)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else if w < -6 {
+                stampBadge("forward.fill", color: AppTheme.accentAction)
+                    .rotationEffect(.degrees(12))
+                    .opacity(mag)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+        }
+        .padding(22)
+        .allowsHitTesting(false)
+    }
+
+    private func stampBadge(_ systemName: String, color: Color) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 30, weight: .heavy))
+            .foregroundColor(color)
+            .padding(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(color, lineWidth: 3)
+            )
+    }
+
+    /// First-run swipe tutorial overlaid on the deck.
+    private var coachOverlay: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 10) {
+                coachChip("forward.fill", "Skip", fill: AppTheme.accentAction)
+                coachChip("heart.fill", "Save", fill: AppTheme.successGreen)
+            }
+            Text("Swipe right to save, left to skip. 🔥")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.black.opacity(0.55)))
+                .padding(.top, 8)
+            Spacer().frame(height: 30)
+        }
+        .scaleEffect(coachPulse && !reduceMotion ? 1.04 : 1.0)
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
+
+    private func coachChip(_ systemName: String, _ text: String, fill: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .bold))
+            Text(text)
+                .font(.system(size: 12, weight: .bold))
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(fill.opacity(0.92)))
+    }
+
     private var indicator: some View {
         HStack(spacing: 6) {
-            Text("\(topIndex + 1)")
+            Text("\(places.count)")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.primary)
                 .monospacedDigit()
-            Text("of \(places.count)")
+            Text(places.count == 1 ? "place left" : "places left")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.secondary)
-                .monospacedDigit()
         }
         .padding(.bottom, 4)
+    }
+}
+
+/// Shown in the card-stack slot once every visited place has been swiped.
+/// Mirrors `emptyFeedPlaceholder`'s styling so it reads as part of the app.
+struct SwipeDeckEmptyState: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("🔥").font(.system(size: 40))
+            Text("You're all caught up")
+                .font(.headline)
+                .foregroundColor(AppTheme.textPrimary)
+            Text("Sorry man, we're running out of new places — keep hunting! 🔥")
+                .font(.subheadline)
+                .foregroundColor(AppTheme.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(AppTheme.surfacePrimary)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        )
+        .padding(.horizontal, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
     }
 }
 

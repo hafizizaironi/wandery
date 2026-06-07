@@ -159,7 +159,7 @@ struct BirthdateOnboardingView: View {
     private func save() async {
         errorMessage = ""
         guard birthdate <= maxBirthdate else {
-            errorMessage = "You must be at least \(LegalURLs.minimumAge) to use the app."
+            errorMessage = "Aw, you've gotta be at least \(LegalURLs.minimumAge) to hunt with us."
             errorFocused = true
             return
         }

@@ -93,6 +93,19 @@ service cloud.firestore {
         allow read, write: if isSelf(uid);
       }
 
+      // Per-user swipe-deck preferences. Owner-only, client-written (no
+      // Cloud Function) — the visited-places card stack records each
+      // save (swipe right) / "less likely" (swipe left) decision here.
+      // Doc id = placeId so saves are idempotent. `savedPlaces` also backs
+      // the "Saved" filter tab; `hiddenPlaces` only filters the card deck,
+      // never the list or the map pins.
+      match /savedPlaces/{placeId} {
+        allow read, write: if isSelf(uid);
+      }
+      match /hiddenPlaces/{placeId} {
+        allow read, write: if isSelf(uid);
+      }
+
       // Moderation block list. The owner reads this so the client-side
       // filter can hide blocked authors' posts and conversations the
       // instant a block is applied. Writes are server-owned — the
@@ -128,6 +141,20 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.uid == request.auth.uid;
       allow update, delete: if false;
+    }
+
+    // Wandery Code identity — fully server-owned (the ensureWanderyCode /
+    // beginPresenting / resolveWanderyCode callables use the admin SDK).
+    // Clients never read these: an account id can't be forged, claimed, or
+    // scraped, and the presenting window can't be spoofed. A client gets its
+    // own id via the ensureWanderyCode callable response.
+    //   userCodes/{uid}      -> { accountId, presentingUntil?, createdAt }
+    //   accountIds/{idStr}   -> { uid, createdAt }   (reverse lookup)
+    match /userCodes/{uid} {
+      allow read, write: if false;
+    }
+    match /accountIds/{accountId} {
+      allow read, write: if false;
     }
 
     match /friendRequests/{requestId} {
@@ -171,11 +198,17 @@ service cloud.firestore {
         && request.resource.data.participantIds.size() == 2
         && request.auth.uid in request.resource.data.participantIds
         && isFriend(otherParticipant(request.resource.data.participantIds));
-      // Updates can't mutate participants. Only the recency/preview fields
-      // change, and the writer must already be one of the participants.
+      // Updates can't mutate participants, and are restricted to a whitelist of
+      // mutable fields: the recency/preview fields, per-uid read receipts, and
+      // the wrapped per-conversation content keys (`cek` — each participant's
+      // HPKE-wrapped CEK, written on establishment and re-wrapped after a key
+      // rotation). Anything else (incl. forging new fields) is rejected.
       allow update: if signedIn()
         && request.auth.uid in resource.data.participantIds
-        && request.resource.data.participantIds == resource.data.participantIds;
+        && request.resource.data.participantIds == resource.data.participantIds
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['lastMessage', 'lastMessageSenderId', 'lastMessageAt',
+                      'lastMessageEnc', 'lastReadAt', 'cek']);
       allow delete: if false;
 
       match /messages/{messageId} {
@@ -231,10 +264,15 @@ service cloud.firestore {
           // user can read CLASSIFIED, NO-FACE, location-tagged posts. The
           // client renders these blurred. Strict equality on containsFaces
           // keeps unclassified legacy posts private (`null != false` is true
-          // under Firestore semantics).
+          // under Firestore semantics). Accept EITHER the top-level placeId
+          // (legacy single-place docs) OR a non-empty mediaPlaceIds list —
+          // the fallback query filters on `mediaPlaceIds array-contains`, so
+          // the gate must reference mediaPlaceIds or that query is denied.
           (
-            resource.data.placeId is string &&
-            resource.data.placeId != "" &&
+            (
+              (resource.data.placeId is string && resource.data.placeId != "") ||
+              (resource.data.mediaPlaceIds is list && resource.data.mediaPlaceIds.size() > 0)
+            ) &&
             resource.data.containsFaces == false
           )
         ))

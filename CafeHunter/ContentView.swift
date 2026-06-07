@@ -1,14 +1,20 @@
 import FirebaseAuth
 import SwiftUI
 
-struct ContentView: View {
-    @State private var authService          = AuthService()
-    @State private var firestoreService     = FirestoreService()
-    @State private var statsService         = UserStatsService()
-    @State private var socialService        = SocialService()
-    @State private var userPrivateService   = UserPrivateService()
-    @State private var visitTracker         = VisitTrackerService()
-    @State private var conversationService  = ConversationService()
+/// The app's state router: picks the destination from auth + onboarding-gate
+/// state. Extracted from the old `ContentView` so `WanderyEntryView` can own
+/// the shared services and host this router *beneath* the cold-launch entry
+/// chrome (splash → iris → map → dive). The routing ladder + lifecycle wiring
+/// here is unchanged from before; only ownership of the services moved up.
+struct RootRouterView: View {
+    var authService:          AuthService
+    var firestoreService:     FirestoreService
+    var statsService:         UserStatsService
+    var socialService:        SocialService
+    var userPrivateService:   UserPrivateService
+    var visitTracker:         VisitTrackerService
+    var conversationService:  ConversationService
+
     @Environment(\.scenePhase) private var scenePhase
 
     /// Persists across launches — set true after a user finishes (or skips)
@@ -23,14 +29,15 @@ struct ContentView: View {
                 SplashView()
             } else if authService.user == nil {
                 if hasSeenWelcome {
-                    LoginView(authService: authService)
-                        .transition(.opacity)
+                    // The login screen is presented by the entry layer
+                    // (`WanderyEntryView`) over the live map, so it can own the
+                    // panel slide-down + circular close-in. Nothing to draw
+                    // here — the entry chrome covers this canvas.
+                    Color.clear
                 } else {
                     WelcomeView(onComplete: {
-                        // The carousel's "Get started" / "Maybe later"
-                        // route here. Fade — not slide — into LoginView
-                        // so the auth surface feels like a continuation
-                        // of the same canvas, not a new screen.
+                        // The carousel's "Get started" / "Maybe later" route
+                        // here. The entry layer then presents the login.
                         withAnimation(Motion.modal) {
                             hasSeenWelcome = true
                         }
@@ -60,6 +67,11 @@ struct ContentView: View {
                     conversationService: conversationService,
                     userPrivateService:  userPrivateService
                 )
+                // Fresh identity per signed-in user so a re-login always
+                // rebuilds the shell from its defaults — i.e. lands on the
+                // Hero tab — instead of restoring the tab the previous session
+                // signed out from.
+                .id(authService.user?.uid)
                 .onAppear  { firestoreService.subscribe() }
                 .onDisappear { firestoreService.unsubscribe() }
             }
@@ -141,5 +153,5 @@ struct SplashView: View {
 }
 
 #Preview {
-    ContentView()
+    WanderyEntryView()
 }

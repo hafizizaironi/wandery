@@ -269,65 +269,28 @@ struct HeroAudienceStrip: View {
         .scrollClipDisabled()
     }
 
-    @ViewBuilder
     private func avatar(for row: FriendRow) -> some View {
-        if let s = row.photoURL, let url = URL(string: s) {
-            CachedAsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default: initials(for: row)
-                }
-            }
-        } else {
-            initials(for: row)
-        }
-    }
-
-    private func initials(for row: FriendRow) -> some View {
-        ZStack {
-            LinearGradient(colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-            Text(initialsText(row))
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(AppTheme.cream)
-        }
-    }
-
-    private func initialsText(_ row: FriendRow) -> String {
-        let src = row.displayName?.isEmpty == false ? row.displayName! : (row.username ?? "?")
-        return src.split(separator: " ").prefix(2)
-            .compactMap { $0.first.map(String.init) }
-            .joined()
-            .uppercased()
+        AvatarView(
+            urlString: row.photoURL,
+            name: row.displayName?.isEmpty == false ? row.displayName : row.username,
+            size: avatarSize
+        )
     }
 }
 
-// MARK: - Zoom dial (collapsed chips ↔ scrubbable curved wheel)
+// MARK: - Zoom presets (0.5 · 1× · 2× chips)
 
 struct HeroZoomDial: View {
     @Binding var zoom: CGFloat
     var minZoom: CGFloat
     var maxZoom: CGFloat
     var showsHalf: Bool
-    var onZoomChange: (CGFloat) -> Void
+    /// `(zoom, animated)` — chip taps pass `animated: true` so the optics glide
+    /// to the preset via the camera's ramp.
+    var onZoomChange: (CGFloat, Bool) -> Void
 
-    @State private var expanded = false
-    @State private var idleTask: Task<Void, Never>?
-    @State private var dragStartZoom: CGFloat = 1.0
-    @State private var isDragging = false
-    @State private var lastSnapped: CGFloat = 0
-
-    private let dialWidth: CGFloat = 280
-    private let dialHeight: CGFloat = 56
     private let snapTolerance: CGFloat = 0.06
 
-    // Arc geometry — the virtual wheel pivot sits well below the visible pill so
-    // the top of the wheel curves gently across the dial.
-    private let arcRadius: CGFloat = 360
-    private let arcSpanDeg: CGFloat = 110
-    private let visibleHalfDeg: CGFloat = 32
-
-    private var allSnaps: [CGFloat] { [0.5, 1.0, 2.0].filter { $0 >= minZoom - 0.001 } }
     private var presetChips: [CGFloat] {
         var v: [CGFloat] = []
         if showsHalf { v.append(0.5) }
@@ -336,35 +299,12 @@ struct HeroZoomDial: View {
         return v
     }
 
-    private var minL: CGFloat { log(minZoom) }
-    private var maxL: CGFloat { log(maxZoom) }
-    private var t: CGFloat { (maxL - minL) <= 0 ? 0 : (log(zoom) - minL) / (maxL - minL) }
-
     var body: some View {
-        ZStack {
-            if expanded {
-                expandedDial
-                    .transition(.scale(scale: 0.75).combined(with: .opacity))
-            } else {
-                collapsedChips
-                    .transition(.opacity)
-            }
-        }
-        .frame(height: dialHeight)
-        // One drag gesture for both states: a horizontal drag expands the dial
-        // and scrubs; a plain tap (no movement) falls through to the chip
-        // buttons below, which just set the zoom + tick (no scale shown).
-        .highPriorityGesture(scrubGesture)
-    }
-
-    // MARK: collapsed — preset chips
-
-    private var collapsedChips: some View {
         HStack(spacing: 10) {
             ForEach(presetChips, id: \.self) { preset in
                 let active = abs(zoom - preset) < snapTolerance
                 Button {
-                    setZoomSnapped(preset)
+                    onZoomChange(preset, true)   // glide to the preset
                     HeroShutterHaptics.selection()
                 } label: {
                     Text(active ? formatZoom(zoom) : label(for: preset))
@@ -378,163 +318,14 @@ struct HeroZoomDial: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .animation(.spring(response: 0.3, dampingFraction: 0.85), value: active)
             }
         }
-    }
-
-    // MARK: expanded — curved dial
-
-    private var expandedDial: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 100, style: .continuous)
-                .fill(.black.opacity(0.5))
-                .overlay(RoundedRectangle(cornerRadius: 100, style: .continuous)
-                    .stroke(.white.opacity(0.18), lineWidth: 1))
-                .frame(width: dialWidth + 40, height: dialHeight)
-                .background(.ultraThinMaterial.opacity(0.6),
-                            in: RoundedRectangle(cornerRadius: 100, style: .continuous))
-
-            ZStack {
-                ForEach(arcTicks) { tick in tickView(tick) }
-                ForEach(arcLabels, id: \.value) { lbl in labelView(lbl) }
-            }
-            .frame(width: dialWidth + 40, height: dialHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 100, style: .continuous))
-
-            Text(formatZoom(zoom))
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(AppTheme.cafeAccent))
-                .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
-                .offset(y: -dialHeight / 2 + 16)
-
-            LinearGradient(
-                gradient: Gradient(stops: [
-                    .init(color: .black.opacity(0.55), location: 0.0),
-                    .init(color: .clear,               location: 0.18),
-                    .init(color: .clear,               location: 0.82),
-                    .init(color: .black.opacity(0.55), location: 1.0),
-                ]),
-                startPoint: .leading, endPoint: .trailing
-            )
-            .allowsHitTesting(false)
-            .frame(width: dialWidth + 40, height: dialHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 100, style: .continuous))
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 100, style: .continuous))
-        // Drag handled by the shared `scrubGesture` on the dial's root.
-    }
-
-    // MARK: gesture (shared by collapsed + expanded states)
-
-    private var scrubGesture: some Gesture {
-        DragGesture(minimumDistance: 10)
-            .onChanged { value in
-                if !isDragging {
-                    isDragging = true
-                    dragStartZoom = zoom
-                    HeroShutterHaptics.selection()   // tick on grab
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.55)) {
-                        expanded = true              // bouncy reveal — only on a drag
-                    }
-                }
-                let startT = (maxL - minL) <= 0 ? 0 : (log(dragStartZoom) - minL) / (maxL - minL)
-                // Swipe RIGHT lowers the zoom (toward 0.5×); swipe LEFT raises it.
-                let nextT = max(0, min(1, startT - value.translation.width / dialWidth))
-                setZoomSnapped(exp(minL + nextT * (maxL - minL)))
-                bumpIdle()
-            }
-            .onEnded { _ in
-                isDragging = false
-                bumpIdle()
-            }
-    }
-
-    // MARK: arc placement
-
-    private struct ArcTick: Identifiable { let id: Int; let tt: CGFloat; let isMajor: Bool }
-    private struct ArcLabel { let value: CGFloat; let tt: CGFloat }
-
-    private var arcTicks: [ArcTick] {
-        (0...40).map { i in
-            let tt = CGFloat(i) / 40
-            let z = exp(minL + tt * (maxL - minL))
-            let isMajor = allSnaps.contains { abs(z - $0) < snapTolerance * 2 }
-                || abs(z - 4) < 0.15 || abs(z - 8) < 0.3
-            return ArcTick(id: i, tt: tt, isMajor: isMajor)
-        }
-    }
-    private var arcLabels: [ArcLabel] {
-        (allSnaps + [4, 8]).filter { $0 <= maxZoom + 0.001 }.map {
-            ArcLabel(value: $0, tt: (maxL - minL) <= 0 ? 0 : (log($0) - minL) / (maxL - minL))
-        }
-    }
-
-    private func tickView(_ tick: ArcTick) -> some View {
-        let h: CGFloat = tick.isMajor ? 16 : 8
-        return placeOnArc(tickT: tick.tt, radius: arcRadius - h / 2) {
-            Rectangle()
-                .fill(tick.isMajor ? Color.white.opacity(0.92) : Color.white.opacity(0.35))
-                .frame(width: 1, height: h)
-        }
-    }
-    private func labelView(_ lbl: ArcLabel) -> some View {
-        placeOnArc(tickT: lbl.tt, radius: arcRadius - 14) {
-            Text(lbl.value < 1 ? String(format: "%.1f", lbl.value) : "\(Int(lbl.value))×")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.white.opacity(0.75))
-                .fixedSize()
-        }
-    }
-
-    @ViewBuilder
-    private func placeOnArc<Content: View>(
-        tickT: CGFloat, radius: CGFloat, @ViewBuilder _ content: () -> Content
-    ) -> some View {
-        let relDeg = (tickT - t) * arcSpanDeg
-        let rad = relDeg * .pi / 180
-        let dx =  radius * sin(rad)
-        let dy = -radius * cos(rad) + radius
-        let visible = abs(relDeg) < visibleHalfDeg
-        let fade = max(0, 1 - abs(relDeg) / visibleHalfDeg * 0.6)
-
-        content()
-            .rotationEffect(.degrees(relDeg))
-            .offset(x: dx, y: -dialHeight / 2 + dy)
-            .opacity(visible ? fade : 0)
-            .allowsHitTesting(false)
-            .animation(isDragging ? nil : .spring(response: 0.32, dampingFraction: 0.78), value: zoom)
-    }
-
-    // MARK: helpers
-
-    private func setZoomSnapped(_ value: CGFloat) {
-        var next = max(minZoom, min(maxZoom, value))
-        var landed: CGFloat? = nil
-        for sp in allSnaps where abs(next - sp) < snapTolerance { next = sp; landed = sp; break }
-        // Tick each time a scrub crosses into a new snap point (0.5 / 1× / 2×).
-        if isDragging {
-            if let s = landed, s != lastSnapped { HeroShutterHaptics.selection() }
-            lastSnapped = landed ?? 0
-        }
-        onZoomChange(next)
+        .frame(height: 56)
     }
 
     private func label(for preset: CGFloat) -> String {
         preset < 1 ? String(format: "%.1f", preset) : "\(Int(preset))×"
-    }
-
-    private func bumpIdle() {
-        idleTask?.cancel()
-        idleTask = Task {
-            try? await Task.sleep(for: .milliseconds(1400))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) { expanded = false }
-            }
-        }
     }
 
     private func formatZoom(_ z: CGFloat) -> String {

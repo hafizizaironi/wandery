@@ -15,6 +15,10 @@ import CryptoKit
 struct CachedAsyncImage<Content: View>: View {
     let url: URL?
     let scale: CGFloat
+    /// Longest-edge pixel cap for the decoded bitmap. `nil` (default) decodes at
+    /// full size — still **off the main thread** (the point is to keep the slide
+    /// from stalling on a lazy main-thread decode), just without downsampling.
+    let maxPixelSize: CGFloat?
     let content: (AsyncImagePhase) -> Content
 
     @State private var phase: AsyncImagePhase
@@ -22,10 +26,12 @@ struct CachedAsyncImage<Content: View>: View {
     init(
         url: URL?,
         scale: CGFloat = 1,
+        maxPixelSize: CGFloat? = nil,
         @ViewBuilder content: @escaping (AsyncImagePhase) -> Content
     ) {
         self.url = url
         self.scale = scale
+        self.maxPixelSize = maxPixelSize
         self.content = content
         // Seed from the in-memory cache so an already-cached image renders on
         // the FIRST frame instead of flashing `.empty`. Without this, a
@@ -57,7 +63,7 @@ struct CachedAsyncImage<Content: View>: View {
         // L2 — on-disk hit: decode + promote into memory. Survives restarts,
         // so a previously-seen image never re-downloads.
         if let data = await DiskImageCache.shared.data(for: url),
-           let ui = UIImage(data: data) {
+           let ui = await ImageDecoding.prepared(from: data, maxPixel: maxPixelSize) {
             ImageCache.shared.store(ui, for: url)
             phase = .success(Image(uiImage: ui))
             return
@@ -86,7 +92,7 @@ struct CachedAsyncImage<Content: View>: View {
                     }
                     throw URLError(.badServerResponse)
                 }
-                guard let ui = UIImage(data: data) else {
+                guard let ui = await ImageDecoding.prepared(from: data, maxPixel: maxPixelSize) else {
                     throw URLError(.cannotDecodeContentData)
                 }
                 ImageCache.shared.store(ui, for: url)

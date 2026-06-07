@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 struct CafeDetailSheetContent: View {
     let cafe: Cafe
@@ -6,8 +7,16 @@ struct CafeDetailSheetContent: View {
     let onDelete: () -> Void
 
     @State private var confirmDelete = false
+    /// True while resolving a Google place_id by name+coordinate before opening
+    /// Google Maps (`Cafe` carries no stored id), dimming the nav row.
+    @State private var resolvingMaps = false
+    @Environment(\.openURL) private var openURL
 
     private var accent: Color { AppTheme.accent(for: cafe.type) }
+
+    private var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: cafe.lat, longitude: cafe.lng)
+    }
 
     var body: some View {
         ScrollView {
@@ -102,7 +111,7 @@ struct CafeDetailSheetContent: View {
                                 HStack(spacing: 10) {
                                     ForEach(Array(cafe.photos.enumerated()), id: \.offset) { i, photoURL in
                                         if let url = URL(string: photoURL) {
-                                            AsyncImage(url: url) { phase in
+                                            CachedAsyncImage(url: url) { phase in
                                                 switch phase {
                                                 case .success(let img): img.resizable().scaledToFill()
                                                 default: AppTheme.gradient(for: cafe.type, index: i)
@@ -129,19 +138,20 @@ struct CafeDetailSheetContent: View {
                         }
                     }
 
-                    // Navigation buttons
+                    // Navigation buttons. Waze searches the name centered on the
+                    // coordinate; Google Maps resolves a place_id by name+coord
+                    // (Cafe has none stored) and falls back to the coordinate.
                     HStack(spacing: 12) {
                         NavigateButton(title: "Waze", bgColor: Color(red: 0.212, green: 0.765, blue: 0.941), icon: "car.fill") {
-                            if let url = URL(string: "waze://?ll=\(cafe.lat),\(cafe.lng)&navigate=yes") {
-                                UIApplication.shared.open(url)
-                            }
+                            let urls = MapsNavigation.waze(name: cafe.name, coordinate: coordinate)
+                            openMapsURL(app: urls.app, web: urls.web)
                         }
                         NavigateButton(title: "Google Maps", bgColor: .white, icon: "map") {
-                            let gmaps = URL(string: "comgooglemaps://?daddr=\(cafe.lat),\(cafe.lng)&directionsmode=driving")!
-                            let web   = URL(string: "https://www.google.com/maps/dir/?api=1&destination=\(cafe.lat),\(cafe.lng)")!
-                            UIApplication.shared.open(UIApplication.shared.canOpenURL(gmaps) ? gmaps : web)
+                            Task { await openGoogleMaps() }
                         }
                     }
+                    .opacity(resolvingMaps ? 0.6 : 1)
+                    .disabled(resolvingMaps)
 
                     placeEditorControls
 
@@ -151,6 +161,29 @@ struct CafeDetailSheetContent: View {
                 }
                 .padding(16)
             }
+        }
+    }
+
+    // MARK: - Navigation
+
+    /// Google Maps: `Cafe` has no stored place_id, so resolve one by
+    /// name+coordinate; `MapsNavigation` falls back to the coordinate when
+    /// there's no confident match.
+    private func openGoogleMaps() async {
+        resolvingMaps = true
+        let placeId = await PlacePickerService.shared.resolveGooglePlaceId(name: cafe.name, near: coordinate)
+        resolvingMaps = false
+        let urls = MapsNavigation.googleMaps(name: cafe.name, coordinate: coordinate, googlePlaceId: placeId)
+        openMapsURL(app: urls.app, web: urls.web)
+    }
+
+    private func openMapsURL(app: URL?, web: URL?) {
+        if let app {
+            openURL(app) { success in
+                if !success, let web { openURL(web) }
+            }
+        } else if let web {
+            openURL(web)
         }
     }
 
@@ -217,7 +250,7 @@ struct CafeDetailSheetContent: View {
     @ViewBuilder
     private var heroImage: some View {
         if let first = cafe.photos.first, !first.isEmpty, let url = URL(string: first) {
-            AsyncImage(url: url) { phase in
+            CachedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let img): img.resizable().scaledToFill()
                 default: AppTheme.gradient(for: cafe.type, index: 0)

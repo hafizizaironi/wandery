@@ -297,31 +297,8 @@ struct FriendFindView: View {
         }
     }
 
-    @ViewBuilder
     private func avatar(photoURL: String?, initials: String) -> some View {
-        ZStack {
-            LinearGradient(
-                colors: [AppTheme.accentAction.opacity(0.7), AppTheme.accentAction.opacity(0.4)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            if let urlString = photoURL, let url = URL(string: urlString) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: Text(initials.isEmpty ? "?" : initials)
-                            .font(.caption.bold())
-                            .foregroundStyle(.white)
-                    }
-                }
-            } else {
-                Text(initials.isEmpty ? "?" : initials)
-                    .font(.caption.bold())
-                    .foregroundStyle(.white)
-            }
-        }
-        .frame(width: 40, height: 40)
-        .clipShape(Circle())
+        AvatarView(urlString: photoURL, initials: initials, size: 40)
     }
 
     // MARK: - Actions

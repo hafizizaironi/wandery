@@ -62,7 +62,12 @@ enum PhoneAuthService {
                 print("[PhoneAuth-DEBUG]   underlying.userInfo: \(underlying.userInfo)")
             }
             #endif
-            throw error
+            // Map to friendly, actionable copy *here* too — not just in
+            // `verifyAndLink`. The send path is where the App Check / APNs /
+            // reCAPTCHA / backend-503 failures land, and the raw Firebase
+            // error ("An internal error has occurred…", code 17999) is
+            // useless to a user trying to sign up.
+            throw map(error as NSError)
         }
     }
 
@@ -95,11 +100,11 @@ enum PhoneAuthService {
             return .unknown(error.localizedDescription)
         }
         switch code {
-        case .invalidPhoneNumber:
+        case .invalidPhoneNumber, .missingPhoneNumber:
             return .invalidPhoneNumber
-        case .invalidVerificationCode:
+        case .invalidVerificationCode, .missingVerificationCode:
             return .invalidCode
-        case .invalidVerificationID, .sessionExpired:
+        case .invalidVerificationID, .missingVerificationID, .sessionExpired:
             return .codeExpired
         case .credentialAlreadyInUse, .providerAlreadyLinked:
             return .phoneTaken
@@ -107,6 +112,17 @@ enum PhoneAuthService {
             return .rateLimited
         case .networkError:
             return .network
+        case .appNotVerified, .captchaCheckFailed, .missingAppToken,
+             .notificationNotForwarded, .missingAppCredential, .internalError:
+            // App Check / APNs silent-push / reCAPTCHA verification couldn't
+            // complete, or the backend returned a transient 503 (the
+            // "Error code: 39" / 17999 case). These are project-config or
+            // rate-window issues, not anything the user mistyped. Carry the
+            // raw code through so a tester's screenshot is enough to triage
+            // remotely (the #if DEBUG log above is stripped on TestFlight).
+            return .verificationUnavailable(code: error.code)
+        case .webContextCancelled:
+            return .verificationCancelled
         default:
             return .unknown(error.localizedDescription)
         }
@@ -170,17 +186,22 @@ enum PhoneAuthError: LocalizedError, Equatable {
     case phoneTaken
     case rateLimited
     case network
+    case verificationUnavailable(code: Int)
+    case verificationCancelled
     case unknown(String)
 
     var errorDescription: String? {
         switch self {
-        case .notSignedIn:        "You need to sign in again."
-        case .invalidPhoneNumber: "That number doesn't look right. Include your country code (e.g. +60 for Malaysia)."
-        case .invalidCode:        "That code is wrong. Double-check the SMS and try again."
-        case .codeExpired:        "Code expired. Tap resend to get a new one."
-        case .phoneTaken:         "That number is already linked to another account."
-        case .rateLimited:        "Too many attempts. Wait a few minutes and try again."
-        case .network:            "Couldn't reach Firebase. Check your connection."
+        case .notSignedIn:        "You'll need to sign in again first."
+        case .invalidPhoneNumber: "That number looks a little off — don't forget the country code (like +60 for Malaysia) 📱"
+        case .invalidCode:        "That code's not it 👀 Peek at your texts and try again."
+        case .codeExpired:        "That code timed out ⏳ Tap resend for a fresh one."
+        case .phoneTaken:         "This number's already paired with another account 🤔"
+        case .rateLimited:        "Too many tries! Give it a few minutes and come back ☕"
+        case .network:            "Can't reach us right now — check your connection and try again 📶"
+        case .verificationUnavailable(let code):
+            "Couldn't send your code right now 😅 Make sure you're on the latest version, then try again in a few. (ref \(code))"
+        case .verificationCancelled:   "Cancelled that one — tap Send code whenever you're ready."
         case .unknown(let msg):   msg
         }
     }

@@ -27,37 +27,51 @@ struct LoginView: View {
     @State private var locationManager = LocationManager()
     @State private var localityName: String?
 
+    /// Drives the bottom-sheet slide over the entry map. Owned by the entry
+    /// layer (`WanderyEntryView`) so it can raise the panel after the splash
+    /// closes in, and slide it back down on a successful sign-in *before* the
+    /// circular close-in into the app fires.
+    @Binding var panelUp: Bool
+
     var body: some View {
-        ZStack {
-            AppTheme.espresso.ignoresSafeArea()
+        ZStack(alignment: .bottom) {
+            // The looping map fly-over behind the sheet — a live camera tour
+            // over real trending spots (cached from a prior signed-in Discover
+            // load), with photos popping in along the path. Falls back to a
+            // demo scatter on a true first launch.
+            EntryMapFlyover(pins: EntryPin.loginPins(around: EntryMapBackground.resolveCenter()))
+                .ignoresSafeArea()
 
-            VStack {
-                Spacer()
-
-                VStack(spacing: 0) {
-                    // Header
-                    VStack(spacing: 8) {
-                        Text("☕")
-                            .font(.system(size: 42))
-                            .accessibilityHidden(true)
-                        Text("Cafés Around \(localityName ?? "You")")
-                            .font(.title3).bold()
-                            .foregroundStyle(AppTheme.cream)
-                            .contentTransition(.opacity)
-                            .animation(.easeInOut(duration: 0.25), value: localityName)
-                        Text(mode == .login ? "Welcome back! Sign in to continue." : "Create an account to get started.")
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.cream.opacity(0.45))
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, 32)
-                    .padding(.bottom, 20)
-                    .padding(.horizontal, 24)
-                    .frame(maxWidth: .infinity)
-                    .overlay(alignment: .bottom) {
-                        Rectangle()
-                            .fill(AppTheme.borderSubtle.opacity(0.7))
-                            .frame(height: 1)
+            VStack(spacing: 0) {
+                // Header — app mark + serif wordmark over the map.
+                VStack(spacing: 10) {
+                    Image("WanderyPolaroidPin")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 46, height: 46)
+                        .accessibilityHidden(true)
+                    Text("wandery")
+                        .font(.wanderyWordmark(34))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text("Find where \(localityName ?? "KL") is really eating.")
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .contentTransition(.opacity)
+                        .animation(.easeInOut(duration: 0.25), value: localityName)
+                        .multilineTextAlignment(.center)
+                    Text(mode == .login ? "Welcome back! Sign in to continue." : "Create an account to get started.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 26)
+                .padding(.bottom, 18)
+                .padding(.horizontal, 24)
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(AppTheme.borderSubtle.opacity(0.7))
+                        .frame(height: 1)
                     }
 
                     // Body
@@ -179,17 +193,19 @@ struct LoginView: View {
                     }
                     .padding(24)
                 }
-                .background(AppTheme.espresso)
-                .clipShape(.rect(cornerRadius: 20))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                .frame(maxWidth: .infinity)
+                .background(AppTheme.surfaceCanvas)
+                .clipShape(.rect(topLeadingRadius: 34, topTrailingRadius: 34))
+                .overlay(alignment: .top) {
+                    Capsule()
+                        .fill(AppTheme.borderSubtle)
+                        .frame(width: 38, height: 5)
+                        .padding(.top, 9)
                 }
-                .shadow(color: .black.opacity(0.12), radius: 24)
-                .padding(.horizontal, 24)
-
-                Spacer()
-            }
+                .shadow(color: .black.opacity(0.18), radius: 22, y: -4)
+                .offset(y: panelUp ? 0 : 720)
+                .opacity(panelUp ? 1 : 0)
+                .ignoresSafeArea(edges: .bottom)
         }
         .keyboardDismissToolbar()
         .task { await refreshLocalityHint() }
@@ -216,6 +232,9 @@ struct LoginView: View {
         errorMessage = ""
         do {
             try await authService.signInWithGoogle()
+        } catch AuthServiceError.cancelled {
+            // User backed out of the Google sheet — silent, no error
+            // (matches the Apple .canceled handling below).
         } catch {
             errorMessage = error.localizedDescription
             errorFocused = true
@@ -244,12 +263,12 @@ struct LoginView: View {
     private func handleEmailAuth() async {
         errorMessage = ""
         if mode == .signup, name.trimmingCharacters(in: .whitespaces).count < 2 {
-            errorMessage = "Please enter your name."
+            errorMessage = "Hold up — what should we call you?"
             errorFocused = true
             return
         }
         guard password.count >= 6 else {
-            errorMessage = "Password must be at least 6 characters."
+            errorMessage = "Give your password at least 6 characters 💪"
             errorFocused = true
             return
         }
@@ -271,27 +290,30 @@ struct LoginView: View {
         if let authError = error as? AuthErrorCode {
             switch authError.code {
             case .wrongPassword, .userNotFound, .invalidCredential:
-                return "Incorrect email or password."
+                // Stays deliberately vague — never reveal whether it was the
+                // email or the password that missed (don't leak which emails
+                // have accounts).
+                return "That email and password combo isn't clicking. Try again? ☕"
             case .emailAlreadyInUse:
-                return "An account with this email already exists."
+                return "You've already got an account with this email — try signing in instead 👋"
             case .invalidEmail:
-                return "Please enter a valid email address."
+                return "Hmm, that email looks a little off. Mind double-checking it?"
             case .tooManyRequests:
-                return "Too many sign-in attempts. Please try again later."
+                return "Whoa, slow down — too many tries. Grab a coffee and give it a minute ☕"
             case .networkError:
-                return "Network error. Please check your connection."
+                return "Can't reach the internet right now. Check your connection and try again 📶"
             case .userDisabled:
-                return "This account has been disabled."
+                return "This account's been switched off. Ping us if that seems wrong."
             default:
-                return "Something went wrong (\(authError.code.rawValue)). Please try again."
+                return "Something tripped on our end (\(authError.code.rawValue)). Give it another go 🔁"
             }
         }
-        return "Something went wrong. Please try again."
+        return "Welp, that didn't work. Mind trying again? 🔁"
     }
 }
 
 enum AuthMode { case login, signup }
 
 #Preview {
-    LoginView(authService: AuthService())
+    LoginView(authService: AuthService(), panelUp: .constant(true))
 }

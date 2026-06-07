@@ -2,6 +2,7 @@ import SwiftUI
 import GoogleSignIn
 import GooglePlacesSwift
 import FirebaseAuth
+import WidgetKit
 
 @main
 struct CafeHunterApp: App {
@@ -9,6 +10,7 @@ struct CafeHunterApp: App {
     // instead of here — required for the swizzling-disabled Phone Auth
     // setup (see AppDelegate.swift comment for the why).
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         AppAudioSession.registerObservers()
@@ -29,15 +31,33 @@ struct CafeHunterApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            WanderyEntryView()
                 // Scene-aware URL handling (iOS 26 deprecated the
                 // AppDelegate `application(_:open:options:)` path). Both
                 // Firebase Auth's reCAPTCHA return AND Google Sign-In's
                 // callback land here.
                 .onOpenURL { url in
+                    if url.scheme == "wandery" {
+                        // Widget tap → open the exact post it was showing
+                        // (`wandery://post/<id>`), falling back to the friends
+                        // feed (`wandery://feed`).
+                        if url.host == "post", let id = url.pathComponents.last(where: { $0 != "/" }) {
+                            NotificationRouter.shared.pending = .post(postId: id)
+                            return
+                        }
+                        if url.host == "feed" {
+                            NotificationRouter.shared.pending = .feed
+                            return
+                        }
+                    }
                     if Auth.auth().canHandle(url) { return }
                     GIDSignIn.sharedInstance.handle(url)
                 }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Refresh the widget with whatever the app last cached when it
+            // backgrounds, so the Home Screen reflects the latest feed.
+            if phase == .background { WidgetCenter.shared.reloadAllTimelines() }
         }
     }
 }

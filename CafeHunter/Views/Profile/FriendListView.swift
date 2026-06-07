@@ -387,42 +387,12 @@ struct FriendListView: View {
         return row.titleText
     }
 
-    @ViewBuilder
     private func avatar(for row: FriendRow) -> some View {
-        if let urlString = row.photoURL, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                default: initialsFallback(for: row)
-                }
-            }
-        } else {
-            initialsFallback(for: row)
-        }
-    }
-
-    private func initialsFallback(for row: FriendRow) -> some View {
-        ZStack {
-            LinearGradient(
-                colors: [AppTheme.cafeAccent, AppTheme.stallAccent],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Text(initials(for: row))
-                .font(.footnote).bold()
-                .foregroundStyle(AppTheme.cream)
-        }
-    }
-
-    private func initials(for row: FriendRow) -> String {
-        let source = row.displayName?.isEmpty == false
-            ? row.displayName!
-            : (row.username ?? "?")
-        return source.split(separator: " ")
-            .prefix(2)
-            .compactMap { $0.first.map(String.init) }
-            .joined()
-            .uppercased()
+        AvatarView(
+            urlString: row.photoURL,
+            name: row.displayName?.isEmpty == false ? row.displayName : row.username,
+            size: 38
+        )
     }
 
     private func performRemoval(_ row: FriendRow) async {

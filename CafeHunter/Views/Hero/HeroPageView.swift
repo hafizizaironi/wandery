@@ -113,6 +113,20 @@ struct HeroPageView: View {
     @State private var saveJustSucceeded = false
 
     @State private var heroCardID: HeroCardID? = .camera
+    /// The card whose video is allowed to be *live*. It lags `heroCardID`,
+    /// committing only when the slide settles — so the video window (which
+    /// player is built / playing) never shifts mid-slide. That shift used to
+    /// fire AVPlayer + SwiftUI work on the main thread exactly at the page
+    /// midpoint, stalling the slide ("snaps halfway"). Decoupling it from the
+    /// live drag keeps the swipe smooth; the new card spins up on settle.
+    @State private var activeCardID: HeroCardID? = .camera
+
+    // Custom vertical pager state (replaces the system ScrollView so the slide
+    // curve is ours to tune). `currentIndex` drives the layout offset;
+    // `heroCardID`/`activeCardID` stay the source of truth for *identity* and
+    // are written on settle. The live `dragOffset` lives in `HeroCardPager` so
+    // finger-tracking doesn't re-render this (large) body every frame.
+    @State private var currentIndex: Int = 0
 
     // Mode state
     @State private var showPhotosPicker = false
@@ -160,62 +174,36 @@ struct HeroPageView: View {
             if camera.isAuthorized {
                 GeometryReader { geo in
                     let pageH = HeroCameraLayout.pageHeight(in: geo)
-                    ScrollView(.vertical) {
-                        VStack(spacing: 0) {
-                            cameraContent(geometry: geo)
-                                .frame(height: pageH)
-                                .frame(maxWidth: .infinity)
-                                .id(HeroCardID.camera)
-
-                            if socialService.feedPosts.isEmpty {
-                                heroEmptyFeedPage(geometry: geo)
-                                    .frame(height: pageH)
-                                    .frame(maxWidth: .infinity)
-                                    .id(HeroCardID.emptyFeed)
-                            } else {
-                                ForEach(Array(socialService.feedPosts.enumerated()), id: \.element.id) { idx, post in
-                                    heroFeedPostPage(geometry: geo, post: post, index: idx,
-                                                       isVideoActive: isActive && scenePhase == .active && heroCardID == .post(post.id),
-                                                       videoLive: abs(idx - (currentFeedIndex ?? 0)) <= 1)
-                                        .frame(height: pageH)
-                                        .frame(maxWidth: .infinity)
-                                        .id(HeroCardID.post(post.id))
-                                }
-                            }
-                        }
-                        .scrollTargetLayout()
+                    // Custom vertical pager: `HeroCardPager` owns the live drag
+                    // offset + gesture (so finger-tracking re-renders only the
+                    // thin wrapper, not this whole body), and our own spring owns
+                    // the settle curve. The page stack stays non-lazy so the
+                    // camera preview + ±1 video players keep their mount lifecycle.
+                    HeroCardPager(
+                        pageCount: pages.count,
+                        pageHeight: pageH,
+                        width: geo.size.width,
+                        index: $currentIndex,
+                        disabled: isPagerDisabled,
+                        settle: pagerSettle,
+                        onDragStart: { if keyboardHeight > 0 { Self.dismissKeyboard() } },
+                        onSettle: { commitSettle(to: $0) }
+                    ) {
+                        heroPageStack(geometry: geo, pageH: pageH)
                     }
-                    .scrollTargetBehavior(.paging)
-                    .scrollPosition(id: $heroCardID)
-                    // Disable the vertical pager while MainShellView
-                    // is interpreting a horizontal edge-swipe as a
-                    // page-switch. Otherwise both gestures fight for
-                    // ownership of the drag and the page-switch
-                    // animation stutters when the user's finger
-                    // crosses the Hero region.
-                    // Lock vertical paging while reviewing a capture so the user
-                    // can't scroll into other people's posts mid-compose — and
-                    // while recording (esp. locked recording, where the finger
-                    // is off the button) so a swipe can't leave the camera with
-                    // a clip still rolling.
-                    .scrollDisabled(edgeDragActive || isReviewingCapture || camera.isRecording)
-                    // The composer manages its own keyboard lift via
-                    // a manual `.offset(y:)` driven by the
-                    // keyboardWillShow/Hide observer — so we still
-                    // tell the ScrollView itself to ignore the
-                    // keyboard edge (otherwise the WHOLE pager would
-                    // shift up when the keyboard appears, breaking
-                    // page geometry).
+                    // VoiceOver can't drag a custom pager — give it explicit
+                    // next/previous page actions.
+                    .accessibilityScrollAction { edge in
+                        switch edge {
+                        case .top, .leading:    paginate(to: pageID(at: currentIndex - 1))
+                        case .bottom, .trailing: paginate(to: pageID(at: currentIndex + 1))
+                        @unknown default: break
+                        }
+                    }
+                    // Composer lifts itself via a manual `.offset(y:)` driven by
+                    // the keyboard observer, so keep the page geometry fixed when
+                    // the keyboard appears (otherwise the whole stack would shift).
                     .ignoresSafeArea(.keyboard, edges: .bottom)
-                    // Interactive dismissal: as the user drags the
-                    // pager vertically, the keyboard tracks the
-                    // gesture and slides off-screen in lock-step. By
-                    // the time the next post snaps into view the
-                    // keyboard is gone — composer's `keyboardHeight`
-                    // observer drops to 0 in sync, so the composer's
-                    // `.offset(y:)` lift unwinds back to its resting
-                    // position.
-                    .scrollDismissesKeyboard(.interactively)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -410,16 +398,20 @@ struct HeroPageView: View {
             if lastSeenPostId.isEmpty, let firstId = socialService.feedPosts.first?.id {
                 lastSeenPostId = firstId
             }
+            // Resync the layout index from the stable card identity first, so
+            // the offset never points at a stale slot after the feed mutates
+            // (e.g. a new moment prepended shifts every post's index).
+            if let id = heroCardID, let idx = pages.firstIndex(of: id) {
+                currentIndex = idx
+            } else {
+                currentIndex = min(currentIndex, max(0, pages.count - 1))
+            }
             guard let current = heroCardID else { return }
             switch current {
             case .post(let id) where !socialService.feedPosts.contains(where: { $0.id == id }):
-                withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
-                    heroCardID = .camera
-                }
+                paginate(to: .camera)
             case .emptyFeed where !socialService.feedPosts.isEmpty:
-                withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
-                    heroCardID = .post(socialService.feedPosts[0].id)
-                }
+                paginate(to: .post(socialService.feedPosts[0].id))
             default:
                 break
             }
@@ -430,9 +422,7 @@ struct HeroPageView: View {
             // deleted between the time the chat reference was written
             // and this jump). If missing, fall back to the camera.
             let exists = socialService.feedPosts.contains(where: { $0.id == postId })
-            withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
-                heroCardID = exists ? .post(postId) : .camera
-            }
+            paginate(to: exists ? .post(postId) : .camera)
             // Clear the binding so the same id can fire again later.
             pendingPostJumpId = nil
         }
@@ -467,9 +457,7 @@ struct HeroPageView: View {
         Button {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             guard let first = socialService.feedPosts.first else { return }
-            withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
-                heroCardID = .post(first.id)
-            }
+            paginate(to: .post(first.id))
             lastSeenPostId = first.id
         } label: {
             HStack(spacing: 6) {
@@ -663,37 +651,31 @@ struct HeroPageView: View {
         heroCardID == .camera || heroCardID == nil
     }
 
-    /// The capture session runs whenever the camera card is the foreground Hero
-    /// content — **including while reviewing a capture**. Keeping it warm through
-    /// the compose/review flow means returning to the live camera (after Post or
-    /// "+") is instant and smooth, with no cold-start stutter or black-preview
-    /// pop. The expensive live-scoring tap is still gated off during review (see
-    /// `liveScoringShouldRun`), so the incremental cost is just the sensor.
+    /// The capture session runs the whole time Hero is the foreground tab —
+    /// **including while browsing the feed and reviewing a capture**. Keeping it
+    /// warm means returning to the live camera is instant (no cold-start stutter
+    /// or black-preview pop), and the iOS green camera indicator stays on. The
+    /// expensive part — the live-scoring Vision tap — is gated separately
+    /// (`liveScoringShouldRun`) to the camera card, so the cost in the feed is
+    /// just the sensor. The 800ms-debounced stop still sleeps it on
+    /// background / obscure / leaving Hero.
     private var cameraShouldRun: Bool {
         isActive
             && scenePhase == .active
             && camera.isAuthorized
-            && isOnCameraCard
             && !isObscured
     }
 
-    /// Live aesthetic scoring stays on for the whole capture loop in photo mode
-    /// (feed → preview → upload → feed) so nothing toggles the pipeline — the
-    /// camera and Neural Engine keep running until the user leaves the camera
-    /// card. Only video mode (recording) excludes it.
+    /// Live aesthetic scoring (the Neural-Engine frame tap — the real
+    /// thermal/battery cost) only runs on the camera card in photo mode. It
+    /// stays off in the feed even though the bare session keeps running.
     private var liveScoringShouldRun: Bool {
-        cameraShouldRun && cameraMode == .polaroid
+        cameraShouldRun && isOnCameraCard && cameraMode == .polaroid
     }
 
     private func scrollToFeedFromCamera() {
         let posts = socialService.feedPosts
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
-            if posts.isEmpty {
-                heroCardID = .emptyFeed
-            } else {
-                heroCardID = .post(posts[0].id)
-            }
-        }
+        paginate(to: posts.isEmpty ? .emptyFeed : .post(posts[0].id))
     }
 
     private func postFromCapture() {
@@ -1179,9 +1161,64 @@ struct HeroPageView: View {
             }
     }
 
-    /// Index of the currently-shown feed post (nil while on camera / empty).
+    // MARK: - Vertical pager
+
+    /// Ordered page identities: camera first, then the feed (or the empty-feed
+    /// placeholder). `currentIndex` indexes into this.
+    private var pages: [HeroCardID] {
+        [.camera] + (socialService.feedPosts.isEmpty
+            ? [.emptyFeed]
+            : socialService.feedPosts.map { .post($0.id) })
+    }
+
+    /// The card at `index`, clamped into range (nil only if there are no pages).
+    private func pageID(at index: Int) -> HeroCardID? {
+        let p = pages
+        guard !p.isEmpty else { return nil }
+        return p[max(0, min(p.count - 1, index))]
+    }
+
+    /// Paging is blocked while the shell is mid edge-swipe, while reviewing a
+    /// capture (don't scroll into others' posts mid-compose), and while
+    /// recording (a swipe must not leave the camera with a clip rolling).
+    private var isPagerDisabled: Bool {
+        edgeDragActive || isReviewingCapture || camera.isRecording
+    }
+
+    /// The settle curve — smooth and slightly slow, essentially no overshoot.
+    /// This is the whole point of the custom pager: a tunable slide the system
+    /// `ScrollView` snap couldn't give us.
+    private var pagerSettle: Animation {
+        reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 0.9)
+    }
+
+    /// Commit card identity after the pager (or `paginate`) chooses an index.
+    /// Setting `activeCardID` (which gates the live video) only here keeps the
+    /// AVPlayer spin-up off the slide. Runs once per settle — never per frame.
+    private func commitSettle(to index: Int) {
+        let card = pages[max(0, min(pages.count - 1, index))]
+        heroCardID = card   // reuses the existing `.onChange(of: heroCardID)` wiring
+        activeCardID = card
+        prefetchFeedVideos()
+    }
+
+    /// Programmatic navigation (pull-for-feed, notification jump, new-moments,
+    /// post-delete fallback) — animates the real slide via `currentIndex`.
+    private func paginate(to card: HeroCardID?, animated: Bool = true) {
+        guard let card, let idx = pages.firstIndex(of: card) else { return }
+        if animated && !reduceMotion {
+            withAnimation(pagerSettle) { currentIndex = idx }
+        } else {
+            currentIndex = idx
+        }
+        commitSettle(to: idx)
+    }
+
+    /// Index of the settled feed post (nil while on camera / empty). Drives the
+    /// warm-video window and prefetch off `activeCardID` (not `heroCardID`), so
+    /// the window only shifts once a swipe settles — never mid-slide.
     private var currentFeedIndex: Int? {
-        guard case .post(let id)? = heroCardID else { return nil }
+        guard case .post(let id)? = activeCardID else { return nil }
         return socialService.feedPosts.firstIndex(where: { $0.id == id })
     }
 
@@ -1198,6 +1235,36 @@ struct HeroPageView: View {
             for media in posts[i].media where media.isVideo {
                 guard let url = URL(string: media.url) else { continue }
                 Task.detached(priority: .utility) { await VideoCache.shared.prefetch(url) }
+            }
+        }
+    }
+
+    /// The full vertical page stack (camera + feed). Extracted into its own
+    /// `some View` helper so the type-checker doesn't have to infer this large
+    /// `@ViewBuilder` through the generic `HeroCardPager` at the call site —
+    /// inlining it there triggered "unable to type-check in reasonable time".
+    @ViewBuilder
+    private func heroPageStack(geometry geo: GeometryProxy, pageH: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            cameraContent(geometry: geo)
+                .frame(height: pageH)
+                .frame(maxWidth: .infinity)
+                .id(HeroCardID.camera)
+
+            if socialService.feedPosts.isEmpty {
+                heroEmptyFeedPage(geometry: geo)
+                    .frame(height: pageH)
+                    .frame(maxWidth: .infinity)
+                    .id(HeroCardID.emptyFeed)
+            } else {
+                ForEach(Array(socialService.feedPosts.enumerated()), id: \.element.id) { idx, post in
+                    heroFeedPostPage(geometry: geo, post: post, index: idx,
+                                       isVideoActive: isActive && scenePhase == .active && activeCardID == .post(post.id),
+                                       videoLive: abs(idx - (currentFeedIndex ?? 0)) <= 1)
+                        .frame(height: pageH)
+                        .frame(maxWidth: .infinity)
+                        .id(HeroCardID.post(post.id))
+                }
             }
         }
     }
@@ -1358,7 +1425,7 @@ struct HeroPageView: View {
                             minZoom: camera.minDisplayedZoom,
                             maxZoom: camera.maxDisplayedZoom,
                             showsHalf: camera.supportsHalfZoom,
-                            onZoomChange: { camera.setZoom(displayed: $0) }
+                            onZoomChange: { camera.setZoom(displayed: $0, animated: $1) }
                         )
                         .padding(.bottom, 12)
                     }
@@ -1863,625 +1930,6 @@ struct HeroPageView: View {
                     .clipShape(Capsule())
             }
         }
-    }
-}
-
-/// One post in the feed: the polaroid frame wrapping a paged media carousel.
-/// Owns the carousel's `page` so the place + caption pills (polaroid overlay
-/// slots) reflect the currently-visible photo.
-/// One post in the feed. A single-media post is one polaroid; a multi-media
-/// post is a swipeable STACK of polaroids — each photo its own tilted frame
-/// with its own place/caption pills — flipped like a physical pile of prints.
-private struct FeedPolaroidCard: View {
-    let post: FriendPost
-    let index: Int
-    let isVideoActive: Bool
-    let side: CGFloat
-    var onPlaceTap: (String) -> Void = { _ in }
-    /// Static rendering (e.g. the long-press focus overlay): videos show their
-    /// poster thumbnail + a play badge instead of a live player, which would
-    /// otherwise sit blank until the first frame decodes.
-    var staticPreview: Bool = false
-    /// Brief accent glow/scale when the user was brought to this post by a
-    /// notification tap (cleared by the parent after ~1.5s).
-    var isHighlighted: Bool = false
-
-    /// Display preference (Profile → "Polaroid frames"). Off = plain cards.
-    @AppStorage("feed.usePolaroidFrame") private var usePolaroidFrame = false
-    /// Global feed-video mute, shared across all posts (like IG/TikTok).
-    /// Defaults to muted/silent; the speaker button toggles it.
-    @AppStorage("feed.videoMuted") private var videoMuted = true
-
-    @State private var topIndex = 0
-    @State private var dragOffset: CGSize = .zero
-    @State private var dragHappened = false
-    @State private var exiting: PostMedia?
-    @State private var exitTranslation: CGSize = .zero
-
-    private let exitDistanceThreshold: CGFloat = 55
-    private let exitVelocityThreshold: CGFloat = 220
-    private let dragRecognitionThreshold: CGFloat = 6
-    private let stackDepth = 3
-
-    private var media: [PostMedia] { post.media }
-    private var visibleDepth: Int { min(stackDepth, media.count) }
-
-    var body: some View {
-        Group {
-            if media.count <= 1 {
-                polaroid(for: media.first, rel: 0)
-            } else {
-                ZStack {
-                    // Back cards laid down first; explicit zIndex keeps order.
-                    ForEach((0..<visibleDepth).reversed(), id: \.self) { rel in
-                        polaroid(for: media[(topIndex + rel) % media.count], rel: rel)
-                            .modifier(PolaroidStackTransform(rel: rel, dragOffset: dragOffset))
-                            .zIndex(Double(visibleDepth - rel))
-                    }
-                    if let exiting {
-                        polaroid(for: exiting, rel: 0)
-                            .modifier(PolaroidExitTransform(translation: exitTranslation))
-                            .allowsHitTesting(false)
-                            .zIndex(1000)
-                    }
-                }
-                .simultaneousGesture(swipeGesture)
-            }
-        }
-        // Photo stays full `side`; the cream frame bleeds past this square slot,
-        // so the composer below doesn't move.
-        .frame(width: side, height: side)
-        .frame(maxWidth: .infinity)
-        .scaleEffect(isHighlighted ? 1.03 : 1)
-        .shadow(color: AppTheme.cafeAccent.opacity(isHighlighted ? 0.55 : 0), radius: 18)
-        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isHighlighted)
-        // Audience badge for restricted (private) posts.
-        .overlay(alignment: .topTrailing) {
-            if let text = restrictedBadgeText {
-                HStack(spacing: 4) {
-                    Image(systemName: "lock.fill").font(.system(size: 9, weight: .bold))
-                    Text(text).font(.system(size: 10, weight: .bold))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(AppTheme.accentAction.opacity(0.92)))
-                .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
-                .padding(.top, 12)
-                .padding(.trailing, 12)
-                .allowsHitTesting(false)
-            }
-        }
-    }
-
-    private var myUid: String { Auth.auth().currentUser?.uid ?? "" }
-
-    /// Badge copy for a restricted post: the recipient sees "Shared with you";
-    /// the author sees who it went to. Nil for normal (everyone) posts.
-    private var restrictedBadgeText: String? {
-        guard post.restricted else { return nil }
-        if post.authorId == myUid {
-            let others = post.recipientUids.filter { $0 != myUid }.count
-            return others <= 1 ? "Shared privately" : "Shared with \(others)"
-        }
-        return "Shared with you"
-    }
-
-    @ViewBuilder
-    private func polaroid(for item: PostMedia?, rel: Int) -> some View {
-        let isTop = rel == 0
-        if usePolaroidFrame {
-            PolaroidFrame(
-                username: "@\(post.authorUsername)",
-                date: post.createdAt,
-                tilt: Self.tilt(seed: item?.url ?? post.id),
-                photoSide: side
-            ) {
-                mediaCell(item, isActive: isVideoActive && isTop)
-            } topLeading: {
-                placeOverlay(for: item, isTop: isTop)
-            } bottomCenter: {
-                captionOverlay(for: item)
-            }
-        } else {
-            PlainFeedFrame(
-                username: "@\(post.authorUsername)",
-                photoSide: side
-            ) {
-                mediaCell(item, isActive: isVideoActive && isTop)
-            } topLeading: {
-                placeOverlay(for: item, isTop: isTop)
-            } bottomCenter: {
-                captionOverlay(for: item)
-            }
-        }
-    }
-
-    /// Tappable location pill — shared by both card styles. Only the top
-    /// card in a multi-media stack accepts the tap (jump-to-place).
-    @ViewBuilder
-    private func placeOverlay(for item: PostMedia?, isTop: Bool) -> some View {
-        if let name = item?.placeName, let pid = item?.placeId {
-            Button {
-                if isTop, !dragHappened { onPlaceTap(pid) }
-            } label: {
-                placePill(name: name)
-            }
-            .buttonStyle(.plain)
-            .allowsHitTesting(isTop)
-        }
-    }
-
-    /// Caption pill — shared by both card styles.
-    @ViewBuilder
-    private func captionOverlay(for item: PostMedia?) -> some View {
-        if let cap = item?.caption, !cap.isEmpty {
-            captionPill(text: cap)
-        }
-    }
-
-    @ViewBuilder
-    private func mediaCell(_ item: PostMedia?, isActive: Bool) -> some View {
-        Group {
-            if let item, !item.url.isEmpty, item.isVideo, !staticPreview, let u = URL(string: item.url) {
-                SquareVideoFillView(url: u, isPlaying: isActive, muted: videoMuted)
-                    .overlay(alignment: .bottomTrailing) { muteButton.padding(10) }
-            } else if let item, !item.displayURL.isEmpty, let u = URL(string: item.displayURL) {
-                // `displayURL` is the image URL for photos and the poster
-                // thumbnail for videos — so static video previews show a frame.
-                CachedAsyncImage(url: u) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    case .failure: placeholder
-                    case .empty: ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                    @unknown default: Color.gray.opacity(0.2)
-                    }
-                }
-                .overlay {
-                    if staticPreview, item.isVideo { videoBadge }
-                }
-            } else {
-                placeholder
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Opaque backing in preview mode so a not-yet-loaded poster can't let
-        // the focus blur show through the photo area.
-        .background(staticPreview ? AppTheme.surfacePrimary : Color.clear)
-        .clipped()
-    }
-
-    private var videoBadge: some View {
-        Image(systemName: "play.fill")
-            .font(.title2).bold()
-            .foregroundStyle(.white)
-            .padding(12)
-            .background(Color.black.opacity(0.5), in: Circle())
-    }
-
-    /// Mute/unmute toggle for feed videos. Flips the shared `videoMuted`
-    /// preference, so all videos follow it. A Button so its tap is consumed
-    /// and doesn't trip the card's swipe / long-press gestures.
-    private var muteButton: some View {
-        Button {
-            videoMuted.toggle()
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        } label: {
-            Image(systemName: videoMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 30, height: 30)
-                .background(Color.black.opacity(0.45), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(videoMuted ? "Unmute video" : "Mute video")
-    }
-
-    private var placeholder: some View {
-        ZStack {
-            AppTheme.gradient(for: .cafe, index: index)
-            VStack(spacing: 8) {
-                Image(systemName: "photo")
-                    .symbolVariant(.slash)
-                    .font(.system(size: 28, weight: .light))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .accessibilityHidden(true)
-                Text("Media unavailable")
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-        }
-    }
-
-    private func placePill(name: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "mappin.circle.fill")
-                .font(.caption2).bold()
-            Text(name)
-                .font(.caption).bold()
-                .lineLimit(1)
-        }
-        .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        // Thin frosted glass — sizes to the content at its frame, so it stays
-        // uniform across posts. (`.glassEffect` renders inconsistently inside
-        // the polaroid's per-post tilt, which is what made some pills balloon.)
-        .background(.ultraThinMaterial, in: Capsule())
-    }
-
-    private func captionPill(text: String) -> some View {
-        Text(text)
-            .font(.footnote).fontWeight(.semibold)
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
-            .lineLimit(2)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial, in: Capsule())
-    }
-
-    private var swipeGesture: some Gesture {
-        DragGesture(minimumDistance: 8)
-            .onChanged { value in
-                dragOffset = value.translation
-                if !dragHappened,
-                   abs(value.translation.width) > dragRecognitionThreshold ||
-                   abs(value.translation.height) > dragRecognitionThreshold {
-                    dragHappened = true
-                }
-            }
-            .onEnded { value in
-                let absDistance = abs(value.translation.width)
-                let absPredicted = abs(value.predictedEndTranslation.width)
-                let shouldExit = (absDistance > exitDistanceThreshold ||
-                                  absPredicted > exitVelocityThreshold) && media.count > 1
-                if shouldExit {
-                    let dirSource = absPredicted > absDistance
-                        ? value.predictedEndTranslation.width : value.translation.width
-                    flyOff(translation: value.translation, direction: dirSource > 0 ? 1 : -1)
-                } else {
-                    withAnimation(.spring(response: 0.36, dampingFraction: 0.74)) {
-                        dragOffset = .zero
-                    }
-                }
-                // Reset next tick so the place-pill tap-up (which fires
-                // synchronously after onEnded) still sees the drag and bails.
-                DispatchQueue.main.async { dragHappened = false }
-            }
-    }
-
-    /// Flip the top polaroid off-screen and advance the stack (cyclic), so the
-    /// user can keep flipping through the pile.
-    private func flyOff(translation: CGSize, direction: CGFloat) {
-        let leaving = media[topIndex % media.count]
-        var t = Transaction(); t.disablesAnimations = true
-        withTransaction(t) {
-            exiting = leaving
-            exitTranslation = translation
-            topIndex = (topIndex + 1) % media.count
-            dragOffset = .zero
-        }
-        withAnimation(.snappy(duration: 0.28, extraBounce: 0)) {
-            exitTranslation = CGSize(width: direction * 850,
-                                     height: translation.height + translation.height * 0.2)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
-            var c = Transaction(); c.disablesAnimations = true
-            withTransaction(c) { exiting = nil; exitTranslation = .zero }
-        }
-    }
-
-    /// Stable per-photo tilt (FNV-1a over the media URL) so the stack looks
-    /// like scattered prints and never jitters on scroll.
-    static func tilt(seed: String) -> Double {
-        var h: UInt64 = 1469598103934665603
-        for b in seed.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
-        return Double(Int(h % 121)) / 20.0 - 3.0   // -3.0 … +3.0 degrees
-    }
-}
-
-/// Positions a polaroid within the swipe stack. Top card follows the drag +
-/// rotates; back cards sit smaller/lower and rise as the top card drags.
-private struct PolaroidStackTransform: ViewModifier {
-    let rel: Int
-    let dragOffset: CGSize
-
-    func body(content: Content) -> some View {
-        let dragMag = min(abs(dragOffset.width) / 110, 1)
-        let baseScale = 1.0 - CGFloat(rel) * 0.05
-        let baseY = CGFloat(rel) * 12
-        let scale = baseScale + CGFloat(rel) * 0.05 * dragMag
-        let yOffset = baseY - CGFloat(rel) * 12 * dragMag
-        let isTop = rel == 0
-        return content
-            .scaleEffect(scale)
-            // Adds to each polaroid's own tilt; back cards only get scale/offset.
-            .rotationEffect(.degrees(isTop ? Double(dragOffset.width / 18) : 0))
-            .offset(x: isTop ? dragOffset.width : 0, y: isTop ? dragOffset.height : yOffset)
-            .opacity(isTop ? 1.0 : max(0.5, 0.9 - Double(rel) * 0.13))
-            .allowsHitTesting(isTop)
-    }
-}
-
-/// Positions the polaroid flying off-screen — same translation+rotation feel
-/// as a top-card drag, but lives outside the stack so the deck can advance.
-private struct PolaroidExitTransform: ViewModifier {
-    let translation: CGSize
-
-    func body(content: Content) -> some View {
-        content
-            .offset(x: translation.width, y: translation.height)
-            .rotationEffect(.degrees(Double(translation.width / 18)))
-    }
-}
-// MARK: - Feed moderation modifier
-
-/// Hosts the report-content sheet + block-user confirmation alert for the
-/// Hero feed. Extracted from HeroPageView.body because attaching both
-/// modifiers inline tipped the SwiftUI type-checker over its complexity
-/// limit ("the compiler is unable to type-check this expression in
-/// reasonable time"). Same behaviour, different attachment surface.
-private struct FeedModerationModifier: ViewModifier {
-    @Binding var reportTarget: ReportTarget?
-    @Binding var pendingBlockUid: String?
-    @Binding var pendingBlockTitle: String
-    @Binding var postFocus: PostFocus?
-    @Binding var pendingDeletePost: FriendPost?
-    var socialService: SocialService
-
-    func body(content: Content) -> some View {
-        content
-            .overlay {
-                if let focus = postFocus {
-                    PostFocusOverlay(
-                        focus: focus,
-                        onDismiss: dismissFocus,
-                        onReportPost: { withFocusedPost { reportTarget = ReportTarget(type: .post, targetId: $0.id) } },
-                        onReportUser: { withFocusedPost { reportTarget = ReportTarget(type: .user, targetId: $0.authorId) } },
-                        onBlock: { withFocusedPost { pendingBlockUid = $0.authorId; pendingBlockTitle = $0.authorUsername } },
-                        onDelete: { withFocusedPost { pendingDeletePost = $0 } },
-                        onHideDiscover: { withFocusedPost { p in
-                            Task { try? await socialService.setDiscoverable(postId: p.id, false) }
-                        } }
-                    )
-                }
-            }
-            .alert(
-                "Block \(pendingBlockTitle)?",
-                isPresented: Binding(
-                    get: { pendingBlockUid != nil },
-                    set: { if !$0 { pendingBlockUid = nil } }
-                ),
-                presenting: pendingBlockUid
-            ) { uid in
-                Button("Cancel", role: .cancel) { pendingBlockUid = nil }
-                Button("Block", role: .destructive) {
-                    Task {
-                        try? await socialService.blockUser(uid: uid)
-                        pendingBlockUid = nil
-                    }
-                }
-            } message: { _ in
-                Text("They'll be removed from your friends, can't message you, and won't appear in your feed.")
-            }
-            .alert(
-                "Delete post?",
-                isPresented: Binding(
-                    get: { pendingDeletePost != nil },
-                    set: { if !$0 { pendingDeletePost = nil } }
-                ),
-                presenting: pendingDeletePost
-            ) { post in
-                Button("Cancel", role: .cancel) { pendingDeletePost = nil }
-                Button("Delete", role: .destructive) {
-                    Task { try? await socialService.deletePost(post) }
-                    pendingDeletePost = nil
-                }
-            } message: { _ in
-                Text("This permanently deletes the post and its photo or video. This can't be undone.")
-            }
-            .sheet(item: $reportTarget) { target in
-                ReportSheet(
-                    targetType: target.type,
-                    targetId: target.targetId,
-                    socialService: socialService
-                )
-                .presentationDetents([.medium, .large])
-            }
-    }
-
-    /// Runs `action` with the focused post, then closes the focus overlay.
-    /// Centralizes the "act + dismiss" pattern every menu row needs.
-    private func withFocusedPost(_ action: (FriendPost) -> Void) {
-        guard let post = postFocus?.post else { return }
-        action(post)
-        dismissFocus()
-    }
-
-    private func dismissFocus() {
-        withAnimation(.easeOut(duration: 0.18)) { postFocus = nil }
-    }
-}
-
-// MARK: - Post focus (long-press) menu
-
-/// Captured state for the long-press focus overlay on a feed post.
-struct PostFocus: Identifiable {
-    let id = UUID()
-    let post:   FriendPost
-    let index:  Int
-    let side:   CGFloat
-    let anchor: CGRect   // the post card's frame in global coordinates
-    let isMine: Bool
-}
-
-extension View {
-    /// Long-press a feed post to open the focus menu. Tracks the card's
-    /// global frame so the overlay can lift it in place, then fires
-    /// `onActivate(frame)` on a long hold. Simultaneous so it coexists with
-    /// the card's multi-media swipe and vertical paging.
-    func postFocusLongPress(onActivate: @escaping (CGRect) -> Void) -> some View {
-        modifier(PostFocusLongPressModifier(onActivate: onActivate))
-    }
-}
-
-private struct PostFocusLongPressModifier: ViewModifier {
-    var onActivate: (CGRect) -> Void
-    @State private var frame: CGRect = .zero
-
-    func body(content: Content) -> some View {
-        content
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.4).onEnded { _ in
-                    onActivate(frame)
-                }
-            )
-    }
-}
-
-/// Full-screen focus overlay: blurs the feed, lifts the pressed post in
-/// place (crisp, over the blur), and shows the action card below it. Mirrors
-/// the chat long-press menu. Hosted by `FeedModerationModifier`.
-private struct PostFocusOverlay: View {
-    let focus: PostFocus
-    var onDismiss:      () -> Void
-    var onReportPost:   () -> Void
-    var onReportUser:   () -> Void
-    var onBlock:        () -> Void
-    var onDelete:       () -> Void
-    var onHideDiscover: () -> Void
-
-    @State private var cardSize: CGSize = .zero
-    /// Drives the lift "pop": 1.0 → overshoot → settle, so the post bounces
-    /// when it appears (staying ≥ 1.0 the whole time, so it never shrinks
-    /// below the original and lets the blur peek around the edges).
-    @State private var pop: CGFloat = 1.0
-    private let gap: CGFloat = 14
-    private let bottomSafe: CGFloat = 44
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .overlay(Color.black.opacity(0.1))
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture { onDismiss() }
-                    .transition(.opacity)
-
-                // The pressed post, kept crisp over the blur. Cache-seeded so
-                // it's opaque from frame 1, and inserted with `.identity` (no
-                // fade) so it covers the original instantly — the blur can't
-                // bleed through. `onAppear` then springs a visible pop via
-                // `scaleEffect`, kept ≥ 1.0 so the post never shrinks below the
-                // original. Removal fades as the blur clears.
-                FeedPolaroidCard(post: focus.post, index: focus.index, isVideoActive: false, side: focus.side, staticPreview: true)
-                    .frame(width: focus.side, height: focus.side)
-                    .scaleEffect(pop)
-                    .position(x: focus.anchor.midX, y: focus.anchor.midY)
-                    .allowsHitTesting(false)
-                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
-                    .onAppear {
-                        withAnimation(.spring(response: 0.16, dampingFraction: 0.6)) { pop = 1.06 }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                            withAnimation(.spring(response: 0.36, dampingFraction: 0.45)) { pop = 1.0 }
-                        }
-                    }
-
-                actionCard
-                    .fixedSize()
-                    .onGeometryChange(for: CGSize.self) { $0.size } action: { cardSize = $0 }
-                    .position(cardPosition(in: geo.size))
-                    .opacity(cardSize == .zero ? 0 : 1)
-                    .transition(.scale(scale: 0.85, anchor: .top).combined(with: .opacity))
-            }
-        }
-        .ignoresSafeArea()
-    }
-
-    /// Centered horizontally, just below the post; clamped above the bottom.
-    private func cardPosition(in screen: CGSize) -> CGPoint {
-        let y = focus.anchor.maxY + gap + cardSize.height / 2
-        let maxY = screen.height - bottomSafe - cardSize.height / 2
-        return CGPoint(x: screen.width / 2, y: min(y, maxY))
-    }
-
-    private var actionCard: some View {
-        VStack(spacing: 0) {
-            if focus.isMine {
-                cardRow("Delete post", "trash", destructive: true, action: onDelete)
-                if focus.post.discoverable {
-                    Divider().opacity(0.5)
-                    cardRow("Hide from Discover", "eye.slash", destructive: false, action: onHideDiscover)
-                }
-            } else {
-                cardRow("Report post", "exclamationmark.triangle", destructive: false, action: onReportPost)
-                Divider().opacity(0.5)
-                cardRow("Report user", "person.crop.circle.badge.exclamationmark", destructive: false, action: onReportUser)
-                Divider().opacity(0.5)
-                cardRow("Block @\(focus.post.authorUsername)", "hand.raised", destructive: true, action: onBlock)
-            }
-        }
-        .frame(width: 260)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.18), radius: 16, y: 6)
-    }
-
-    private func cardRow(_ label: String, _ icon: String, destructive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Text(label).font(.body).lineLimit(1)
-                Spacer(minLength: 12)
-                Image(systemName: icon).font(.body)
-            }
-            .foregroundStyle(destructive ? AppTheme.errorRed : AppTheme.textPrimary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-    }
-}
-
-// MARK: - Animated wave text
-
-/// Renders each character of `text` with a left-to-right sine-wave vertical jitter,
-/// driven by a TimelineView so the animation is smooth and clock-independent.
-private struct AnimatedWaveText: View {
-    let text: String
-    let font: Font
-
-    private let amplitude: CGFloat = 3.2   // max vertical travel in points
-    private let period: Double     = 0.9   // seconds per full cycle
-    private let phasePerChar: Double = 0.18  // wave phase offset between adjacent chars
-
-    var body: some View {
-        TimelineView(.animation) { tl in
-            let t = tl.date.timeIntervalSinceReferenceDate
-            HStack(spacing: 0) {
-                ForEach(Array(text.enumerated()), id: \.offset) { idx, char in
-                    Text(String(char))
-                        .font(font)
-                        .foregroundStyle(.white)
-                        .offset(y: yOffset(t: t, index: idx))
-                }
-            }
-        }
-    }
-
-    /// Wave travels left → right: earlier characters lead; later ones follow.
-    private func yOffset(t: Double, index: Int) -> CGFloat {
-        amplitude * CGFloat(sin((t / period - Double(index) * phasePerChar) * .pi * 2))
     }
 }
 

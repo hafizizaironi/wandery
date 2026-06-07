@@ -102,34 +102,7 @@ struct ParticipantAvatar: View {
     var size: CGFloat = 44
 
     var body: some View {
-        ZStack {
-            if let urlString = participant?.photoURL, let url = URL(string: urlString) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: gradient
-                    }
-                }
-            } else {
-                gradient
-                Text(initialsText)
-                    .font(.system(size: size * 0.36, weight: .semibold))
-                    .foregroundStyle(AppTheme.textOnAccent)
-            }
-        }
-        .frame(width: size, height: size)
-        .clipShape(Circle())
-        .overlay {
-            Circle().stroke(AppTheme.borderSubtle, lineWidth: 0.5)
-        }
-    }
-
-    private var gradient: some View {
-        LinearGradient(
-            colors: [AppTheme.accentAction, AppTheme.stallAccent],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        AvatarView(urlString: participant?.photoURL, initials: initialsText, size: size, stroke: .subtle)
     }
 
     private var initialsText: String {

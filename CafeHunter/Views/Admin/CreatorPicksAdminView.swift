@@ -203,7 +203,7 @@ private struct CreatorPickRowView: View {
                 .contrastAware(AppTheme.cream, opacity: 0.4)
 
             if let url = URL(string: row.photoURL) {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
                     default: AppTheme.cream.opacity(0.08)
@@ -330,7 +330,7 @@ private struct CreatorPickCandidateRow: View {
     var body: some View {
         HStack(spacing: 12) {
             if let url = URL(string: row.photoURL) {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
                     default: AppTheme.cream.opacity(0.08)

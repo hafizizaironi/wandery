@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import FirebaseAuth
 
 // MARK: - Floating-pill nav bar
 //
@@ -32,15 +33,20 @@ struct ArcNavBar: View {
 
     @Binding var selectedPage: ShellPage
     @Binding var pageProgress: CGFloat
+    /// Current user — the Profile tab renders their avatar instead of an icon.
+    var authService: AuthService
 
     /// `(page, outline icon, filled icon, label)` — outline shown on
     /// unselected tabs, filled on the selected one (standard iOS
-    /// tab-bar convention).
+    /// tab-bar convention). `label` is icon-only on screen now (no text),
+    /// but kept for VoiceOver via `.accessibilityLabel`.
     private let tabs: [(page: ShellPage, icon: String, filledIcon: String, label: String)] = [
         (.map,     "map",               "map.fill",     "Map"),
         (.hero,    "camera.viewfinder", "camera.fill",  "Hero"),
         (.profile, "person",            "person.fill",  "Profile"),
     ]
+
+    private let avatarSize: CGFloat = 28
 
     /// Pill geometry. Tweaked here, not at call sites.
     private let pillHeight: CGFloat            = 64
@@ -129,20 +135,44 @@ struct ArcNavBar: View {
         Button {
             tap(idx)
         } label: {
-            VStack(spacing: 3) {
-                Image(systemName: isSelected ? tab.filledIcon : tab.icon)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(tint.opacity(alpha))
-                Text(tab.label)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(tint.opacity(alpha))
+            Group {
+                if tab.page == .profile {
+                    profileAvatar(isSelected: isSelected)
+                        .opacity(alpha)
+                } else {
+                    Image(systemName: isSelected ? tab.filledIcon : tab.icon)
+                        .font(.system(size: 23, weight: .semibold))
+                        .foregroundStyle(tint.opacity(alpha))
+                }
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.scalePress)
         .accessibilityLabel(tab.label)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    // MARK: - Profile avatar
+
+    /// The Profile tab's icon is the signed-in user's photo (or an initials
+    /// fallback) inside an accent ring — brighter when the tab is active.
+    @ViewBuilder
+    private func profileAvatar(isSelected: Bool) -> some View {
+        avatarImage
+            .frame(width: avatarSize, height: avatarSize)
+            .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .stroke(AppTheme.accentAction, lineWidth: isSelected ? 2 : 1.5)
+                    .opacity(isSelected ? 1 : 0.4)
+            }
+            // Reload when the photo URL changes (after editing the profile pic).
+            .id(authService.user?.photoURL?.absoluteString ?? "no-photo")
+    }
+
+    private var avatarImage: some View {
+        AvatarView(url: authService.user?.photoURL, name: authService.user?.displayName, size: avatarSize)
     }
 }

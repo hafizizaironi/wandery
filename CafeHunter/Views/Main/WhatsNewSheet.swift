@@ -172,7 +172,7 @@ extension Array where Element == WhatsNewPage {
                 symbolAnim: .variableColor,
                 headline: "Discover beyond your friends",
                 body: "Open the Map and you'll spot soft, blurred pins where friends-of-friends have hunted — a tease, not a tell. Tap ✨ to see what's trending across the whole hunt.",
-                footnote: "Your photos only ever appear blurred to strangers when shown.",
+                footnote: "Circle pins are always blurred — only photos you share to Discover show clear in Trending.",
                 feature: .discover,
                 jumpCTA: "Show me the map →"
             ),
@@ -186,7 +186,7 @@ extension Array where Element == WhatsNewPage {
                 symbolAnim: .pulse,
                 headline: "Your hunt, your control",
                 body: "Profile → My Hunt is now a month-by-month map of every place you've tagged. New there too: a “Help your circle discover” toggle that decides whether your visits hint at friends-of-friends.",
-                footnote: "Default on — turn it off any time, you stay opted-in to seeing others.",
+                footnote: "Default on — turn it off any time. You'll still get Trending, but circle pins switch off too.",
                 feature: .myHunt,
                 jumpCTA: "Open my hunt →"
             ),

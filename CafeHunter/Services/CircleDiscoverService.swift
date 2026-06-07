@@ -23,15 +23,12 @@ struct CirclePlace: Identifiable, Equatable, Sendable {
     let globalVisitCount: Int
 }
 
-/// A globally-trending place, ranked by `globalVisitCount`. Carries up to 3
-/// preview photos for the Trending sheet rows. Each photo can be marked
-/// `blur: true` — used when the post's author has set
-/// `optedOutOfDiscovery: true`, so opted-out users still contribute photos
-/// but the client renders them blurred (the Profile toggle softens to a
-/// "tease" rather than a hard hide).
+/// One preview photo for a Trending row. The server only surfaces
+/// `discoverable == true` photos from authors who haven't opted out, so every
+/// Trending photo is shown full-resolution — there's no blur/tease state on
+/// this surface.
 struct TrendingPhoto: Equatable, Sendable {
     let url: String
-    let blur: Bool
 }
 
 struct TrendingPlace: Identifiable, Equatable, Sendable {
@@ -102,6 +99,9 @@ final class CircleDiscoverService {
             trending = trendingRaw.compactMap(Self.parseTrending)
             partial = (data["partial"] as? Bool) ?? false
             lastLoadedAt = Date()
+            // Persist a slim snapshot for the signed-out login fly-over, which
+            // can't fetch trending itself (auth + App Check gated).
+            EntryTrendingStore.save(trending)
         } catch {
             // Don't blow away an existing cached payload on transient errors —
             // just record the message; the pins keep showing what we have.
@@ -133,16 +133,17 @@ final class CircleDiscoverService {
               let name = d["name"] as? String,
               let lat = d["lat"] as? Double,
               let lng = d["lng"] as? Double else { return nil }
-        // New wire format: `photos: [{url, blur}]`. Fall back to the legacy
-        // `photoURLs: [String]` shape (always clear) so a client running
+        // Wire format: `photos: [{url}]`. Any `blur` flag the server still
+        // sends is ignored — Trending only surfaces clear photos now. Fall
+        // back to the legacy `photoURLs: [String]` shape so a client running
         // against an older function deploy doesn't drop photos entirely.
         let photosRaw = d["photos"] as? [[String: Any]] ?? []
         var photos = photosRaw.compactMap { entry -> TrendingPhoto? in
             guard let url = entry["url"] as? String, !url.isEmpty else { return nil }
-            return TrendingPhoto(url: url, blur: (entry["blur"] as? Bool) ?? false)
+            return TrendingPhoto(url: url)
         }
         if photos.isEmpty, let legacy = d["photoURLs"] as? [String] {
-            photos = legacy.filter { !$0.isEmpty }.map { TrendingPhoto(url: $0, blur: false) }
+            photos = legacy.filter { !$0.isEmpty }.map { TrendingPhoto(url: $0) }
         }
         return TrendingPlace(
             id: id,

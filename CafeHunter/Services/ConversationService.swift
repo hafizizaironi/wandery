@@ -27,60 +27,151 @@ final class ConversationService {
 
     // MARK: - E2EE
 
-    /// Derived per-conversation AES key cache (convId → key).
-    private var convKeyCache: [String: SymmetricKey] = [:]
-    /// Cache of OTHER users' published public keys (uid → base64). Only
-    /// present keys are cached, so a missing partner key is re-fetched on the
-    /// next send (lets encryption kick in once they publish).
+    /// Per-conversation content key (CEK) cache (convId → key). The CEK is
+    /// **stable for the life of the thread** (encv 2): a participant rotating
+    /// identity keys re-wraps the same CEK rather than changing the message key,
+    /// so history survives reinstalls / new devices.
+    private var cekCache: [String: SymmetricKey] = [:]
+    /// Legacy static-ECDH conversation key cache (encv 1 messages only).
+    private var legacyKeyCache: [String: SymmetricKey] = [:]
+    /// Cache of OTHER users' published public keys (uid → base64).
     private var publicKeyCache: [String: String] = [:]
-    private static let lockedPlaceholder = "🔒 Message can't be decrypted"
+    private static let lockedPlaceholder = "🔒 Can't decrypt — a device was reinstalled"
 
-    /// Derives the conversation key from my identity private key + the other
-    /// participant's published public key. Returns nil when E2EE isn't possible
-    /// (no signed-in user, malformed convId, or the partner has no published
-    /// key yet) — callers then fall back to plaintext.
-    private func conversationKey(convId: String) async -> SymmetricKey? {
-        if let cached = convKeyCache[convId] { return cached }
-        guard let me = uid else { return nil }
-        // convId is the two uids sorted + joined by "_"; Firebase uids contain
-        // no "_", so splitting recovers the other participant without a fetch.
-        let parts = convId.split(separator: "_").map(String.init)
-        guard let otherUid = parts.first(where: { $0 != me }) else { return nil }
-        do {
-            let myPriv = try MessageCrypto.loadOrCreateIdentityKey(uid: me)
-            let theirPub: String
-            if let cached = publicKeyCache[otherUid] {
-                theirPub = cached
-            } else {
-                let snap = try await db.collection("users").document(otherUid).getDocument()
-                guard let pub = snap.data()?["publicKey"] as? String, !pub.isEmpty else { return nil }
-                publicKeyCache[otherUid] = pub
-                theirPub = pub
-            }
-            let key = try MessageCrypto.conversationKey(
-                myPrivateKey: myPriv, theirPublicKeyBase64: theirPub, convId: convId)
-            convKeyCache[convId] = key
-            return key
-        } catch {
-            return nil
-        }
+    /// convId is the two uids sorted + joined by "_"; Firebase uids contain no
+    /// "_", so splitting recovers the other participant without a fetch.
+    private func otherUid(in convId: String, me: String) -> String? {
+        convId.split(separator: "_").map(String.init).first { $0 != me }
     }
 
-    /// Returns a copy of `m` with its encrypted fields decrypted. Legacy
-    /// (`encv == 0`) and deleted messages pass through untouched. A decrypt
-    /// failure (e.g. the key rotated after a reinstall) renders the locked
-    /// placeholder rather than raw ciphertext.
-    private func decrypted(_ m: ChatMessage, key: SymmetricKey?) -> ChatMessage {
-        guard m.encv >= 1, !m.deleted, let key else { return m }
-        let text = (try? MessageCrypto.open(m.text, key: key)) ?? Self.lockedPlaceholder
-        let reply = m.replyToText.flatMap { try? MessageCrypto.open($0, key: key) } ?? m.replyToText
-        let preview = m.postPreview.flatMap { try? MessageCrypto.open($0, key: key) } ?? m.postPreview
+    /// A peer's published identity public key (base64). Cached; `fresh` forces a
+    /// server read (used when re-wrapping after a suspected key rotation).
+    private func peerPublicKey(_ other: String, fresh: Bool = false) async -> String? {
+        if !fresh, let cached = publicKeyCache[other] { return cached }
+        let snap = try? await db.collection("users").document(other)
+            .getDocument(source: fresh ? .server : .default)
+        guard let pub = snap?.data()?["publicKey"] as? String, !pub.isEmpty else { return nil }
+        publicKeyCache[other] = pub
+        return pub
+    }
+
+    /// The conversation's content key (encv 2), establishing it if absent and
+    /// `establish` is true. Returns nil when the CEK can't be obtained yet — the
+    /// peer hasn't published an identity key, or my wrapped entry is stale after
+    /// I rotated (the peer re-wraps it on their next open). On success, keeps the
+    /// peer's wrapped entry fresh so a peer who rotated regains access.
+    private func contentKey(convId: String, establish: Bool,
+                            rewrapPeerIfStale: Bool = false) async -> SymmetricKey? {
+        if let cached = cekCache[convId] { return cached }
+        guard let me = uid else { return nil }
+        guard let myPriv = try? MessageCrypto.loadOrCreateIdentityKey(uid: me) else { return nil }
+
+        let convRef = db.collection("conversations").document(convId)
+        let cekMap = (try? await convRef.getDocument())?.data()?["cek"] as? [String: [String: String]]
+
+        // 1. I have a usable wrapped entry → unwrap, cache. On thread open, also
+        //    keep the peer's wrapped entry fresh so a peer who reinstalled
+        //    regains access (skipped on the inbox path to avoid N server reads).
+        if let mine = cekMap?[me], let ek = mine["ek"], let ct = mine["ct"],
+           let cek = try? MessageCrypto.unwrap(ek: ek, ct: ct, myPrivateKey: myPriv) {
+            cekCache[convId] = cek
+            if rewrapPeerIfStale {
+                await ensurePeerWrap(convId: convId, convRef: convRef, cekMap: cekMap, cek: cek, me: me)
+            }
+            return cek
+        }
+
+        // 2. No CEK exists yet → establish one (needs the peer's published key).
+        if cekMap == nil, establish {
+            return await establishContentKey(convId: convId, convRef: convRef, me: me, myPriv: myPriv)
+        }
+
+        // 3. A CEK exists but my entry is missing/stale (I rotated). The peer
+        //    re-wraps it to my new key on their next open — locked until then.
+        return nil
+    }
+
+    /// Generate a CEK and wrap it to both participants. Transaction-guarded so a
+    /// simultaneous first message from the other side can't split the key.
+    private func establishContentKey(
+        convId: String, convRef: DocumentReference,
+        me: String, myPriv: Curve25519.KeyAgreement.PrivateKey
+    ) async -> SymmetricKey? {
+        guard let other = otherUid(in: convId, me: me),
+              let theirPub = await peerPublicKey(other) else { return nil }
+        let myPub = MessageCrypto.publicKeyBase64(for: myPriv)
+        let cek = MessageCrypto.newContentKey()
+        guard let mineW = try? MessageCrypto.wrap(cek, toPublicKeyBase64: myPub),
+              let theirsW = try? MessageCrypto.wrap(cek, toPublicKeyBase64: theirPub) else { return nil }
+        let myEntry = ["ek": mineW.ek, "ct": mineW.ct, "forPub": myPub]
+        let theirEntry = ["ek": theirsW.ek, "ct": theirsW.ct, "forPub": theirPub]
+
+        // Atomic create-if-absent; if the peer won the race, adopt their map.
+        let result = try? await db.runTransaction { (txn, _) -> Any? in
+            let doc = try? txn.getDocument(convRef)
+            if let existing = doc?.data()?["cek"] as? [String: [String: String]] { return existing }
+            let map = [me: myEntry, other: theirEntry]
+            txn.setData(["cek": map], forDocument: convRef, merge: true)
+            return map
+        }
+        let authMap = result as? [String: [String: String]]
+        guard let mine = authMap?[me], let ek = mine["ek"], let ct = mine["ct"],
+              let key = try? MessageCrypto.unwrap(ek: ek, ct: ct, myPrivateKey: myPriv) else { return nil }
+        cekCache[convId] = key
+        return key
+    }
+
+    /// If I hold the CEK and the peer's wrapped entry is missing or was wrapped
+    /// to a now-stale identity key (they reinstalled), re-wrap the CEK to their
+    /// current key so they regain access to history. Logged for observability —
+    /// this key-change point is also where a future safety-number / MITM warning
+    /// would hook in (see plan V5).
+    private func ensurePeerWrap(
+        convId: String, convRef: DocumentReference,
+        cekMap: [String: [String: String]]?, cek: SymmetricKey, me: String
+    ) async {
+        guard let other = otherUid(in: convId, me: me),
+              let theirCurrentPub = await peerPublicKey(other, fresh: true) else { return }
+        if cekMap?[other]?["forPub"] == theirCurrentPub { return }   // already fresh
+        guard let w = try? MessageCrypto.wrap(cek, toPublicKeyBase64: theirCurrentPub) else { return }
+        print("[ConversationService] re-wrapping CEK for \(other) (identity key changed) in \(convId)")
+        try? await convRef.updateData([
+            "cek.\(other)": ["ek": w.ek, "ct": w.ct, "forPub": theirCurrentPub],
+        ])
+    }
+
+    /// Legacy encv-1 key (static ECDH of both identity keys) — read-only path
+    /// for messages sealed before the CEK migration.
+    private func legacyKey(convId: String, forceRefresh: Bool = false) async -> SymmetricKey? {
+        if !forceRefresh, let cached = legacyKeyCache[convId] { return cached }
+        guard let me = uid, let other = otherUid(in: convId, me: me),
+              let myPriv = try? MessageCrypto.loadOrCreateIdentityKey(uid: me),
+              let theirPub = await peerPublicKey(other, fresh: forceRefresh),
+              let key = try? MessageCrypto.conversationKey(
+                myPrivateKey: myPriv, theirPublicKeyBase64: theirPub, convId: convId) else { return nil }
+        legacyKeyCache[convId] = key
+        return key
+    }
+
+    /// Returns a copy of `m` with its encrypted fields decrypted, choosing the
+    /// key by version (encv 2 → CEK, encv 1 → legacy). Plaintext (`encv == 0`)
+    /// and deleted messages pass through. Empty `text` (e.g. a reaction mirror
+    /// whose only encrypted payload is `postPreview`) is left as-is. A decrypt
+    /// failure renders the locked placeholder rather than raw ciphertext.
+    private func decrypted(_ m: ChatMessage, cek: SymmetricKey?, legacy: SymmetricKey?) -> ChatMessage {
+        guard m.encv >= 1, !m.deleted else { return m }
+        let key = m.encv >= 2 ? cek : legacy
+        func open(_ s: String?) -> String? {
+            guard let s, !s.isEmpty else { return s }
+            guard let key else { return Self.lockedPlaceholder }
+            return (try? MessageCrypto.open(s, key: key)) ?? Self.lockedPlaceholder
+        }
         return ChatMessage(
-            id: m.id, senderId: m.senderId, text: text, kind: m.kind,
-            postId: m.postId, postPreview: preview, emoji: m.emoji,
+            id: m.id, senderId: m.senderId, text: open(m.text) ?? m.text, kind: m.kind,
+            postId: m.postId, postPreview: open(m.postPreview) ?? m.postPreview, emoji: m.emoji,
             postMediaURL: m.postMediaURL, postIsVideo: m.postIsVideo,
             createdAt: m.createdAt, reactions: m.reactions,
-            replyToId: m.replyToId, replyToText: reply,
+            replyToId: m.replyToId, replyToText: open(m.replyToText) ?? m.replyToText,
             deleted: m.deleted, postDeleted: m.postDeleted, encv: m.encv
         )
     }
@@ -99,7 +190,8 @@ final class ConversationService {
         inbox = []
         activeMessages = []
         activeConvId = nil
-        convKeyCache.removeAll()
+        cekCache.removeAll()
+        legacyKeyCache.removeAll()
         publicKeyCache.removeAll()
     }
 
@@ -123,9 +215,14 @@ final class ConversationService {
                     var resolved: [Conversation] = []
                     resolved.reserveCapacity(convs.count)
                     for c in convs {
-                        if c.lastMessageEnc, let key = await self.conversationKey(convId: c.id) {
-                            let plain = (try? MessageCrypto.open(c.lastMessage, key: key)) ?? Self.lockedPlaceholder
-                            resolved.append(c.withLastMessage(plain))
+                        if c.lastMessageEnc {
+                            // Preview may be encv 2 (CEK) or legacy encv 1 — try both.
+                            let cek = await self.contentKey(convId: c.id, establish: false)
+                            var plain = cek.flatMap { try? MessageCrypto.open(c.lastMessage, key: $0) }
+                            if plain == nil, let legacy = await self.legacyKey(convId: c.id) {
+                                plain = try? MessageCrypto.open(c.lastMessage, key: legacy)
+                            }
+                            resolved.append(c.withLastMessage(plain ?? Self.lockedPlaceholder))
                         } else {
                             resolved.append(c)
                         }
@@ -153,8 +250,19 @@ final class ConversationService {
                 Task { @MainActor in
                     guard let self, self.activeConvId == convId else { return }
                     let raw = snap?.documents.compactMap { ChatMessage(document: $0) } ?? []
-                    let key = await self.conversationKey(convId: convId)
-                    self.activeMessages = raw.map { self.decrypted($0, key: key) }
+                    let cek = await self.contentKey(convId: convId, establish: false, rewrapPeerIfStale: true)
+                    var legacy = await self.legacyKey(convId: convId)
+                    var decoded = raw.map { self.decrypted($0, cek: cek, legacy: legacy) }
+                    // A locked encv-1 message can mean the peer rotated their
+                    // legacy key — force a one-shot server refresh and retry.
+                    // (encv-2 recovery is peer-driven: the other side re-wraps the
+                    // CEK to my new key on their next open.)
+                    if decoded.contains(where: { $0.encv == 1 && !$0.deleted && $0.text == Self.lockedPlaceholder }),
+                       let freshLegacy = await self.legacyKey(convId: convId, forceRefresh: true) {
+                        legacy = freshLegacy
+                        decoded = raw.map { self.decrypted($0, cek: cek, legacy: legacy) }
+                    }
+                    self.activeMessages = decoded
                 }
             }
     }
@@ -256,32 +364,24 @@ final class ConversationService {
         // published a key yet (rollout) or sealing fails — messaging keeps
         // working either way. Metadata (senderId/kind/emoji/postMediaURL/etc.)
         // is never encrypted.
-        let key = await conversationKey(convId: convId)
+        // E2EE: encrypt all human-readable fields with the conversation's stable
+        // content key (encv 2). If a CEK can't be established yet — the peer
+        // hasn't published an identity key — THROW so the caller's
+        // PendingMessageQueue retries; we NEVER store plaintext. Metadata
+        // (senderId/kind/emoji/postMediaURL/postId/replyToId) is not encrypted.
+        guard let key = await contentKey(convId: convId, establish: true) else {
+            throw ConversationError.notEncryptable
+        }
         var msgData: [String: Any] = [
             "senderId": me,
             "kind": kind,
             "createdAt": FieldValue.serverTimestamp(),
+            "encv": 2,
         ]
-        var lastMessageValue = preview
-        var encrypted = false
-        if let key, !trimmed.isEmpty {
-            do {
-                msgData["text"] = try MessageCrypto.seal(trimmed, key: key)
-                if let postPreview { msgData["postPreview"] = try MessageCrypto.seal(postPreview, key: key) }
-                if let replyToText { msgData["replyToText"] = try MessageCrypto.seal(replyToText, key: key) }
-                lastMessageValue = try MessageCrypto.seal(preview, key: key)
-                msgData["encv"] = 1
-                encrypted = true
-            } catch {
-                encrypted = false
-            }
-        }
-        if !encrypted {
-            msgData["text"] = trimmed
-            if let postPreview { msgData["postPreview"] = postPreview }
-            if let replyToText { msgData["replyToText"] = replyToText }
-            lastMessageValue = preview
-        }
+        msgData["text"] = trimmed.isEmpty ? "" : (try MessageCrypto.seal(trimmed, key: key))
+        if let postPreview { msgData["postPreview"] = try MessageCrypto.seal(postPreview, key: key) }
+        if let replyToText { msgData["replyToText"] = try MessageCrypto.seal(replyToText, key: key) }
+        let lastMessageValue = try MessageCrypto.seal(preview, key: key)
         if let postId { msgData["postId"] = postId }
         if let emoji { msgData["emoji"] = emoji }
         if let postMediaURL { msgData["postMediaURL"] = postMediaURL }
@@ -296,7 +396,7 @@ final class ConversationService {
             "lastMessage": lastMessageValue,
             "lastMessageSenderId": me,
             "lastMessageAt": FieldValue.serverTimestamp(),
-            "lastMessageEnc": encrypted,
+            "lastMessageEnc": true,
         ], forDocument: convRef)
         try await batch.commit()
     }
@@ -334,9 +434,14 @@ final class ConversationService {
             return
         }
 
-        // First reaction to this post — create the bubble + bump recency so
-        // the author receives exactly one notification.
+        // First reaction to this post — create the bubble + bump recency so the
+        // author receives exactly one notification. The post-caption snapshot
+        // (`postPreview`) is user content: encrypt it with the CEK, or OMIT it
+        // entirely when no key is available (never store it plaintext). The
+        // inbox preview ("Reacted X to your post") is derived from the `emoji`
+        // metadata, so it stays plaintext / `lastMessageEnc` false.
         let preview = "Reacted \(emoji) to your post"
+        let cek = await contentKey(convId: convId, establish: true)
         var msgData: [String: Any] = [
             "senderId": me,
             "text": "",
@@ -345,7 +450,10 @@ final class ConversationService {
             "postId": postId,
             "createdAt": FieldValue.serverTimestamp(),
         ]
-        if let postPreview { msgData["postPreview"] = postPreview }
+        if let postPreview, let cek {
+            msgData["postPreview"] = try MessageCrypto.seal(postPreview, key: cek)
+            msgData["encv"] = 2
+        }
         if let postMediaURL { msgData["postMediaURL"] = postMediaURL }
         if postIsVideo { msgData["postIsVideo"] = true }
 
@@ -447,11 +555,14 @@ final class ConversationService {
 enum ConversationError: LocalizedError {
     case notSignedIn
     case cannotMessageSelf
+    case notEncryptable
 
     var errorDescription: String? {
         switch self {
         case .notSignedIn: return "Not signed in."
         case .cannotMessageSelf: return "You can't message yourself."
+        case .notEncryptable:
+            return "Waiting for your friend's encryption key — the message will send once it's available."
         }
     }
 }

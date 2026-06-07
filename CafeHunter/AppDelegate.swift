@@ -29,6 +29,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         AppCheck.setAppCheckProviderFactory(CafeHunterAppCheckProviderFactory())
         FirebaseApp.configure()
 
+        // Share the signed-in Firebase user with the FriendsFeedWidget process
+        // via the shared keychain access group (the same group the NSE uses), so
+        // the widget's one-shot Firestore reads run authenticated. A no-op until
+        // the widget+app both carry the group entitlement; safe to call always.
+        try? Auth.auth().useUserAccessGroup(SharedFeedStore.sharedKeychainGroup)
+
         // NOTE: `appVerificationDisabledForTesting` is deliberately not
         // set. With APNs swizzling disabled + manual setAPNSToken
         // forwarding + Encoded App ID URL scheme + uiDelegate, Phone

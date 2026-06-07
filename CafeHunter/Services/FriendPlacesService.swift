@@ -37,6 +37,11 @@ struct FriendPlace: Identifiable, Equatable {
     /// in this stack are rendered blurred. Friend-feed posts never set
     /// this flag, so a friend's legacy `discoverable=false` post stays clear.
     var postsAreFallback: Bool = false
+    /// Google Places `place_id` for places imported from Google, when stored.
+    /// Lets navigation route to the exact POI by id instead of a coordinate.
+    /// Nil for app-created places (and synthesized ones) → navigation resolves
+    /// a match by name+coordinate, or falls back to the coordinate.
+    var googlePlaceId: String? = nil
 
     var mostRecent: FriendPost? { posts.first }
 }
@@ -85,6 +90,17 @@ final class FriendPlacesService {
     private var myVisitsByPlace: [String: Int] = [:]
     private var myVisitsListener: ListenerRegistration?
     private var myVisitsListenerUid: String?
+
+    /// Place ids the user swiped RIGHT on (saved) — backs the "Saved" filter
+    /// tab. Place ids swiped LEFT on ("less likely") — filtered out of the
+    /// card deck only, never the list/map. Both are live-synced from
+    /// `users/{uid}/savedPlaces` + `users/{uid}/hiddenPlaces`. Mutated
+    /// optimistically by the swipe handlers; the listeners reconcile.
+    private(set) var savedPlaceIds: Set<String> = []
+    private(set) var hiddenPlaceIds: Set<String> = []
+    private var savedListener: ListenerRegistration?
+    private var hiddenListener: ListenerRegistration?
+    private var prefsListenerUid: String?
 
     private let db = Firestore.firestore()
 
@@ -247,7 +263,8 @@ final class FriendPlacesService {
                 myVisitCount: myVisitsByPlace[placeId] ?? 0,
                 globalEngagementCount: p.globalEngagementCount,
                 address: p.address,
-                cityName: city
+                cityName: city,
+                googlePlaceId: p.googlePlaceId
             )
         }
         #if DEBUG
@@ -255,6 +272,8 @@ final class FriendPlacesService {
         #endif
 
         // Most-recently-active place first — useful when many pins overlap.
+        // (The map's visited-places LIST re-sorts by visit count in the view;
+        // keeping recency here preserves My Hunt / map-pin ordering.)
         places = assembled.sorted {
             ($0.mostRecent?.createdAt ?? .distantPast) > ($1.mostRecent?.createdAt ?? .distantPast)
         }
@@ -319,6 +338,75 @@ final class FriendPlacesService {
         }
     }
 
+    // MARK: - Swipe-deck preferences (saved / hidden)
+
+    /// Live-sync the user's saved + "less likely" place ids from
+    /// `users/{uid}/savedPlaces` and `users/{uid}/hiddenPlaces`. Mirrors
+    /// `subscribeToMyVisits`. Safe to call repeatedly; switching uid swaps the
+    /// listeners. NOTE: must be wired on the SAME service instance the map +
+    /// card stack read from (MainMapView owns its own instance).
+    func subscribeToPlacePrefs(uid: String) {
+        guard !uid.isEmpty else { return }
+        if prefsListenerUid == uid, savedListener != nil { return }
+        savedListener?.remove()
+        hiddenListener?.remove()
+        prefsListenerUid = uid
+
+        savedListener = db.collection("users").document(uid)
+            .collection("savedPlaces")
+            .addSnapshotListener { [weak self] snap, _ in
+                guard let self, let docs = snap?.documents else { return }
+                Task { @MainActor in self.savedPlaceIds = Set(docs.map(\.documentID)) }
+            }
+
+        hiddenListener = db.collection("users").document(uid)
+            .collection("hiddenPlaces")
+            .addSnapshotListener { [weak self] snap, _ in
+                guard let self, let docs = snap?.documents else { return }
+                Task { @MainActor in self.hiddenPlaceIds = Set(docs.map(\.documentID)) }
+            }
+    }
+
+    func unsubscribePlacePrefs() {
+        savedListener?.remove();  savedListener = nil
+        hiddenListener?.remove(); hiddenListener = nil
+        prefsListenerUid = nil
+        savedPlaceIds.removeAll()
+        hiddenPlaceIds.removeAll()
+    }
+
+    /// Swipe RIGHT → save. Optimistically updates local state (so the card
+    /// vanishes instantly), clears any prior "hidden" mark, then persists.
+    /// Doc id = placeId, so re-saving is idempotent.
+    func savePlace(_ id: String, uid: String) {
+        guard !uid.isEmpty else { return }
+        savedPlaceIds.insert(id)
+        hiddenPlaceIds.remove(id)
+        let userDoc = db.collection("users").document(uid)
+        userDoc.collection("savedPlaces").document(id)
+            .setData(["createdAt": FieldValue.serverTimestamp()])
+        userDoc.collection("hiddenPlaces").document(id).delete()
+    }
+
+    /// Swipe LEFT → "less likely to visit". Removes the card from the deck
+    /// only; the place stays in the list and on the map.
+    func hidePlace(_ id: String, uid: String) {
+        guard !uid.isEmpty else { return }
+        hiddenPlaceIds.insert(id)
+        db.collection("users").document(uid)
+            .collection("hiddenPlaces").document(id)
+            .setData(["createdAt": FieldValue.serverTimestamp()])
+    }
+
+    /// Un-save from the "Saved" tab — the place re-enters the deck unless it's
+    /// also hidden.
+    func unsavePlace(_ id: String, uid: String) {
+        guard !uid.isEmpty else { return }
+        savedPlaceIds.remove(id)
+        db.collection("users").document(uid)
+            .collection("savedPlaces").document(id).delete()
+    }
+
     // MARK: - City resolution
 
     /// Reverse-geocode places that still have no `cityName` (older places with
@@ -349,6 +437,122 @@ final class FriendPlacesService {
                 try? await Task.sleep(for: .milliseconds(120))
             }
         }
+    }
+
+    // MARK: - Place-detail jump (deep-link / Trending → place sheet)
+
+    /// Fetches a place doc and synthesizes a `FriendPlace` for the detail sheet
+    /// when the place isn't already in `places` (a deep-link / Trending jump to
+    /// a place the friend feed doesn't cover). `friendFeedPosts` is the caller's
+    /// already-loaded feed, used first; when it has nothing at this place we
+    /// fall back to public discoverable posts so the card stack isn't empty.
+    /// Returns nil if the place doc is gone or unreadable (caller no-ops).
+    func placeForJump(placeId: String, friendFeedPosts: [FriendPost]) async -> FriendPlace? {
+        do {
+            let doc = try await db.collection("places")
+                .document(placeId)
+                .getDocument(as: Place.self)
+            let friendPosts = friendFeedPosts.filter { $0.distinctPlaceIds.contains(placeId) }
+            // Trending-place / new-user path: the friend graph has no posts
+            // at this place, so the card stack would render empty. Fall back
+            // to public posts (clear AND blurred) so the sheet has content.
+            // PostStackCard renders non-discoverable ones with a blur based
+            // on `postsAreFallback` below.
+            let postsAtPlace: [FriendPost]
+            let postsAreFallback: Bool
+            if friendPosts.isEmpty {
+                postsAtPlace = await fetchDiscoverablePostsAtPlace(placeId)
+                postsAreFallback = true
+            } else {
+                postsAtPlace = friendPosts.sorted { $0.createdAt > $1.createdAt }
+                postsAreFallback = false
+            }
+            return FriendPlace(
+                id: placeId,
+                name: doc.name,
+                type: doc.type,
+                lat: doc.lat,
+                lng: doc.lng,
+                posts: postsAtPlace,
+                // Pass through the global counters so the detail sheet shows
+                // "N visits" instead of "0 visits by 0 friends" when the user
+                // landed here from a non-friend surface (e.g. Trending).
+                globalVisitCount: doc.globalVisitCount,
+                globalEngagementCount: doc.globalEngagementCount,
+                address: doc.address,
+                postsAreFallback: postsAreFallback
+            )
+        } catch {
+            // Place was deleted or unreadable — return nil so the caller can
+            // silently no-op rather than strand the user with an error.
+            return nil
+        }
+    }
+
+    /// Pulls public posts at a place when the friend feed has none. Used by
+    /// the Trending → place-detail flow so the sheet never renders an empty
+    /// card stack. Includes BOTH discoverable=true (rendered clear) AND
+    /// discoverable=false (rendered blurred via PostStackCard's blur
+    /// modifier). Posts authored by users who toggled "Help your circle
+    /// discover" OFF are dropped entirely — we respect that opt-out by
+    /// hiding the card, not blurring it. The `containsFaces == false` and
+    /// `restricted == false` filters are required to match the Firestore rule
+    /// (a restricted/audience-limited post must never surface in this public
+    /// place-detail fallback).
+    private func fetchDiscoverablePostsAtPlace(_ placeId: String) async -> [FriendPost] {
+        do {
+            // `array-contains mediaPlaceIds` (not `placeId ==`) so a post tagged
+            // to this place only in a SECONDARY photo still matches — the
+            // top-level `placeId` only mirrors item 0. Backed by the
+            // mediaPlaceIds composite index + the matching public-read rule.
+            let snap = try await db.collection("posts")
+                .whereField("mediaPlaceIds", arrayContains: placeId)
+                .whereField("restricted", isEqualTo: false)
+                .whereField("containsFaces", isEqualTo: false)
+                .order(by: "createdAt", descending: true)
+                .limit(to: 20)
+                .getDocuments()
+            let posts = snap.documents.compactMap(FriendPost.init(document:))
+            let optedOut = await fetchOptedOutAuthorSet(
+                authorIds: Array(Set(posts.map(\.authorId)))
+            )
+            return posts.filter { !optedOut.contains($0.authorId) }
+        } catch {
+            #if DEBUG
+            print("[FriendPlacesService] place-posts fallback fetch failed: \(error.localizedDescription)")
+            #endif
+            return []
+        }
+    }
+
+    /// Bulk-fetches `users/{uid}.optedOutOfDiscovery` for the given authors
+    /// and returns the set of UIDs that have the toggle OFF (= opted out).
+    /// Used to hide opted-out authors' cards in the place-detail panel —
+    /// mirrors how the Trending Cloud Function drops them. Splits into
+    /// chunks of 30 because that's Firestore's `in:` query cap.
+    private func fetchOptedOutAuthorSet(authorIds: [String]) async -> Set<String> {
+        guard !authorIds.isEmpty else { return [] }
+        var result: Set<String> = []
+        let chunks = stride(from: 0, to: authorIds.count, by: 30).map {
+            Array(authorIds[$0..<min($0 + 30, authorIds.count)])
+        }
+        for chunk in chunks {
+            do {
+                let snap = try await db.collection("users")
+                    .whereField(FieldPath.documentID(), in: chunk)
+                    .getDocuments()
+                for doc in snap.documents {
+                    if (doc.data()["optedOutOfDiscovery"] as? Bool) == true {
+                        result.insert(doc.documentID)
+                    }
+                }
+            } catch {
+                #if DEBUG
+                print("[FriendPlacesService] opt-out batch read failed: \(error.localizedDescription)")
+                #endif
+            }
+        }
+        return result
     }
 
     private static func reverseGeocodeCity(lat: Double, lng: Double) async -> String? {

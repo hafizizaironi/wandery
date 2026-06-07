@@ -261,6 +261,38 @@ final class PlacePickerService {
         }
     }
 
+    /// Best-effort resolve of a Google `place_id` for an app-created place (one
+    /// with no stored id), so navigation can route to the real POI instead of a
+    /// bare coordinate. Searches the name biased to the place's coordinate, then
+    /// keeps a match only when the name is similar AND the resolved point is
+    /// close. Returns `nil` when there's no confident match → caller falls back
+    /// to the coordinate. (Autocomplete predictions carry no coords, so the top
+    /// name matches are distance-verified via `fetchCoordinate`; capped at 2
+    /// lookups to bound Places API cost.)
+    func resolveGooglePlaceId(name: String,
+                              near coord: CLLocationCoordinate2D,
+                              maxDistanceMeters: Double = 250) async -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let candidates = (try? await autocomplete(trimmed, around: coord)) ?? []
+        guard !candidates.isEmpty else { return nil }
+
+        let target = MapsNavigation.normalizedName(trimmed)
+        let ranked = candidates
+            .map { (cand: $0, score: MapsNavigation.nameSimilarity(target, MapsNavigation.normalizedName($0.name))) }
+            .filter { $0.score >= 0.5 }
+            .sorted { $0.score > $1.score }
+
+        let origin = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        for entry in ranked.prefix(2) {
+            guard let pid = entry.cand.googlePlaceId, !pid.isEmpty,
+                  let resolved = try? await fetchCoordinate(googlePlaceId: pid) else { continue }
+            let meters = CLLocation(latitude: resolved.latitude, longitude: resolved.longitude).distance(from: origin)
+            if meters <= maxDistanceMeters { return pid }
+        }
+        return nil
+    }
+
     /// Resolve coords + name for an autocomplete result that didn't include them.
     func fetchCoordinate(googlePlaceId: String) async throws -> CLLocationCoordinate2D {
         let request = FetchPlaceRequest(
