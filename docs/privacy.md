@@ -4,7 +4,7 @@ title: Privacy Policy
 
 # Wandery — Privacy Policy
 
-_Last updated: 2026-05-20_
+_Last updated: 2026-06-08_
 
 This Privacy Policy explains what data Wandery collects, why, who it's shared with, and what choices you have. It mirrors the App Privacy declarations Wandery ships in its `PrivacyInfo.xcprivacy` manifest.
 
@@ -22,6 +22,7 @@ When you sign up and use Wandery, we collect:
 | **Precise location** | Latitude / longitude when you tag a place | To dedup places, find nearby cafés, and place friend pins on the map |
 | **Other user content** | Chat messages, captions, friend requests, reactions | To deliver them to the right people |
 | **Device ID** | Apple Push Notification (APNs) / Firebase Cloud Messaging (FCM) token | To send you push notifications |
+| **Product interaction** | Which features you tap and which areas of the app you spend time in | First-party usage analytics, to understand how the app is used and what to improve (see "Usage analytics" below) |
 
 Wandery does **not**:
 
@@ -37,6 +38,17 @@ Wandery does **not**:
 - **Google Places API**: When you search for a place to tag, the search query and a coarse location are sent to Google Places to return nearby suggestions.
 
 We do not share your data with any other third party except where required by law.
+
+## Usage analytics
+
+Wandery records first-party product-analytics events — which features you tap and which areas of the app you spend time in — to understand how the app is used and decide what to improve. These events:
+
+- are **first-party**: collected with our own code and Firebase, with **no third-party advertising or analytics SDKs**;
+- are tied to your account identifier so we can understand how features are used, but are **not** used to track you across other apps or websites and use **no advertising identifier** (no IDFA);
+- are **not** shared with any third party and are **not** used for advertising;
+- are kept only briefly — raw event records are automatically deleted after about **30 days**, after which only anonymous, aggregated totals remain.
+
+Deleting your account removes your data as described under "Delete your account" below.
 
 ## Push notifications
 
