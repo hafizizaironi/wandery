@@ -14,11 +14,14 @@ import SwiftUI
 
 /// Bump when the body of `WhatsNewSheet` changes meaningfully — the
 /// AppStorage gate re-presents the sheet on next launch for everyone.
-let whatsNewReleaseKey = "2026.05-private-posts"
+let whatsNewReleaseKey = "2026.06-widgets-wandery-code"
 
-/// Features the sheet can deep-link the user into.
+/// Features the sheet can deep-link the user into. Older cases
+/// (camera/discover/myHunt) are kept so prior routes stay valid; the
+/// current tour uses `widgets` + `wanderyCode`.
 enum WhatsNewFeature: String {
     case camera, discover, myHunt
+    case widgets, wanderyCode
 }
 
 struct WhatsNewSheet: View {
@@ -26,7 +29,7 @@ struct WhatsNewSheet: View {
     var onJumpToFeature: (WhatsNewFeature) -> Void
 
     @State private var page: Int = 0
-    private let pages: [WhatsNewPage] = .v2026_05
+    private let pages: [WhatsNewPage] = .v2026_06
 
     var body: some View {
         ZStack {
@@ -37,7 +40,7 @@ struct WhatsNewSheet: View {
                 TabView(selection: $page) {
                     ForEach(Array(pages.enumerated()), id: \.offset) { idx, p in
                         WhatsNewPageView(page: p, isActive: idx == page) {
-                            onJumpToFeature(p.feature)
+                            if let feature = p.feature { onJumpToFeature(feature) }
                         }
                         .tag(idx)
                         .padding(.horizontal, 24)
@@ -118,8 +121,8 @@ struct WhatsNewPage: Identifiable {
     let headline: String
     let body: String
     let footnote: String?
-    let feature: WhatsNewFeature        // jump target
-    let jumpCTA: String                 // inline "Try it" button copy
+    let feature: WhatsNewFeature?       // jump target — nil hides the inline button
+    let jumpCTA: String?                // inline "Try it" button copy
 }
 
 /// A small SF Symbol that floats around the main illustration. Drives the
@@ -132,63 +135,35 @@ struct AccentIcon {
 }
 
 extension Array where Element == WhatsNewPage {
-    static var v2026_05: [WhatsNewPage] {
+    static var v2026_06: [WhatsNewPage] {
         [
             WhatsNewPage(
-                icon: "person.2.fill",
+                icon: "apps.iphone",
                 accentIcons: [
-                    AccentIcon(name: "lock.fill",             offset: CGSize(width:  44, height: -42), scale: 0.34, anim: .bounce),
-                    AccentIcon(name: "checkmark.circle.fill", offset: CGSize(width: -46, height:  44), scale: 0.32, anim: .pulse),
+                    AccentIcon(name: "photo.fill", offset: CGSize(width:  46, height: -40), scale: 0.32, anim: .bounce),
+                    AccentIcon(name: "map.fill",   offset: CGSize(width: -46, height:  44), scale: 0.32, anim: .pulse),
                 ],
                 accent: AppTheme.cafeAccent,
                 symbolAnim: .pulse,
-                headline: "Pick who sees each post",
-                body: "Before you share, tap the faces in the new picker above your photo to choose which friends it goes to. Everyone's in by default — deselect anyone to leave them out. The friends you keep see a quiet “Shared with you.”",
-                footnote: "Only the friends you pick can see it.",
-                feature: .camera,
-                jumpCTA: "Try it →"
+                headline: "Wandery on your Home Screen",
+                body: "Two new widgets bring the hunt out of the app. Photo Feed keeps your friends' latest spots glanceable, and Nearby Map drops their recent finds and your saved places onto a live mini-map. Touch and hold your Home Screen, tap ＋, and search “Wandery.”",
+                footnote: "Add them in any size — they refresh on their own.",
+                feature: .widgets,
+                jumpCTA: "Show me how →"
             ),
             WhatsNewPage(
-                icon: "camera.aperture",
+                icon: "circle.hexagongrid.fill",
                 accentIcons: [
-                    AccentIcon(name: "sparkles",      offset: CGSize(width:  46, height: -40), scale: 0.32, anim: .variableColor),
-                    AccentIcon(name: "circle.dashed", offset: CGSize(width: -46, height:  44), scale: 0.34, anim: .pulse),
-                ],
-                accent: AppTheme.cafeAccent,
-                symbolAnim: .pulse,
-                headline: "Your camera scores the shot",
-                body: "A soft ring around the viewfinder slides from red to green as you frame — green means it's bright and crisp enough to shine in Discover. No numbers, just a gentle nudge toward your best photo.",
-                footnote: nil,
-                feature: .camera,
-                jumpCTA: "Open the camera →"
-            ),
-            WhatsNewPage(
-                icon: "sparkle.magnifyingglass",
-                accentIcons: [
-                    AccentIcon(name: "person.2.fill",   offset: CGSize(width:  46, height:  40), scale: 0.32, anim: .pulse),
-                    AccentIcon(name: "sparkle",         offset: CGSize(width: -48, height: -42), scale: 0.30, anim: .variableColor),
+                    AccentIcon(name: "viewfinder",          offset: CGSize(width:  46, height: -40), scale: 0.32, anim: .variableColor),
+                    AccentIcon(name: "person.fill.badge.plus", offset: CGSize(width: -48, height:  42), scale: 0.30, anim: .bounce),
                 ],
                 accent: AppTheme.cafeAccent,
                 symbolAnim: .variableColor,
-                headline: "Discover beyond your friends",
-                body: "Open the Map and you'll spot soft, blurred pins where friends-of-friends have hunted — a tease, not a tell. Tap ✨ to see what's trending across the whole hunt.",
-                footnote: "Circle pins are always blurred — only photos you share to Discover show clear in Trending.",
-                feature: .discover,
-                jumpCTA: "Show me the map →"
-            ),
-            WhatsNewPage(
-                icon: "map.fill",
-                accentIcons: [
-                    AccentIcon(name: "mappin.and.ellipse", offset: CGSize(width:  44, height: -40), scale: 0.34, anim: .bounce),
-                    AccentIcon(name: "checkmark.shield.fill", offset: CGSize(width: -46, height:  42), scale: 0.30, anim: .pulse),
-                ],
-                accent: AppTheme.cafeAccent,
-                symbolAnim: .pulse,
-                headline: "Your hunt, your control",
-                body: "Profile → My Hunt is now a month-by-month map of every place you've tagged. New there too: a “Help your circle discover” toggle that decides whether your visits hint at friends-of-friends.",
-                footnote: "Default on — turn it off any time. You'll still get Trending, but circle pins switch off too.",
-                feature: .myHunt,
-                jumpCTA: "Open my hunt →"
+                headline: "Add friends with your Wandery Code",
+                body: "Every account now has its own circular Wandery Code. Open yours, let a friend point their camera at it, and you're hunting buddies in seconds — no usernames to type. Tap Scan to read theirs.",
+                footnote: "Find it next to “Add” in your Friends list, or here on your profile.",
+                feature: .wanderyCode,
+                jumpCTA: "Open my code →"
             ),
         ]
     }
@@ -301,21 +276,24 @@ private struct WhatsNewPageView: View {
         }
     }
 
-    // MARK: jump button
+    // MARK: jump button — only when the page declares a destination + CTA
 
+    @ViewBuilder
     private var jumpButton: some View {
-        Button(action: onJump) {
-            HStack(spacing: 4) {
-                Text(page.jumpCTA)
-                    .font(.system(size: 13, weight: .semibold))
+        if let cta = page.jumpCTA, page.feature != nil {
+            Button(action: onJump) {
+                HStack(spacing: 4) {
+                    Text(cta)
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(page.accent)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .background(page.accent.opacity(0.10), in: Capsule())
+                .overlay(Capsule().stroke(page.accent.opacity(0.35), lineWidth: 1))
             }
-            .foregroundStyle(page.accent)
-            .padding(.vertical, 8)
-            .padding(.horizontal, 16)
-            .background(page.accent.opacity(0.10), in: Capsule())
-            .overlay(Capsule().stroke(page.accent.opacity(0.35), lineWidth: 1))
+            .buttonStyle(.plain)
+            .accessibilityHint("Closes this tour and opens the feature")
         }
-        .buttonStyle(.plain)
-        .accessibilityHint("Closes this tour and opens the feature")
     }
 }

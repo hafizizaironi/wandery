@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Privacy manifest for the FriendsFeedWidget extension (Photo Feed +
+        Nearby Map widgets). The extension reads cached feed/place data that
+        the host app already collected — it does not collect new data itself
+        (collection is declared in the app's PrivacyInfo.xcprivacy).
+
+        Required Reason API: the widget compiles SharedFeedStore, which reads
+        the App-Group UserDefaults suite — declared below. No tracking, no
+        file-timestamp / systemUptime / disk-space / keyboard APIs.
+    -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <!-- UserDefaults(suiteName:) shared with the host app via the App Group. -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>1C8F.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

@@ -80,6 +80,7 @@ struct ProfileHomeView: View {
     /// Presents the Creator's Pick curation surface (admin-only).
     @State private var showCreatorPicksAdmin = false
     @State private var showClassifierTuning = false
+    @State private var showAdminAnalytics = false
     /// DEV/admin-only: the Wandery Code detector spike (see WanderyCodeSpikeView).
     @State private var showWanderyCodeSpike = false
     /// Presents the FriendFind contact-scan surface.
@@ -305,6 +306,9 @@ struct ProfileHomeView: View {
         .fullScreenCover(isPresented: $showClassifierTuning) {
             AdminClassifierTuningView(onClose: { showClassifierTuning = false })
         }
+        .fullScreenCover(isPresented: $showAdminAnalytics) {
+            AdminAnalyticsView(onClose: { showAdminAnalytics = false })
+        }
         .fullScreenCover(isPresented: $showWanderyCodeSpike) {
             WanderyCodeSpikeView(
                 displayName: displayName,
@@ -375,7 +379,7 @@ struct ProfileHomeView: View {
             VStack(spacing: 14) {
                 Spacer().frame(height: 56)
 
-                Button { showEditProfile = true } label: {
+                Button { AnalyticsService.shared.log(.editProfile, area: .profile); showEditProfile = true } label: {
                     ZStack(alignment: .bottomTrailing) {
                         avatarView
                             .frame(width: 100, height: 100)
@@ -421,7 +425,7 @@ struct ProfileHomeView: View {
                         .contrastAware(AppTheme.cream, opacity: 0.3)
                 }
 
-                Button { showEditProfile = true } label: {
+                Button { AnalyticsService.shared.log(.editProfile, area: .profile); showEditProfile = true } label: {
                     Text("Edit Profile")
                         .font(.footnote).bold()
                         .foregroundStyle(AppTheme.cafeAccent)
@@ -995,6 +999,7 @@ struct ProfileHomeView: View {
     private var profileCodeButton: some View {
         Button {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            AnalyticsService.shared.log(.openWanderyCode, area: .profile)
             showWanderyCodeSpike = true
         } label: {
             Image(systemName: "qrcode")
@@ -1052,6 +1057,7 @@ struct ProfileHomeView: View {
             settingsRow(icon: "apps.iphone",
                         title: "Add the Home Screen widget",
                         subtitle: "Show friends' latest posts at a glance") {
+                AnalyticsService.shared.log(.addWidgetTutorial, area: .profile)
                 showWidgetTutorial = true
             }
 
@@ -1060,6 +1066,8 @@ struct ProfileHomeView: View {
                             subtitle: "Curate featured places") { showCreatorPicksAdmin = true }
                 settingsRow(icon: "wand.and.stars", title: "Classifier Tuning",
                             subtitle: "Inspect on-device photo scores") { showClassifierTuning = true }
+                settingsRow(icon: "chart.bar.xaxis", title: "Analytics",
+                            subtitle: "Usage & engagement") { showAdminAnalytics = true }
                 settingsRow(icon: "sparkles.rectangle.stack.fill", title: "Preview What's New",
                             subtitle: "Re-open the release tour") { onPreviewWhatsNew() }
                 settingsRow(icon: "photo.stack", title: "Marketing Mockups",
@@ -1356,6 +1364,7 @@ struct ProfileHomeView: View {
         defer { processingRequestId = nil }
         do {
             if accept {
+                AnalyticsService.shared.log(.acceptFriend, area: .profile)
                 try await socialService.acceptRequest(req)
             } else {
                 try await socialService.rejectRequest(req)
@@ -1383,6 +1392,7 @@ struct ProfileHomeView: View {
     private func sendFriendRequest() async {
         let query = addFriendQuery.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return }
+        AnalyticsService.shared.log(.addFriend, area: .profile)
         friendBusy    = true
         friendMessage = ""
         do {

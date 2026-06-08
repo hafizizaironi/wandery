@@ -129,7 +129,7 @@ final class CameraService: NSObject {
     var hasTorchForCurrentCamera: Bool { currentPosition == .back }
 
     func toggleLens() {
-        print("[Camera] toggleLens: hasToggle=\(hasLensToggleForCurrentCamera) currentSlot=\(lensSlot) position=\(currentPosition.rawValue)")
+        dlog("[Camera] toggleLens: hasToggle=\(hasLensToggleForCurrentCamera) currentSlot=\(lensSlot) position=\(currentPosition.rawValue)")
         guard hasLensToggleForCurrentCamera else { return }
         setLensSlot(lensSlot == .primary ? .wide : .primary)
     }
@@ -318,7 +318,7 @@ final class CameraService: NSObject {
             try AppAudioSession.activateForRecording()
         } catch {
             #if DEBUG
-            print("[Camera] activateForRecording failed: \(error.localizedDescription)")
+            dlog("[Camera] activateForRecording failed: \(error.localizedDescription)")
             #endif
         }
 
@@ -515,9 +515,9 @@ final class CameraService: NSObject {
     }
 
     func setLensSlot(_ slot: CameraLensSlot) {
-        print("[Camera] setLensSlot: requested=\(slot) current=\(lensSlot) rearHasHalf=\(Self.rearHasHalfWideCapability) isVirtual=\(Self.isVirtualRearCamera(currentInput?.device))")
-        guard slot != lensSlot else { print("[Camera] setLensSlot: already at slot, skipping"); return }
-        if slot == .wide, !Self.rearHasHalfWideCapability { print("[Camera] setLensSlot: no wide capability, skipping"); return }
+        dlog("[Camera] setLensSlot: requested=\(slot) current=\(lensSlot) rearHasHalf=\(Self.rearHasHalfWideCapability) isVirtual=\(Self.isVirtualRearCamera(currentInput?.device))")
+        guard slot != lensSlot else { dlog("[Camera] setLensSlot: already at slot, skipping"); return }
+        if slot == .wide, !Self.rearHasHalfWideCapability { dlog("[Camera] setLensSlot: no wide capability, skipping"); return }
         lensSlot = slot
         let positionSnapshot = currentPosition
         let isVirtual = Self.isVirtualRearCamera(currentInput?.device)
@@ -565,10 +565,10 @@ final class CameraService: NSObject {
               let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else { return }
 
-        print("[Camera] configureSession: device=\(device.deviceType.rawValue) slot=\(effectiveSlot)")
-        print("[Camera] configureSession: virtualDevice=\(String(describing: Self.backVirtualDevice()?.deviceType.rawValue))")
-        print("[Camera] configureSession: virtualSwitchFactors=\(device.virtualDeviceSwitchOverVideoZoomFactors) minZoom=\(device.minAvailableVideoZoomFactor) maxZoom=\(device.maxAvailableVideoZoomFactor)")
-        print("[Camera] configureSession: rearHasHalfWide=\(Self.rearHasHalfWideCapability)")
+        dlog("[Camera] configureSession: device=\(device.deviceType.rawValue) slot=\(effectiveSlot)")
+        dlog("[Camera] configureSession: virtualDevice=\(String(describing: Self.backVirtualDevice()?.deviceType.rawValue))")
+        dlog("[Camera] configureSession: virtualSwitchFactors=\(device.virtualDeviceSwitchOverVideoZoomFactors) minZoom=\(device.minAvailableVideoZoomFactor) maxZoom=\(device.maxAvailableVideoZoomFactor)")
+        dlog("[Camera] configureSession: rearHasHalfWide=\(Self.rearHasHalfWideCapability)")
 
         session.addInput(input)
         currentInput = input
@@ -773,17 +773,17 @@ final class CameraService: NSObject {
     private func applyRearZoom(slot: CameraLensSlot, animated: Bool, effectivePosition: AVCaptureDevice.Position? = nil) {
         let pos = effectivePosition ?? currentPosition
         guard pos == .back, let device = currentInput?.device else {
-            print("[Camera] applyRearZoom: skipped — pos=\(effectivePosition?.rawValue ?? -1) device=\(String(describing: currentInput?.device.deviceType.rawValue))")
+            dlog("[Camera] applyRearZoom: skipped — pos=\(effectivePosition?.rawValue ?? -1) device=\(String(describing: currentInput?.device.deviceType.rawValue))")
             return
         }
 
-        print("[Camera] applyRearZoom: slot=\(slot) device=\(device.deviceType.rawValue) isVirtual=\(Self.isVirtualRearCamera(device)) animated=\(animated) currentZoom=\(device.videoZoomFactor)")
+        dlog("[Camera] applyRearZoom: slot=\(slot) device=\(device.deviceType.rawValue) isVirtual=\(Self.isVirtualRearCamera(device)) animated=\(animated) currentZoom=\(device.videoZoomFactor)")
 
         if Self.isVirtualRearCamera(device) {
             let oneX = Self.oneXVideoZoom(for: device)
             let target = slot == .wide ? device.minAvailableVideoZoomFactor : oneX
             let clamped = min(max(target, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
-            print("[Camera] applyRearZoom: virtual → target=\(target) clamped=\(clamped)")
+            dlog("[Camera] applyRearZoom: virtual → target=\(target) clamped=\(clamped)")
             if animated {
                 device.cancelVideoZoomRamp()
                 let from = device.videoZoomFactor
@@ -840,7 +840,7 @@ final class CameraService: NSObject {
     /// For single physical cameras, `videoZoomFactor = 1.0` is always 1x.
     private static func oneXVideoZoom(for device: AVCaptureDevice) -> CGFloat {
         let oneX = device.virtualDeviceSwitchOverVideoZoomFactors.first.map { CGFloat($0.doubleValue) } ?? 1.0
-        print("[Camera] oneXVideoZoom: device=\(device.deviceType.rawValue) virtualSwitchFactors=\(device.virtualDeviceSwitchOverVideoZoomFactors) → oneX=\(oneX)")
+        dlog("[Camera] oneXVideoZoom: device=\(device.deviceType.rawValue) virtualSwitchFactors=\(device.virtualDeviceSwitchOverVideoZoomFactors) → oneX=\(oneX)")
         return oneX
     }
 

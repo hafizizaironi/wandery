@@ -134,7 +134,7 @@ final class ConversationService {
               let theirCurrentPub = await peerPublicKey(other, fresh: true) else { return }
         if cekMap?[other]?["forPub"] == theirCurrentPub { return }   // already fresh
         guard let w = try? MessageCrypto.wrap(cek, toPublicKeyBase64: theirCurrentPub) else { return }
-        print("[ConversationService] re-wrapping CEK for \(other) (identity key changed) in \(convId)")
+        dlog("[ConversationService] re-wrapping CEK for \(other) (identity key changed) in \(convId)")
         try? await convRef.updateData([
             "cek.\(other)": ["ek": w.ek, "ct": w.ct, "forPub": theirCurrentPub],
         ])
@@ -208,7 +208,7 @@ final class ConversationService {
                 Task { @MainActor in
                     guard let self else { return }
                     if let err {
-                        print("[ConversationService] inbox listener error: \(err)")
+                        dlog("[ConversationService] inbox listener error: \(err)")
                         return
                     }
                     let convs = snap?.documents.compactMap { Conversation(document: $0) } ?? []
@@ -297,12 +297,12 @@ final class ConversationService {
             snap = try await ref.getDocument()
         } catch let getErr as NSError {
             #if DEBUG
-            print("[Conv] doc \(id) — GET failed code=\(getErr.code) desc=\(getErr.localizedDescription)")
+            dlog("[Conv] doc \(id) — GET failed code=\(getErr.code) desc=\(getErr.localizedDescription)")
             #endif
             throw getErr
         }
         #if DEBUG
-        print("[Conv] doc \(id) — GET ok exists=\(snap.exists) participantIds=\(snap.data()?["participantIds"] ?? "nil")")
+        dlog("[Conv] doc \(id) — GET ok exists=\(snap.exists) participantIds=\(snap.data()?["participantIds"] ?? "nil")")
         #endif
         if !snap.exists {
             do {
@@ -314,11 +314,11 @@ final class ConversationService {
                     "lastMessageSenderId": "",
                 ])
                 #if DEBUG
-                print("[Conv] doc \(id) — CREATE ok")
+                dlog("[Conv] doc \(id) — CREATE ok")
                 #endif
             } catch let createErr as NSError {
                 #if DEBUG
-                print("[Conv] doc \(id) — CREATE failed code=\(createErr.code) desc=\(createErr.localizedDescription)")
+                dlog("[Conv] doc \(id) — CREATE failed code=\(createErr.code) desc=\(createErr.localizedDescription)")
                 #endif
                 throw createErr
             }

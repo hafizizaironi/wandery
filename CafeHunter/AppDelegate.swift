@@ -55,11 +55,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // Use `.unknown` to let Firebase pick automatically from the
         // provisioning profile — the safer default across configurations.
         Auth.auth().setAPNSToken(deviceToken, type: .unknown)
-        print("[Push] APNs token registered (\(deviceToken.count) bytes), handed to FCM + Auth")
+        dlog("[Push] APNs token registered (\(deviceToken.count) bytes), handed to FCM + Auth")
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        print("[Push] APNs registration failed: \(error.localizedDescription)")
+        dlog("[Push] APNs registration failed: \(error.localizedDescription)")
     }
 
     // MARK: - Silent push

@@ -419,6 +419,6 @@ final class WanderyCodeDetector {
 
     private func log(_ msg: @autoclosure () -> String) {
         guard debugLogging else { return }
-        print("[WanderyDetector] \(msg())")
+        dlog("[WanderyDetector] \(msg())")
     }
 }

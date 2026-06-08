@@ -157,6 +157,23 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ── Product analytics (admin dashboard) ──────────────────────────────
+    // Clients APPEND their own pseudonymous usage events (uid-stamped); raw
+    // rows are never client-readable. Raw rows TTL-expire (~30d) via the
+    // `expireAt` field (TTL policy configured in the Firebase console). The
+    // `onAnalyticsEvent` Cloud Function rolls them into adminAnalytics/*.
+    match /analyticsEvents/{eventId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow read, update, delete: if false;
+    }
+    // Server-written aggregates (admin SDK only); readable by the admin
+    // dashboard. Mirrors the userCodes/accountIds server-only precedent.
+    match /adminAnalytics/{docId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
     match /friendRequests/{requestId} {
       allow read: if signedIn() &&
         (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);

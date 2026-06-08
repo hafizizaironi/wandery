@@ -9,12 +9,16 @@
         never calls ATTrackingManager. NSPrivacyTracking is false and
         NSPrivacyTrackingDomains is intentionally empty.
 
-        Apple's Required Reason API list isn't hit by app code directly:
-        no UserDefaults, no file-timestamp APIs, no systemUptime, no
-        disk-space queries, no activeInputModes reads. Firebase / Google
-        Sign-In / Google Places SDKs ship their own privacy manifests
-        (Firebase 10.20+) so this file only declares CafeHunter's own
-        first-party data collection.
+        Required Reason APIs used by app code, declared below:
+          • UserDefaults — @AppStorage + UserDefaults.standard, plus the
+            App-Group suite (SharedFeedStore) shared with the widgets/NSE.
+          • File timestamps — modificationDate / contentModificationDateKey
+            on the app's own image + video disk caches (CachedAsyncImage,
+            VideoCache) for LRU eviction.
+        No systemUptime, disk-space, or activeInputModes reads. Firebase /
+        Google Sign-In / Google Places SDKs ship their own privacy manifests
+        (Firebase 10.20+), so this file declares only CafeHunter's own
+        first-party data collection + API access.
     -->
     <key>NSPrivacyTracking</key>
     <false/>
@@ -23,7 +27,29 @@
     <array/>
 
     <key>NSPrivacyAccessedAPITypes</key>
-    <array/>
+    <array>
+        <!-- @AppStorage + UserDefaults.standard (the app's own defaults) and
+             UserDefaults(suiteName:) shared with the widgets/NSE via the App Group. -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+                <string>1C8F.1</string>
+            </array>
+        </dict>
+        <!-- modificationDate / contentModificationDateKey on the app's own
+             image + video disk caches (CachedAsyncImage, VideoCache) for LRU. -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>C617.1</string>
+            </array>
+        </dict>
+    </array>
 
     <key>NSPrivacyCollectedDataTypes</key>
     <array>
@@ -136,6 +162,23 @@
             <key>NSPrivacyCollectedDataTypePurposes</key>
             <array>
                 <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
+        <!-- First-party product analytics: button taps + per-area screen
+             dwell, for the admin usage dashboard. Pseudonymous (uid-linked so
+             journeys are visible) but NOT used for tracking; raw rows
+             auto-expire (~30 days). NSPrivacyTracking stays false. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeProductInteraction</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
             </array>
         </dict>
     </array>

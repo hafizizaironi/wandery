@@ -437,6 +437,6 @@ struct PlacePickerSheet: View {
 
 #Preview {
     PlacePickerSheet { sel in
-        print("picked:", sel)
+        dlog("picked:", sel)
     }
 }

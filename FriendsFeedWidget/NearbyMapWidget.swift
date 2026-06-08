@@ -101,7 +101,8 @@ struct NearbyPin: Identifiable {
 
 struct NearbyEntry: TimelineEntry {
     let date: Date
-    let mapImage: Data?
+    let mapImage: Data?       // light-appearance map
+    let mapImageDark: Data?   // dark-appearance map (view picks by colorScheme)
     let youFrac: CGPoint
     /// The signed-in user's profile photo for the "you" marker (nil → dot).
     let youAvatar: Data?
@@ -110,11 +111,12 @@ struct NearbyEntry: TimelineEntry {
     let totalCount: Int
     let mediumLayout: NearbyMediumLayout
 
-    init(date: Date, mapImage: Data?, youFrac: CGPoint, youAvatar: Data? = nil,
-         pins: [NearbyPin], nearest: NearbyPin?, totalCount: Int,
-         mediumLayout: NearbyMediumLayout = .full) {
+    init(date: Date, mapImage: Data?, mapImageDark: Data? = nil, youFrac: CGPoint,
+         youAvatar: Data? = nil, pins: [NearbyPin], nearest: NearbyPin?,
+         totalCount: Int, mediumLayout: NearbyMediumLayout = .full) {
         self.date = date
         self.mapImage = mapImage
+        self.mapImageDark = mapImageDark
         self.youFrac = youFrac
         self.youAvatar = youAvatar
         self.pins = pins
@@ -175,24 +177,23 @@ struct NearbyProvider: AppIntentTimelineProvider {
             .sorted { $0.d < $1.d }
 
         let mapSize = (size == .zero) ? CGSize(width: 338, height: 354) : size
-        let opts = MKMapSnapshotter.Options()
-        opts.region = MKCoordinateRegion(center: here,
+        let region = MKCoordinateRegion(center: here,
             latitudinalMeters: Double(radius) * 2.4, longitudinalMeters: Double(radius) * 2.4)
-        opts.size = mapSize
-        opts.scale = 2
-        opts.mapType = .mutedStandard
-        opts.pointOfInterestFilter = .excludingAll
-        opts.showsBuildings = true
 
-        guard let snap = try? await MKMapSnapshotter(options: opts).start() else {
+        // Render BOTH appearances so the widget's map follows system dark/light
+        // (the image is baked into the entry; the view picks by colorScheme).
+        let lightSnap = await snapshot(region: region, size: mapSize, style: .light)
+        let darkSnap  = await snapshot(region: region, size: mapSize, style: .dark)
+        guard let geom = lightSnap ?? darkSnap else {
             return NearbyEntry(date: Date(), mapImage: nil, youFrac: CGPoint(x: 0.5, y: 0.5),
                                youAvatar: youAvatar, pins: [], nearest: nil,
                                totalCount: candidates.count, mediumLayout: config.mediumLayout)
         }
 
+        // Projection is geometry-only (same region+size), so either snapshot works.
         func frac(_ coord: CLLocationCoordinate2D) -> CGPoint {
-            let p = snap.point(for: coord)
-            return CGPoint(x: p.x / opts.size.width, y: p.y / opts.size.height)
+            let p = geom.point(for: coord)
+            return CGPoint(x: p.x / mapSize.width, y: p.y / mapSize.height)
         }
 
         let youFrac = frac(here)
@@ -209,10 +210,27 @@ struct NearbyProvider: AppIntentTimelineProvider {
         }
 
         return NearbyEntry(date: Date(),
-                           mapImage: snap.image.jpegData(compressionQuality: 0.9),
+                           mapImage: lightSnap?.image.jpegData(compressionQuality: 0.9),
+                           mapImageDark: darkSnap?.image.jpegData(compressionQuality: 0.9),
                            youFrac: youFrac, youAvatar: youAvatar, pins: pins,
                            nearest: pins.first, totalCount: candidates.count,
                            mediumLayout: config.mediumLayout)
+    }
+
+    /// One MKMapSnapshotter render for a given appearance. Setting
+    /// `traitCollection`'s `userInterfaceStyle` makes the map tiles render
+    /// light or dark.
+    private static func snapshot(region: MKCoordinateRegion, size: CGSize,
+                                 style: UIUserInterfaceStyle) async -> MKMapSnapshotter.Snapshot? {
+        let opts = MKMapSnapshotter.Options()
+        opts.region = region
+        opts.size = size
+        opts.scale = 2
+        opts.mapType = .mutedStandard
+        opts.pointOfInterestFilter = .excludingAll
+        opts.showsBuildings = true
+        opts.traitCollection = UITraitCollection(userInterfaceStyle: style)
+        return try? await MKMapSnapshotter(options: opts).start()
     }
 
     /// The signed-in user's profile photo for the "you" marker. Cache-first
@@ -285,7 +303,7 @@ struct CalloutView: View {
                 Text(pin.distanceLabel).font(.system(size: 11, weight: .semibold)).opacity(0.65)
             }
         }
-        .foregroundStyle(close ? .white : WanderyTheme.ink)
+        .foregroundStyle(close ? .white : .primary)
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(close ? AnyShapeStyle(WanderyTheme.olive) : AnyShapeStyle(.regularMaterial), in: Capsule())
         .overlay(Capsule().strokeBorder(.white.opacity(close ? 0.4 : 0.25)))
@@ -298,7 +316,7 @@ struct NearbyHeaderChip: View {
     var body: some View {
         Text("Nearby · \(count)")
             .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(WanderyTheme.ink)
+            .foregroundStyle(.primary)
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.3)))
@@ -310,7 +328,7 @@ struct RecenterGlyph: View {
     var body: some View {
         Image(systemName: "location.fill")
             .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(WanderyTheme.ink)
+            .foregroundStyle(.primary)
             .frame(width: 26, height: 26)
             .background(.regularMaterial, in: Circle())
             .overlay(Circle().strokeBorder(.white.opacity(0.3)))
@@ -323,15 +341,15 @@ struct SpotRow: View {
         HStack(spacing: 9) {
             Circle().fill(pin.category.color).frame(width: 9, height: 9)
             Text(pin.name).font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(WanderyTheme.ink).lineLimit(1)
+                .foregroundStyle(.primary).lineLimit(1)
             Spacer(minLength: 6)
             if pin.category == .recent, let initial = pin.friendInitial, let hue = pin.friendHue {
                 WidgetAvatar(initials: initial, hue: hue, size: 18)
             } else if pin.category == .trend, let n = pin.trendCount {
-                Text("🔥\(n)").font(.system(size: 11, weight: .bold)).foregroundStyle(WanderyTheme.ink)
+                Text("🔥\(n)").font(.system(size: 11, weight: .bold)).foregroundStyle(.primary)
             }
             Text(pin.distanceLabel).font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(WanderyTheme.ink.opacity(0.6))
+                .foregroundStyle(.primary.opacity(0.6))
         }
     }
 }
@@ -387,7 +405,7 @@ struct NearbySmallView: View {
                         Text(n.name).font(.system(size: 10.5, weight: .bold)).lineLimit(1)
                         Text(n.distanceLabel).font(.system(size: 10, weight: .semibold)).opacity(0.7)
                     }
-                    .foregroundStyle(WanderyTheme.ink)
+                    .foregroundStyle(.primary)
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(.regularMaterial, in: Capsule())
                     .padding(8)
@@ -423,13 +441,13 @@ struct NearbyMediumView: View {
                             Circle().fill(n.category.color).frame(width: 9, height: 9)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(n.name).font(.system(size: 13, weight: .bold))
-                                    .foregroundStyle(WanderyTheme.ink).lineLimit(1)
+                                    .foregroundStyle(.primary).lineLimit(1)
                                 Text(n.distanceLabel).font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(WanderyTheme.ink.opacity(0.6))
+                                    .foregroundStyle(.primary.opacity(0.6))
                             }
                             Spacer(minLength: 4)
                             Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(WanderyTheme.ink.opacity(0.5))
+                                .foregroundStyle(.primary.opacity(0.5))
                         }
                         .padding(11)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -457,7 +475,7 @@ struct NearbyLargeView: View {
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(WanderyTheme.paper)
+                .background(WanderyTheme.adaptivePaper)
             }
         }
         .overlay(alignment: .topLeading) { NearbyHeaderChip(count: entry.totalCount).padding(14) }
@@ -470,7 +488,7 @@ struct AllQuietLabel: View {
             Spacer()
             Text("All quiet nearby. Widen your radius or check back later.")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(WanderyTheme.ink)
+                .foregroundStyle(.primary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -483,6 +501,7 @@ struct AllQuietLabel: View {
 
 struct NearbyEntryView: View {
     @Environment(\.widgetFamily) private var family
+    @Environment(\.colorScheme) private var scheme
     let entry: NearbyEntry
 
     var body: some View {
@@ -502,14 +521,16 @@ struct NearbyEntryView: View {
         }
     }
 
-    @ViewBuilder private var background: some View {
-        ZStack {
-            if let data = entry.mapImage, let ui = UIImage(data: data) {
+    private var background: some View {
+        // Pick the map rendered for the current appearance (falls back to light).
+        let data = (scheme == .dark ? (entry.mapImageDark ?? entry.mapImage) : entry.mapImage)
+        return ZStack {
+            if let data, let ui = UIImage(data: data) {
                 Image(uiImage: ui).resizable().scaledToFill()
                     .saturation(entry.pins.isEmpty ? 0.35 : 1.0)
-                WanderyTheme.cream.opacity(0.10)   // faint warmth over Apple's palette
+                (scheme == .dark ? Color.black.opacity(0.05) : WanderyTheme.cream.opacity(0.10))
             } else {
-                WanderyTheme.paper
+                WanderyTheme.adaptivePaper
             }
         }
     }

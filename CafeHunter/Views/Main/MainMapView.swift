@@ -476,6 +476,24 @@ struct MainMapView: View {
                 guard active, !showDiscover, pendingPlaceJumpId == nil else { return }
                 centerOnUser = true
             }
+            // Analytics areas owned by the map (not the shell): the place-detail
+            // sheet and the Trending feed. Returning to the bare map re-tracks .map.
+            .onChange(of: activeFriendPlace != nil) { _, shown in
+                if shown {
+                    AnalyticsService.shared.log(.openPlaceDetail, area: .placeDetail)
+                    AnalyticsService.shared.screen(.placeDetail)
+                } else {
+                    AnalyticsService.shared.screen(.map)
+                }
+            }
+            .onChange(of: showDiscover) { _, open in
+                if open {
+                    AnalyticsService.shared.log(.openTrending, area: .trending)
+                    AnalyticsService.shared.screen(.trending)
+                } else {
+                    AnalyticsService.shared.screen(.map)
+                }
+            }
 
             // Top-right HUD buttons
             topButtons
@@ -559,6 +577,7 @@ struct MainMapView: View {
             Button {
                 let gen = UIImpactFeedbackGenerator(style: .medium)
                 gen.impactOccurred()
+                AnalyticsService.shared.log(.recenterMap, area: .map)
                 centerOnUser = true
             } label: {
                 Image(systemName: "location.fill")
@@ -590,6 +609,7 @@ struct MainMapView: View {
             if !(socialService.profile?.optedOutOfDiscovery ?? false) {
                 Button {
                     UISelectionFeedbackGenerator().selectionChanged()
+                    AnalyticsService.shared.log(.toggleCircle, area: .map)
                     showCirclePref.toggle()
                 } label: {
                     Image(systemName: showCirclePref ? "person.2.fill" : "person.2")

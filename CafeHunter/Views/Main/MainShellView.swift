@@ -82,6 +82,10 @@ struct MainShellView: View {
     @State private var showTesterWelcome = false
     /// Admin-only: full-screen marketing-mockup pages for App Store screenshots.
     @State private var showMarketingMockups = false
+    /// What's New jump targets that present their own surface here (rather than
+    /// switching tabs): the Home Screen widget tutorial + the Wandery Code screen.
+    @State private var showWidgetTutorial = false
+    @State private var showWanderyCode = false
     /// Pulse-binding for the WhatsNew "Show me the map →" jump:
     /// MainShellView sets this true, MainMapView watches and opens the
     /// Trending sheet, then resets the flag.
@@ -99,6 +103,7 @@ struct MainShellView: View {
     @AppStorage("update.dismissedBuild") private var dismissedUpdateBuild = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     /// True when a full-screen surface fully hides the Hero page (chat,
     /// friend-find, phone onboarding, marketing mockups). HeroPageView uses
@@ -138,7 +143,10 @@ struct MainShellView: View {
                         highlightedPostId: $highlightedPostId,
                         edgeDragActive: edgeDragActive,
                         onJumpToPlace: { placeId in jumpToMap(placeId: placeId) },
-                        onOpenMessages: { chatPresentation = .inbox },
+                        onOpenMessages: {
+                            AnalyticsService.shared.log(.openMessages, area: .hero)
+                            chatPresentation = .inbox
+                        },
                         onFindFriends: { showFriendFindSheet = true },
                         isObscured: heroIsCovered
                     )
@@ -291,6 +299,20 @@ struct MainShellView: View {
             let snapped = ShellPage(rawValue: Int(value.rounded())) ?? .hero
             if snapped != selectedPage { selectedPage = snapped }
         }
+        // Product-analytics area tracking (admin dashboard): which area the
+        // user is in + how long. Re-evaluated when the page or an owned cover
+        // changes. Place-detail + Trending are tracked inside MainMapView.
+        .onChange(of: selectedPage) { _, _ in trackArea() }
+        .onChange(of: chatPresentation != nil) { _, _ in trackArea() }
+        .onChange(of: showFriendFindSheet) { _, _ in trackArea() }
+        .onChange(of: showMyHunt) { _, _ in trackArea() }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background: AnalyticsService.shared.appBackgrounded()
+            case .active:     AnalyticsService.shared.appForegrounded()
+            default: break
+            }
+        }
         .fullScreenCover(item: $chatPresentation) { route in
             ChatRootView(
                 conversationService: conversationService,
@@ -382,6 +404,16 @@ struct MainShellView: View {
                                 showMyHunt = true
                             }
                         }
+                    case .widgets:
+                        // Present the in-app widget tutorial after the What's New
+                        // sheet has dismissed (avoids a present-while-dismissing clash).
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                            showWidgetTutorial = true
+                        }
+                    case .wanderyCode:
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                            showWanderyCode = true
+                        }
                     }
                 }
             )
@@ -399,7 +431,19 @@ struct MainShellView: View {
         .fullScreenCover(isPresented: $showMarketingMockups) {
             MarketingMockupsView(onClose: { showMarketingMockups = false })
         }
+        .sheet(isPresented: $showWidgetTutorial) {
+            WidgetTutorialView()
+        }
+        .fullScreenCover(isPresented: $showWanderyCode) {
+            WanderyCodeSpikeView(
+                displayName: whatsNewDisplayName,
+                username: socialService.profile?.username,
+                photoURL: authService.user?.photoURL?.absoluteString,
+                onClose: { showWanderyCode = false }
+            )
+        }
         .onAppear {
+            trackArea()   // initial area on first appearance
             // Once per cold launch: surface the soft prompt to legacy
             // users (the hard gate in ContentView already handles new
             // users via `needsPhone`, so this only fires when the user
@@ -457,6 +501,29 @@ struct MainShellView: View {
                 }
             }
         }
+    }
+
+    /// Effective analytics area = the front-most surface the shell owns.
+    private var effectiveArea: AnalyticsArea {
+        if chatPresentation != nil { return .chat }
+        if showFriendFindSheet { return .friends }
+        if showMyHunt { return .myHunt }
+        switch selectedPage {
+        case .map:     return .map
+        case .hero:    return .hero
+        case .profile: return .profile
+        }
+    }
+
+    private func trackArea() { AnalyticsService.shared.screen(effectiveArea) }
+
+    /// Display name for the Wandery Code screen when opened from What's New.
+    /// Mirrors `ProfileHomeView.displayName` so the code looks identical
+    /// whether reached from Profile or the release tour.
+    private var whatsNewDisplayName: String {
+        authService.user?.displayName
+            ?? authService.user?.email?.components(separatedBy: "@").first
+            ?? "Explorer"
     }
 
     /// Triggered from a post-reference bubble in chat: dismiss the

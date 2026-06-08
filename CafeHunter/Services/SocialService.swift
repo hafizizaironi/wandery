@@ -141,7 +141,7 @@ final class SocialService {
                 MessageCrypto.mirrorIdentityKeyToSharedGroup(uid: uid)
             } catch {
                 #if DEBUG
-                print("[SocialService] ensureIdentityKey failed: \(error.localizedDescription)")
+                dlog("[SocialService] ensureIdentityKey failed: \(error.localizedDescription)")
                 #endif
             }
         }
@@ -192,7 +192,7 @@ final class SocialService {
                 }
                 try await ref.setData(update, merge: true)
             } catch {
-                print("[SocialService] ensureUserDocument failed: \(error)")
+                dlog("[SocialService] ensureUserDocument failed: \(error)")
             }
         }
     }
@@ -209,7 +209,7 @@ final class SocialService {
                     // notice. `refreshFriendsFromServer()` below is the
                     // recovery path when this happens in production.
                     #if DEBUG
-                    print("[SocialService] friends listener error: \(err.localizedDescription)")
+                    dlog("[SocialService] friends listener error: \(err.localizedDescription)")
                     #endif
                 }
                 Task { @MainActor in
@@ -269,7 +269,7 @@ final class SocialService {
             self.friendIds = snap.documents.map(\.documentID)
         } catch {
             #if DEBUG
-            print("[SocialService] refreshFriendsFromServer failed: \(error.localizedDescription)")
+            dlog("[SocialService] refreshFriendsFromServer failed: \(error.localizedDescription)")
             #endif
         }
     }
@@ -286,7 +286,7 @@ final class SocialService {
                     // the user or the dev. Surface to console so we
                     // notice. Common cause: missing composite index.
                     #if DEBUG
-                    print("[SocialService] incoming-requests listener error: \(err.localizedDescription)")
+                    dlog("[SocialService] incoming-requests listener error: \(err.localizedDescription)")
                     #endif
                 }
                 Task { @MainActor in
@@ -307,7 +307,7 @@ final class SocialService {
             .addSnapshotListener { [weak self] snap, err in
                 if let err {
                     #if DEBUG
-                    print("[SocialService] outgoing-requests listener error: \(err.localizedDescription)")
+                    dlog("[SocialService] outgoing-requests listener error: \(err.localizedDescription)")
                     #endif
                 }
                 Task { @MainActor in

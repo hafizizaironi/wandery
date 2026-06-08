@@ -329,7 +329,7 @@ private struct InviteTarget: Identifiable {
     var id: String { contact.id }
     var message: String {
         "Hey \(contact.displayName.split(separator: " ").first.map(String.init) ?? "")! "
-            + "I'm using Wandery to discover good cafés and food spots — come check it out: https://apps.apple.com/app/idTBD"
+            + "I'm using Wandery to discover good cafés and food spots — come check it out: \(LegalURLs.appStoreURL.absoluteString)"
     }
 }
 

@@ -13,6 +13,13 @@ enum WanderyTheme {
     static let persimmon = Color(red: 0.851, green: 0.416, blue: 0.247)   // #D96A3F  recent · you-dot
     static let olive     = Color(red: 0.486, green: 0.561, blue: 0.337)   // #7C8F56  hunt
     static let honey     = Color(red: 0.788, green: 0.569, blue: 0.247)   // #C9913F  trend
+
+    /// Cream paper in light mode, espresso in dark — for the Nearby widget's
+    /// list/card surfaces so they (and `.primary` text on them) follow the
+    /// system appearance.
+    static let adaptivePaper = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(espresso) : UIColor(paper)
+    })
 }
 
 /// Shared widget kind id — must match the `reloadTimelines(ofKind:)` calls.

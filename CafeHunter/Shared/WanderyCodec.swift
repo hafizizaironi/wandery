@@ -39,7 +39,7 @@ final class WanderyCodec {
     init?() {
         guard let ctx = JSContext() else { return nil }
         ctx.exceptionHandler = { _, err in
-            print("[WanderyCodec] JS exception: \(err?.toString() ?? "unknown")")
+            dlog("[WanderyCodec] JS exception: \(err?.toString() ?? "unknown")")
         }
         ctx.evaluateScript(wanderyCodecJS)
 
@@ -125,10 +125,10 @@ final class WanderyCodec {
               enc.bits.count == 156,
               let dec = decode(bits: enc.bits),
               dec.accountId == 12345, dec.version == 0, dec.byteErrors == 0 else {
-            print("[WanderyCodec] SELF-CHECK FAILED — JS bridge is not producing the reference vector")
+            dlog("[WanderyCodec] SELF-CHECK FAILED — JS bridge is not producing the reference vector")
             return false
         }
-        print("[WanderyCodec] self-check OK — encode/decode(12345) round-trips across \(enc.bits.count) modules")
+        dlog("[WanderyCodec] self-check OK — encode/decode(12345) round-trips across \(enc.bits.count) modules")
         return true
     }
 }

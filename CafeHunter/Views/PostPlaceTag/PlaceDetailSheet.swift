@@ -42,6 +42,14 @@ struct PlaceDetailSheet: View {
     /// avatar corner never renders empty even for one frame.
     @State private var hydrator = ParticipantHydrator()
 
+    /// Card ids the user has already swiped away. Once this covers the whole
+    /// deck (or the card now on top is one they've already seen), we surface a
+    /// gentle "you've looped" toast — the stack itself wraps forever, so this
+    /// is the only signal that there's nothing new left.
+    @State private var swipedIds: Set<String> = []
+    @State private var showLoopHint = false
+    @State private var loopHintTask: Task<Void, Never>?
+
     var body: some View {
         VStack(spacing: 0) {
             grabber
@@ -126,6 +134,7 @@ struct PlaceDetailSheet: View {
     /// resolve one by name+coordinate; `MapsNavigation` falls back to the
     /// coordinate when there's still no id.
     private func openGoogleMaps() async {
+        AnalyticsService.shared.log(.openGoogleMaps, area: .placeDetail)
         var placeId = place.googlePlaceId
         if placeId?.isEmpty ?? true {
             resolvingMaps = true
@@ -254,7 +263,47 @@ struct PlaceDetailSheet: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
         }
         .frame(height: 360)
+        .overlay(alignment: .top) {
+            if showLoopHint { loopHintPill }
+        }
         .task { await runHintIfNeeded() }
+    }
+
+    /// Friendly "you've seen them all" toast. Wording adapts to a single-photo
+    /// place ("the only photo here") vs a looped multi-card deck.
+    private var loopHintPill: some View {
+        HStack(spacing: 6) {
+            Image(systemName: cards.count <= 1 ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+                .font(.caption2.weight(.bold))
+            Text(loopHintText)
+                .font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.6), in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+        .padding(.top, 6)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private var loopHintText: String {
+        cards.count <= 1
+            ? "That's the only photo here"
+            : "You've seen all \(cards.count) — back to the start"
+    }
+
+    /// Fades the loop toast in, then out after a beat. Re-triggering resets the
+    /// timer so rapid repeat-swipes keep it visible without stacking timers.
+    private func showLoopHintBriefly() {
+        loopHintTask?.cancel()
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { showLoopHint = true }
+        loopHintTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.2))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.35)) { showLoopHint = false }
+        }
     }
 
     /// Shown when there's nothing left to display — either no one has posted
@@ -424,6 +473,14 @@ struct PlaceDetailSheet: View {
         withTransaction(t) {
             topIndex = (topIndex + 1) % n
             dragOffset = .zero
+        }
+        // Track what's been seen. If the deck has now fully cycled (or the card
+        // that just rose to the front is one we've already swiped), nudge the
+        // user that there's nothing new — the stack itself just loops silently.
+        swipedIds.insert(frontCard.id)
+        let nowFront = deck[topIndex]
+        if n == 1 || swipedIds.count >= n || swipedIds.contains(nowFront.id) {
+            showLoopHintBriefly()
         }
         // Now animate only the lifted card off-screen.
         withAnimation(.easeOut(duration: 0.28)) {

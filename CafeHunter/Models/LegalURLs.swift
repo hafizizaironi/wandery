@@ -25,6 +25,13 @@ enum LegalURLs {
 
     static let privacyPolicy = URL(string: "https://hafizizaironi.github.io/wandery/privacy")!
 
+    /// Public download / share link used in invites. Until the App Store
+    /// listing exists, this points at the Wandery landing page (GitHub Pages,
+    /// which loads today) so invite messages are never a dead link. Once the
+    /// app is live, change this one line to
+    /// `https://apps.apple.com/app/id<APP_ID>`.
+    static let appStoreURL = URL(string: "https://hafizizaironi.github.io/wandery/")!
+
     /// Published support contact. Reviewers expect this to be reachable
     /// from inside the app — Profile → Settings → Contact support.
     static let supportEmail = "hafizizaironi@gmail.com"
@@ -42,7 +49,10 @@ enum LegalURLs {
     /// prompted on next launch. Date-based so the "what did they accept"
     /// answer is grep-able from Firestore.
     static let termsVersion = "2026-05-23"
-    static let privacyVersion = "2026-05-23"
+    // Bumped 2026-06-08: privacy policy now discloses first-party product
+    // analytics (button taps + per-area dwell). Re-prompts users to re-accept.
+    // Publish the updated hosted policy BEFORE shipping this build.
+    static let privacyVersion = "2026-06-08"
 
     /// Minimum age required to use the app. 13 mirrors COPPA in the US and
     /// the most common floor across regions. Some EU member states require

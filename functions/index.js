@@ -421,6 +421,52 @@ exports.onReactionEngagement = functions.firestore
     await Promise.all(updates);
   });
 
+// Product analytics — rolls each appended `analyticsEvents` row into the
+// admin-only aggregate docs. Mirrors the FieldValue.increment pattern above.
+// `adminAnalytics/rollup` = all-time; `adminAnalytics/daily_YYYYMMDD` powers
+// the dashboard's 7-day trend. Nested objects + set(merge) so the docs are
+// created on first write and nested counters merge correctly.
+exports.onAnalyticsEvent = functions.firestore
+  .document("analyticsEvents/{eventId}")
+  .onCreate(async (snap) => {
+    const e = snap.data() || {};
+    const event = typeof e.event === "string" ? e.event : null;
+    const area = typeof e.area === "string" ? e.area : null;
+    const kind = typeof e.kind === "string" ? e.kind : "button";
+    const day = typeof e.day === "string" && /^\d{8}$/.test(e.day) ? e.day : null;
+    if (!event && !area) return;
+
+    const inc = (n) => admin.firestore.FieldValue.increment(n);
+    const agg = {
+      totalEvents: inc(1),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    // Only real button actions feed the leaderboard; screen-view / dwell
+    // pseudo-events are reflected in `areas` instead.
+    if (event && kind === "button") agg.events = { [event]: inc(1) };
+    if (area && kind === "screen_view") {
+      agg.areas = { [area]: { views: inc(1) } };
+    } else if (area && kind === "screen_dwell") {
+      const secs = Number(e.value);
+      const safe = Number.isFinite(secs) && secs > 0 ? Math.min(secs, 3600) : 0;
+      agg.areas = { [area]: { dwellSeconds: inc(safe), dwellCount: inc(1) } };
+    }
+
+    const writes = [
+      admin.firestore().doc("adminAnalytics/rollup").set(agg, { merge: true }),
+    ];
+    if (day) {
+      writes.push(
+        admin.firestore().doc(`adminAnalytics/daily_${day}`).set(agg, { merge: true }),
+      );
+    }
+    await Promise.all(writes).catch((err) => {
+      logger.warn("onAnalyticsEvent aggregate failed", {
+        message: err && err.message,
+      });
+    });
+  });
+
 // Phase 5 — Loyal achievement counter. Watches per-user-per-place visit
 // docs; when one transitions from open → closed (the client tracker writes
 // `closed: true` and increments `visitCount` once the user has moved >3 km

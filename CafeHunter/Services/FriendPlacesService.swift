@@ -566,27 +566,58 @@ final class FriendPlacesService {
     /// `restricted == false` filters are required to match the Firestore rule
     /// (a restricted/audience-limited post must never surface in this public
     /// place-detail fallback).
+    ///
+    /// We run TWO queries and union them: the top-level `placeId ==` (every
+    /// post carries it — it's the original, always-deployed index) and
+    /// `mediaPlaceIds array-contains` (so a post tagged to this place only in a
+    /// SECONDARY photo also matches). Querying `mediaPlaceIds` ALONE was a
+    /// regression: posts created before the `mediaPlaceIds` denormalization
+    /// (or before its backfill/index were deployed) carry only `placeId`, so
+    /// the panel came up empty for them — which is exactly the trending posts
+    /// that put the place on the map. Both branches are permitted by the
+    /// public-read rule (it accepts placeId OR mediaPlaceIds).
     private func fetchDiscoverablePostsAtPlace(_ placeId: String) async -> [FriendPost] {
+        // Independent fetches so one failing (e.g. the mediaPlaceIds composite
+        // index isn't deployed yet) doesn't void the other.
+        async let byPlaceId = postsAtPlace(placeId, by: .placeId)
+        async let byMediaPlaceIds = postsAtPlace(placeId, by: .mediaPlaceIds)
+        let merged = await byPlaceId + (await byMediaPlaceIds)
+
+        // Dedupe by post id (a primary-photo tag matches BOTH queries), newest
+        // first, then drop opted-out authors and cap at 20.
+        var seen = Set<String>()
+        let unique = merged
+            .sorted { $0.createdAt > $1.createdAt }
+            .filter { seen.insert($0.id).inserted }
+        let optedOut = await fetchOptedOutAuthorSet(
+            authorIds: Array(Set(unique.map(\.authorId)))
+        )
+        return Array(unique.filter { !optedOut.contains($0.authorId) }.prefix(20))
+    }
+
+    private enum PlaceMatch { case placeId, mediaPlaceIds }
+
+    /// One leg of the place-detail public fallback. Shares the
+    /// `restricted == false` + `containsFaces == false` filters (required by
+    /// the Firestore rule) and differs only in how it matches the place.
+    private func postsAtPlace(_ placeId: String, by match: PlaceMatch) async -> [FriendPost] {
         do {
-            // `array-contains mediaPlaceIds` (not `placeId ==`) so a post tagged
-            // to this place only in a SECONDARY photo still matches — the
-            // top-level `placeId` only mirrors item 0. Backed by the
-            // mediaPlaceIds composite index + the matching public-read rule.
-            let snap = try await db.collection("posts")
-                .whereField("mediaPlaceIds", arrayContains: placeId)
+            let base = db.collection("posts")
+            let matched: Query
+            switch match {
+            case .placeId:       matched = base.whereField("placeId", isEqualTo: placeId)
+            case .mediaPlaceIds: matched = base.whereField("mediaPlaceIds", arrayContains: placeId)
+            }
+            let snap = try await matched
                 .whereField("restricted", isEqualTo: false)
                 .whereField("containsFaces", isEqualTo: false)
                 .order(by: "createdAt", descending: true)
                 .limit(to: 20)
                 .getDocuments()
-            let posts = snap.documents.compactMap(FriendPost.init(document:))
-            let optedOut = await fetchOptedOutAuthorSet(
-                authorIds: Array(Set(posts.map(\.authorId)))
-            )
-            return posts.filter { !optedOut.contains($0.authorId) }
+            return snap.documents.compactMap(FriendPost.init(document:))
         } catch {
             #if DEBUG
-            print("[FriendPlacesService] place-posts fallback fetch failed: \(error.localizedDescription)")
+            print("[FriendPlacesService] place-posts \(match) fetch failed: \(error.localizedDescription)")
             #endif
             return []
         }
