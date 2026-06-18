@@ -229,6 +229,7 @@ struct ProfileHomeView: View {
                                 }
                             }
                         )
+                        streakSection
                         achievementsSection
                         musicSection
                         settingsSection
@@ -982,6 +983,16 @@ struct ProfileHomeView: View {
     // Receives the unlocked-date map directly so SwiftUI can diff it as a
     // single value rather than re-reading every achievement off the stats
     // service on each parent re-render.
+
+    private var streakSection: some View {
+        StreakCard(
+            current: statsService.stats.currentStreak,
+            longest: statsService.stats.longestStreak,
+            lastPostDay: statsService.stats.lastPostDay
+        )
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+    }
 
     private var achievementsSection: some View {
         AchievementsSection(

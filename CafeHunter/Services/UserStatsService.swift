@@ -44,6 +44,9 @@ struct UserStats: Equatable {
     /// Consecutive-day posting streak — current run and personal best.
     var currentStreak:        Int = 0
     var longestStreak:        Int = 0
+    /// Device-local day (yyyy-MM-dd) of the last post — lets the UI tell whether
+    /// today's post is already in (streak secured) or still needed (at risk).
+    var lastPostDay:          String = ""
 
     /// achievementID → date it was first unlocked (persisted in Firestore)
     var unlockedAchievements: [String: Date] = [:]
@@ -98,6 +101,7 @@ final class UserStatsService {
                     s.friendsCount        = data["friendsCount"]        as? Int ?? 0
                     s.currentStreak       = data["currentStreak"]       as? Int ?? 0
                     s.longestStreak       = data["longestStreak"]       as? Int ?? 0
+                    s.lastPostDay         = data["lastPostDay"]         as? String ?? ""
                     // Defensive value-by-value parse. The previous strict
                     // `as? [String: Timestamp]` cast failed *entirely* if a
                     // single nested value wasn't exactly a Timestamp (e.g. an

@@ -168,18 +168,33 @@ struct AchievementsSection: View {
     let unlockedCount: Int
     let onTap: (Achievement) -> Void
 
+    @State private var isExpanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Collapsed default ≈ half the roster (a clean 8 rows of 3). The thematic
+    /// order shows entry-tier badges first and keeps the secret / high-tier ones
+    /// tucked behind "Show all".
+    private let collapsedCount = 24
+
+    private var total: Int { Achievement.definitions.count }
+    private var canExpand: Bool { total > collapsedCount }
+    private var visible: [Achievement] {
+        isExpanded ? Achievement.definitions
+                   : Array(Achievement.definitions.prefix(collapsedCount))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(
                 title: "ACHIEVEMENTS",
-                trailing: "\(unlockedCount) / \(Achievement.definitions.count)"
+                trailing: "\(unlockedCount) / \(total)"
             )
 
             LazyVGrid(
                 columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
                 spacing: 16
             ) {
-                ForEach(Achievement.definitions) { achievement in
+                ForEach(visible) { achievement in
                     Button { onTap(achievement) } label: {
                         AchievementBadge(
                             achievement: achievement,
@@ -192,6 +207,27 @@ struct AchievementsSection: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
+
+            if canExpand {
+                Button {
+                    withAnimation(reduceMotion ? nil : Motion.dropdown) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(isExpanded ? "Show less" : "Show all \(total)")
+                            .font(.caption).bold()
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2.weight(.bold))
+                    }
+                    .foregroundStyle(AppTheme.cafeAccent)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(AppTheme.cafeAccent.opacity(0.10), in: Capsule())
+                    .overlay(Capsule().stroke(AppTheme.cafeAccent.opacity(0.25), lineWidth: 1))
+                }
+                .buttonStyle(.scalePress)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
             }
         }
         .padding(16)
