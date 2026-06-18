@@ -25,6 +25,19 @@ extension SpotifyTrack {
                     artworkURL: artworkURL,
                     previewURL: (preview_url?.isEmpty == false) ? preview_url : nil)
     }
+
+    /// Build the post's `PostMusic` from a currently-playing track: use Spotify's
+    /// own `preview_url` when present, else silently resolve an Apple/iTunes
+    /// preview by title+artist. Returns nil when no preview exists anywhere (the
+    /// track then can't be attached). Prefers Spotify artwork so the cover on the
+    /// post matches what the composer showed.
+    func toAutoPostMusic() async -> PostMusic? {
+        if let direct = toPostMusic() { return direct }
+        guard let (preview, artwork) = await MusicPreviewResolver.resolvePreview(
+            name: name, artist: artistNames) else { return nil }
+        return PostMusic(trackId: id, trackName: name, artistName: artistNames,
+                         artworkURL: artworkURL ?? artwork, previewURL: preview)
+    }
 }
 
 /// Resolves playable 30-second preview clips via Apple's **iTunes Search API**

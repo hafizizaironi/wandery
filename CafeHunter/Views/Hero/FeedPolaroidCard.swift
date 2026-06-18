@@ -13,6 +13,10 @@ struct FeedPolaroidCard: View {
     let index: Int
     let isVideoActive: Bool
     let side: CGFloat
+    /// Shared feed music player — observed so the thermal-receipt barcode can
+    /// react while THIS post's song is the one actively playing. Nil in static
+    /// contexts (e.g. the long-press focus snapshot), where the barcode is flat.
+    var postMusicPlayer: PostMusicPlayer? = nil
     var onPlaceTap: (String) -> Void = { _ in }
     /// Static rendering (e.g. the long-press focus overlay): videos show their
     /// poster thumbnail + a play badge instead of a live player, which would
@@ -31,6 +35,13 @@ struct FeedPolaroidCard: View {
     @State private var dragHappened = false
     @State private var exiting: PostMedia?
     @State private var exitTranslation: CGSize = .zero
+    /// The axis this drag committed to (nil until decided). A drag judged
+    /// `.vertical` belongs to the page pager, so this gesture goes inert for it —
+    /// otherwise the soft "width ≥ height" nudge made vertical paging on
+    /// multi-photo cards feel stuck (it fought the pager every diagonal frame).
+    @State private var swipeAxis: SwipeAxis? = nil
+
+    private enum SwipeAxis { case horizontal, vertical }
 
     private let exitDistanceThreshold: CGFloat = 55
     private let exitVelocityThreshold: CGFloat = 220
@@ -63,7 +74,9 @@ struct FeedPolaroidCard: View {
                 .padding(.vertical, 4)
                 .background(Capsule().fill(AppTheme.accentAction.opacity(0.92)))
                 .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
-                .padding(.top, 12)
+                // Drop below the song cover (44pt tile at a 10pt inset) when the
+                // post has music, so the two top-right badges don't overlap.
+                .padding(.top, post.music != nil ? 62 : 12)
                 .padding(.trailing, 12)
                 .allowsHitTesting(false)
             }
@@ -116,13 +129,64 @@ struct FeedPolaroidCard: View {
             username: "@\(post.authorUsername)",
             date: post.createdAt,
             tilt: Self.tilt(seed: item?.url ?? post.id),
-            photoSide: side
+            photoSide: side,
+            topTrailing: { AnyView(musicOverlay(isTop: isTop)) },
+            // Raw strings for the thermal-receipt style's text rows; the pill
+            // styles render these via the topLeading / bottomCenter slots instead.
+            placeName: item?.placeName,
+            caption: item?.caption,
+            // Thermal-receipt music: prints a song row + a barcode that reacts
+            // while this post's song is the one playing; tap the barcode to mute.
+            // (Only the top card reacts / is tappable.)
+            music: post.music,
+            musicPlaying: isTop && isThisPostPlaying,
+            onMusicTap: isTop ? { videoMuted.toggle(); UIImpactFeedbackGenerator(style: .light).impactOccurred() } : nil
         ) {
             mediaCell(item, isActive: isVideoActive && isTop)
         } topLeading: {
             placeOverlay(for: item, isTop: isTop)
         } bottomCenter: {
             captionOverlay(for: item)
+        }
+    }
+
+    /// True while THIS post's song is the one actively playing (active card,
+    /// unmuted, scene active). Drives the thermal-receipt barcode equalizer;
+    /// false → the barcode lies flat.
+    private var isThisPostPlaying: Bool {
+        guard let m = post.music, let player = postMusicPlayer else { return false }
+        return player.isPlaying && player.currentURL == m.previewURL
+    }
+
+    /// The post's song cover, top-right of the photo (mirrors the composer).
+    /// Tapping toggles the shared feed mute — the song auto-plays for the
+    /// active post, so this tile is its mute control. Only the top card in a
+    /// multi-photo stack is hittable.
+    @ViewBuilder
+    private func musicOverlay(isTop: Bool) -> some View {
+        if let m = post.music {
+            Button {
+                if isTop {
+                    videoMuted.toggle()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+            } label: {
+                SongArtworkTile(artworkURL: m.artworkURL)
+                    // Mute badge — shown only while the song is muted.
+                    .overlay(alignment: .bottomTrailing) {
+                        if videoMuted {
+                            Image(systemName: "speaker.slash.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 18, height: 18)
+                                .background(Circle().fill(Color.black.opacity(0.6)))
+                                .padding(3)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .allowsHitTesting(isTop)
+            .accessibilityLabel("Song: \(m.trackName) by \(m.artistName). Tap to \(videoMuted ? "unmute" : "mute").")
         }
     }
 
@@ -261,20 +325,36 @@ struct FeedPolaroidCard: View {
     private var swipeGesture: some Gesture {
         DragGesture(minimumDistance: 8)
             .onChanged { value in
-                // Only follow horizontal-dominant drags — a vertical drag is the
-                // page pager's (this gesture is `.simultaneousGesture`, so it
-                // also sees vertical drags; ignoring them keeps the polaroid from
-                // drifting while the page slides).
-                if abs(value.translation.width) >= abs(value.translation.height) {
-                    dragOffset = value.translation
+                // Commit to one axis per drag, then latch. This gesture is a
+                // `.simultaneousGesture` peer of the pager's vertical drag, so a
+                // drag we judge vertical is the pager's — go fully inert for it
+                // (don't touch `dragOffset`) so the page slide isn't fought.
+                // Bias toward the pager: claim the drag only on *clear* horizontal
+                // dominance, which keeps vertical paging on multi-photo cards as
+                // easy as on single-photo ones.
+                if swipeAxis == nil {
+                    let w = abs(value.translation.width), h = abs(value.translation.height)
+                    swipeAxis = (w > h * 1.2) ? .horizontal : .vertical
                 }
+                // Mark that a real drag happened (either axis) so a place-pill
+                // tap-up fired right after this still bails — same guard as before.
                 if !dragHappened,
                    abs(value.translation.width) > dragRecognitionThreshold ||
                    abs(value.translation.height) > dragRecognitionThreshold {
                     dragHappened = true
                 }
+                guard swipeAxis == .horizontal else { return }
+                dragOffset = value.translation
             }
             .onEnded { value in
+                defer { swipeAxis = nil }
+                // Only act on a drag we owned (horizontal). Vertical/undecided
+                // drags belonged to the pager — `dragOffset` was never moved, so
+                // there's nothing to settle.
+                guard swipeAxis == .horizontal else {
+                    DispatchQueue.main.async { dragHappened = false }
+                    return
+                }
                 let absDistance = abs(value.translation.width)
                 let absPredicted = abs(value.predictedEndTranslation.width)
                 let shouldExit = (absDistance > exitDistanceThreshold ||

@@ -6,6 +6,8 @@ import FirebaseAuth
 struct AchievementBadge: View {
     let achievement: Achievement
     let isUnlocked:  Bool
+    /// Secret + still locked → render as a mystery badge.
+    private var hidden: Bool { achievement.isSecret && !isUnlocked }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -32,13 +34,13 @@ struct AchievementBadge: View {
                     Text(achievement.icon)
                         .font(.title)
                 } else {
-                    Image(systemName: "lock.fill")
+                    Image(systemName: hidden ? "questionmark" : "lock.fill")
                         .font(.title3)
                         .contrastAware(AppTheme.cream, opacity: 0.18)
                 }
             }
 
-            Text(achievement.title)
+            Text(hidden ? "???" : achievement.title)
                 .font(.caption2)
                 .foregroundStyle(isUnlocked ? AppTheme.cream : AppTheme.cream.opacity(0.28))
                 .multilineTextAlignment(.center)
@@ -57,6 +59,8 @@ struct AchievementDetailSheet: View {
     let isUnlocked:   Bool
     let unlockedDate: Date?
     @Environment(\.dismiss) private var dismiss
+    /// Secret + still locked → don't reveal the name/condition.
+    private var hidden: Bool { achievement.isSecret && !isUnlocked }
 
     var body: some View {
         ZStack {
@@ -91,7 +95,7 @@ struct AchievementDetailSheet: View {
                     if isUnlocked {
                         Text(achievement.icon).font(.largeTitle)
                     } else {
-                        Image(systemName: "lock.fill")
+                        Image(systemName: hidden ? "questionmark" : "lock.fill")
                             .font(.largeTitle)
                             .contrastAware(AppTheme.cream, opacity: 0.2)
                     }
@@ -99,7 +103,7 @@ struct AchievementDetailSheet: View {
 
                 Spacer().frame(height: 24)
 
-                Text(achievement.title)
+                Text(hidden ? "???" : achievement.title)
                     .font(.title2).bold()
                     .foregroundStyle(AppTheme.cream)
 
@@ -125,6 +129,12 @@ struct AchievementDetailSheet: View {
                             RoundedRectangle(cornerRadius: 20)
                                 .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
                         }
+                } else if hidden {
+                    Text("Secret achievement — keep hunting to reveal it. 🔎")
+                        .font(.caption)
+                        .contrastAware(AppTheme.cream, opacity: 0.35)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
                 } else {
                     Text("How to unlock: \(achievement.subtitle)")
                         .font(.caption)

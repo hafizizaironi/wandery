@@ -35,7 +35,7 @@ final class SpotifyAuthService {
     private static let redirectURI = "cafehunter-spotify://callback"
     private static let callbackScheme = "cafehunter-spotify"
     private static let scopes =
-        "user-read-private playlist-read-private playlist-read-collaborative user-library-read"
+        "user-read-private playlist-read-private playlist-read-collaborative user-library-read user-read-currently-playing user-read-playback-state"
     private static let tokenEndpoint = URL(string: "https://accounts.spotify.com/api/token")!
     private static let apiBase = "https://api.spotify.com/v1"
 
@@ -198,6 +198,20 @@ final class SpotifyAuthService {
         return paging.items.compactMap(\.track)
     }
 
+    /// The user's currently-playing (or paused) track, or nil when nothing is
+    /// active / the content isn't a song (ad, podcast). Throws `SpotifyError.api`
+    /// on auth/permission failures so the composer can offer Reconnect (401) or
+    /// degrade (403). `authorizedData` already DEBUG-logs the HTTP status.
+    func currentlyPlaying() async throws -> SpotifyTrack? {
+        let data = try await authorizedData(path: "/me/player/currently-playing",
+                                            query: [.init(name: "additional_types", value: "track")])
+        // HTTP 204 (nothing active) is a 2xx with an empty body — not an error.
+        guard !data.isEmpty else { return nil }
+        let resp = try JSONDecoder().decode(SpotifyCurrentlyPlaying.self, from: data)
+        guard resp.currently_playing_type == "track", let item = resp.item else { return nil }
+        return item   // playing OR paused — caller decides what to show
+    }
+
     private func fetchDisplayName() async {
         guard let data = try? await authorizedData(path: "/me", query: []),
               let user = try? JSONDecoder().decode(SpotifyUser.self, from: data) else { return }
@@ -256,7 +270,11 @@ final class SpotifyAuthService {
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             throw SpotifyError.authFailed
         }
-        return try JSONDecoder().decode(SpotifyTokenResponse.self, from: data)
+        let token = try JSONDecoder().decode(SpotifyTokenResponse.self, from: data)
+        #if DEBUG
+        print("🎵 [Spotify] token granted scopes: \(token.scope ?? "<none>")")
+        #endif
+        return token
     }
 
     private func persist(_ newTokens: SpotifyStoredTokens) {
@@ -285,19 +303,31 @@ final class SpotifyAuthService {
             return req
         }
 
+        // A genuine transport failure (offline, DNS, timeout) → `.requestFailed`,
+        // distinct from a non-2xx HTTP response (handled below as `.api`).
+        func fetch(_ req: URLRequest) async throws -> (Data, URLResponse) {
+            do { return try await URLSession.shared.data(for: req) }
+            catch { throw SpotifyError.requestFailed }
+        }
+
         var token = try await validAccessToken()
-        var (data, resp) = try await URLSession.shared.data(for: request(token))
+        var (data, resp) = try await fetch(request(token))
 
         if let http = resp as? HTTPURLResponse, http.statusCode == 401,
            let clientID = Self.clientID {
             try await refresh(clientID: clientID)
             token = try await validAccessToken()
-            (data, resp) = try await URLSession.shared.data(for: request(token))
+            (data, resp) = try await fetch(request(token))
         }
 
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            if (resp as? HTTPURLResponse)?.statusCode == 401 { isConnected = false }
-            throw SpotifyError.requestFailed
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            if status == 401 { isConnected = false }
+            let apiMessage = (try? JSONDecoder().decode(SpotifyAPIError.self, from: data))?.error.message
+            #if DEBUG
+            print("🎵 [Spotify] \(path) → HTTP \(status): \(apiMessage ?? "<no body>")")
+            #endif
+            throw SpotifyError.api(status: status, message: apiMessage)
         }
         return data
     }
@@ -336,6 +366,10 @@ final class SpotifyAuthService {
 
 enum SpotifyError: LocalizedError {
     case notConfigured, notConnected, cancelled, authFailed, requestFailed, cannotStart, badRequest
+    /// A non-2xx Web API response, carrying the real HTTP status (and Spotify's
+    /// error message when present) so the UI can react — e.g. prompt a reconnect
+    /// on a 401/403 instead of showing a flat "couldn't reach" message.
+    case api(status: Int, message: String?)
 
     var errorDescription: String? {
         switch self {
@@ -347,6 +381,28 @@ enum SpotifyError: LocalizedError {
         case .requestFailed: return "Couldn't reach Spotify. Try again in a moment."
         case .cannotStart:  return "Couldn't open the Spotify sign-in screen."
         case .badRequest:   return "Something went wrong talking to Spotify."
+        case .api(let status, _):
+            switch status {
+            case 401:  return "Your Spotify session expired. Tap Reconnect."
+            // 403 here is an app-access limit (Spotify restricts some reads for
+            // apps in Development Mode), not a scope/session problem — so
+            // reconnecting won't help.
+            case 403:  return "Spotify won't share what's playing for this app right now."
+            case 404:  return "That playlist isn't available to open."
+            case 429:  return "Spotify is busy right now — try again in a moment."
+            default:   return "Couldn't reach Spotify. Try again in a moment."
+            }
+        }
+    }
+
+    /// True when the right remedy is a fresh Spotify authorization (refreshes an
+    /// expired session) rather than a plain retry. A 403 is deliberately
+    /// excluded: scopes are already complete, so reconnecting can't fix it.
+    var needsReconnect: Bool {
+        switch self {
+        case .notConnected:            return true
+        case .api(let status, _):      return status == 401
+        default:                       return false
         }
     }
 }

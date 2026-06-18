@@ -27,6 +27,23 @@ struct UserStats: Equatable {
     /// Highest per-place visit-session count on this user's record
     /// (drives Loyal — same place 3+ separate trips).
     var topPlaceVisitCount:   Int = 0
+    /// Distinct restaurants visited (server already writes this; surfaced here
+    /// for the restaurant achievements).
+    var restaurantsVisited:   Int = 0
+
+    // Expansion counters — all bumped server-side (see functions/index.js),
+    // locked against client writes by `touchesServerOwnedStats()` in firestore.rules.
+    /// Posts with a song attached (drives the music ladder).
+    var musicPostsCount:      Int = 0
+    /// Posts that include a video (drives the video ladder).
+    var videoPostsCount:      Int = 0
+    /// Posts made before 8 AM device-local (drives Early Bird).
+    var earlyBirdCount:       Int = 0
+    /// Friends added (drives the social ladder).
+    var friendsCount:         Int = 0
+    /// Consecutive-day posting streak — current run and personal best.
+    var currentStreak:        Int = 0
+    var longestStreak:        Int = 0
 
     /// achievementID → date it was first unlocked (persisted in Firestore)
     var unlockedAchievements: [String: Date] = [:]
@@ -37,9 +54,16 @@ struct UserStats: Equatable {
 @Observable
 final class UserStatsService {
     var stats = UserStats()
+    /// Achievements unlocked DURING this session (not retroactively on first
+    /// load) — the UI drains this to play an unlock celebration. Append-only
+    /// queue; the presenter removes items as it shows them.
+    var justUnlocked: [Achievement] = []
 
     private let db       = Firestore.firestore()
     private var listener: ListenerRegistration?
+    /// True once the first snapshot for this uid has been processed — used to
+    /// suppress celebrations for already-met conditions on initial load.
+    @ObservationIgnored private var establishedBaseline = false
 
     // MARK: - Subscribe / unsubscribe
 
@@ -67,6 +91,13 @@ final class UserStatsService {
                     s.topAreaPlaceCount   = data["topAreaPlaceCount"]   as? Int ?? 0
                     s.reactionsReceived   = data["reactionsReceived"]   as? Int ?? 0
                     s.topPlaceVisitCount  = data["topPlaceVisitCount"]  as? Int ?? 0
+                    s.restaurantsVisited  = data["restaurantsVisited"]  as? Int ?? 0
+                    s.musicPostsCount     = data["musicPostsCount"]     as? Int ?? 0
+                    s.videoPostsCount     = data["videoPostsCount"]     as? Int ?? 0
+                    s.earlyBirdCount      = data["earlyBirdCount"]      as? Int ?? 0
+                    s.friendsCount        = data["friendsCount"]        as? Int ?? 0
+                    s.currentStreak       = data["currentStreak"]       as? Int ?? 0
+                    s.longestStreak       = data["longestStreak"]       as? Int ?? 0
                     // Defensive value-by-value parse. The previous strict
                     // `as? [String: Timestamp]` cast failed *entirely* if a
                     // single nested value wasn't exactly a Timestamp (e.g. an
@@ -83,6 +114,11 @@ final class UserStatsService {
                     }
                     let previous = self.stats
                     self.stats = s
+                    // First snapshot establishes the baseline — already-met
+                    // conditions get their timestamp written but DON'T fire a
+                    // celebration (otherwise an existing user floods on launch).
+                    let isBaseline = !self.establishedBaseline
+                    self.establishedBaseline = true
                     // Three guards on the auto-persist write:
                     //  1. Don't react to our own pending-write echoes.
                     //  2. Don't run if nothing observable changed (e.g. a
@@ -90,7 +126,7 @@ final class UserStatsService {
                     //  3. (inside persistNewlyUnlocked) only write when
                     //     there's a genuinely new unlock.
                     guard !hasPendingWrites, s != previous else { return }
-                    await self.persistNewlyUnlocked(uid: uid, stats: s)
+                    await self.persistNewlyUnlocked(uid: uid, stats: s, celebrate: !isBaseline)
                 }
             }
     }
@@ -105,14 +141,17 @@ final class UserStatsService {
     // MARK: - Auto-persist achievement unlocks
 
     @MainActor
-    private func persistNewlyUnlocked(uid: String, stats: UserStats) async {
+    private func persistNewlyUnlocked(uid: String, stats: UserStats, celebrate: Bool) async {
         var updates: [String: Any] = [:]
+        var newly: [Achievement] = []
         for a in Achievement.definitions {
             guard stats.unlockedAchievements[a.id] == nil,
                   a.condition(stats) else { continue }
             updates["unlockedAchievements.\(a.id)"] = Timestamp(date: Date())
+            newly.append(a)
         }
         guard !updates.isEmpty else { return }
+        if celebrate { justUnlocked.append(contentsOf: newly) }
         try? await db.collection("users").document(uid).setData(updates, merge: true)
     }
 

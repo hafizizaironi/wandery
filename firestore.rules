@@ -82,7 +82,9 @@ service cloud.firestore {
         .hasAny(['pioneerCount', 'uniquePlacesVisited', 'topAreaPlaceCount',
                  'areaPlaceCounts', 'reactionsReceived', 'topPlaceVisitCount',
                  'restaurantsVisited', 'cafesVisited', 'stallsVisited',
-                 'photosShared', 'nightCheckIns', 'friendsHunted']);
+                 'photosShared', 'nightCheckIns', 'friendsHunted',
+                 'musicPostsCount', 'videoPostsCount', 'earlyBirdCount',
+                 'friendsCount', 'currentStreak', 'longestStreak', 'lastPostDay']);
     }
     match /users/{uid} {
       allow read: if signedIn();
@@ -93,7 +95,9 @@ service cloud.firestore {
              .hasAny(['pioneerCount', 'uniquePlacesVisited', 'topAreaPlaceCount',
                       'areaPlaceCounts', 'reactionsReceived', 'topPlaceVisitCount',
                       'restaurantsVisited', 'cafesVisited', 'stallsVisited',
-                      'photosShared', 'nightCheckIns', 'friendsHunted']);
+                      'photosShared', 'nightCheckIns', 'friendsHunted',
+                      'musicPostsCount', 'videoPostsCount', 'earlyBirdCount',
+                      'friendsCount', 'currentStreak', 'longestStreak', 'lastPostDay']);
       allow update: if isSelf(uid) && !touchesServerOwnedStats();
       allow delete: if false;
 

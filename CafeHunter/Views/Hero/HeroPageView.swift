@@ -132,6 +132,14 @@ struct HeroPageView: View {
     // finger-tracking doesn't re-render this (large) body every frame.
     @State private var currentIndex: Int = 0
 
+    /// Posts within ±this of the current one mount the full `FeedPostPage`; the
+    /// rest are pure `Color.clear` spacers (see `heroPageStack`). Wide enough that
+    /// the entering card is ~5 pages off-screen — so its mount never hitches the
+    /// visible settle — and the placeholder is never seen. Caps on-screen cost at
+    /// ~`2*radius+1` cards regardless of how long the feed gets. Also gates the
+    /// "cut vs. animate" choice in `paginate`.
+    private let feedMountRadius = 4
+
     // Mode state
     @State private var showPhotosPicker = false
     @State private var librarySelection: [PhotosPickerItem] = []
@@ -156,12 +164,26 @@ struct HeroPageView: View {
     @State private var pendingPlace: PlaceSelection?
     @State private var showPlacePicker = false
 
-    // Background music (one song per post). The poster picks a track in the
-    // review screen; it rides along into the upload payload.
-    @State private var selectedMusic: PostMusic?
-    @State private var showMusicPicker = false
+    // Background music (one song per post). Locket-style: while the review screen
+    // is open the app polls the user's currently-playing Spotify track and shows
+    // its cover; whatever is `.attached` at post time rides into the upload.
+    enum ComposerMusicState: Equatable {
+        case notConnected                       // not connected yet (tap to connect)
+        case nothingPlaying                     // connected, no song (204 / ad / podcast)
+        case resolving                          // a new track is resolving to a preview
+        case attached(PostMusic)                // colour cover — WILL attach
+        case optedOut(PostMusic)                // grey cover — user opted out
+        case unresolvable                       // playing, but no preview found anywhere
+        case permissionDenied(reconnect: Bool)  // 401 (reconnect) / 403 (dev-mode)
+    }
+    @State private var musicState: ComposerMusicState = .notConnected
+    /// Spotify id of the last polled track, so the poll doesn't re-resolve the
+    /// same song and an opt-out stays sticky until the track actually changes.
+    @State private var lastSeenTrackId: String?
     /// Drives the neon music button's breathing glow (shadow opacity).
     @State private var musicGlow: Double = 0.4
+    /// Shows the neon "play a song" hint popout by the music button (auto-dismiss).
+    @State private var showMusicHint = false
     /// Global feed-audio toggle (shared with FeedPolaroidCard's speaker button).
     /// Gates whether the active post's song is audible — default muted, so the
     /// feed never interrupts the user's own audio until they tap unmute.
@@ -363,6 +385,25 @@ struct HeroPageView: View {
             guard let top = results?.first else { return }
             withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
                 suggestedPlace = top
+            }
+        }
+        // Locket-style auto song: while reviewing a capture, poll the user's
+        // currently-playing Spotify track and show its cover. Keyed on
+        // (reviewing, connected) so connecting mid-review starts the loop;
+        // auto-cancels when the review screen closes.
+        .task(id: "\(isReviewingCapture)-\(spotifyAuth.isConnected)") {
+            guard isReviewingCapture, spotifyAuth.isConfigured else { return }
+            guard spotifyAuth.isConnected else { musicState = .notConnected; return }
+            while !Task.isCancelled {
+                await refreshCurrentlyPlaying()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+        // Returning from the Spotify app (scene → active) refreshes the song
+        // immediately, so a track started while away shows up without retaking.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active, isReviewingCapture, spotifyAuth.isConnected {
+                Task { await refreshCurrentlyPlaying() }
             }
         }
         .onChange(of: heroCardID) { _, _ in
@@ -568,8 +609,9 @@ struct HeroPageView: View {
 
     /// Resign whatever's first responder app-wide. Used to dismiss
     /// the keyboard when the user pages between posts or taps outside
-    /// the composer pill.
-    private static func dismissKeyboard() {
+    /// the composer pill. Non-private so the extracted `FeedPostPage`
+    /// can reuse it.
+    static func dismissKeyboard() {
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
             to: nil, from: nil, for: nil
@@ -749,7 +791,7 @@ struct HeroPageView: View {
         // Hand the upload to the service (runs in the background); the
         // choreography returns the user to the camera. Errors surface via the
         // app-wide retry banner.
-        socialService.enqueuePost(drafts: drafts, recipientUids: recipients, music: selectedMusic)
+        socialService.enqueuePost(drafts: drafts, recipientUids: recipients, music: committedMusic)
         launchPostChoreography()
     }
 
@@ -937,7 +979,8 @@ struct HeroPageView: View {
         pendingPlace = nil
         suggestedPlace = nil
         excludedFriendUids = []
-        selectedMusic = nil
+        musicState = .notConnected
+        lastSeenTrackId = nil
     }
 
     /// Copies the focused draft's place onto every draft (the common
@@ -1241,7 +1284,13 @@ struct HeroPageView: View {
     /// post-delete fallback) — animates the real slide via `currentIndex`.
     private func paginate(to card: HeroCardID?, animated: Bool = true) {
         guard let card, let idx = pages.firstIndex(of: card) else { return }
-        if animated && !reduceMotion {
+        // A jump farther than the mount window would animate through spacer pages
+        // (a blank flash), so cut instantly past the window; keep the spring for
+        // near moves. `currentIndex` and `activeCardID` (set in `commitSettle`)
+        // both change in this one synchronous call, so SwiftUI paints the
+        // destination as a full card in a single pass — no spacer flash.
+        let near = abs(idx - currentIndex) <= feedMountRadius
+        if animated && !reduceMotion && near {
             withAnimation(pagerSettle) { currentIndex = idx }
         } else {
             currentIndex = idx
@@ -1299,106 +1348,39 @@ struct HeroPageView: View {
                     .id(HeroCardID.emptyFeed)
             } else {
                 ForEach(Array(socialService.feedPosts.enumerated()), id: \.element.id) { idx, post in
-                    heroFeedPostPage(geometry: geo, post: post, index: idx,
-                                       isVideoActive: isActive && scenePhase == .active && activeCardID == .post(post.id),
-                                       videoLive: abs(idx - (currentFeedIndex ?? 0)) <= 1,
-                                       isMusicPlaying: post.music != nil && postMusicPlayer.isPlaying && activeCardID == .post(post.id))
-                        .frame(height: pageH)
-                        .frame(maxWidth: .infinity)
-                        .id(HeroCardID.post(post.id))
-                }
-            }
-        }
-    }
-
-    private func heroFeedPostPage(geometry geo: GeometryProxy, post: FriendPost, index: Int, isVideoActive: Bool, videoLive: Bool, isMusicPlaying: Bool) -> some View {
-        let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
-        let side = HeroCameraLayout.viewfinderSide(in: geo)
-        // Total reserved height below the card stays identical to the camera layout
-        // so the card Y doesn't shift when paging between camera and feed.
-        // Within that block the composer pins to the bottom and a Color.clear
-        // absorbs the leftover space above the navbar.
-        let belowCardHeight = HeroCameraLayout.belowCardHeight
-        return VStack(spacing: 0) {
-            FeedPolaroidCard(
-                post: post,
-                index: index,
-                isVideoActive: isVideoActive,
-                side: side,
-                onPlaceTap: { placeId in onJumpToPlace(placeId) },
-                // Off-window posts show the poster (no live player) so only the
-                // current ±1 cards spin up AVPlayers — caps memory/bandwidth and
-                // lets the prefetch actually win.
-                staticPreview: !videoLive,
-                // Brief glow when arriving here via a notification tap.
-                isHighlighted: highlightedPostId == post.id
-            )
-            // Long-press → focus menu (blurred backdrop + lifted post +
-            // action card). Report/Block for others' posts (App Store
-            // Guideline 1.2), Delete + Hide-from-Discover for your own.
-            .postFocusLongPress { frame in
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                // Low damping → the post overshoots and settles, giving a
-                // springy "bounce" that lands with the haptic.
-                withAnimation(.spring(response: 0.38, dampingFraction: 0.58)) {
-                    postFocus = PostFocus(
-                        post: post,
-                        index: index,
-                        side: side,
-                        anchor: frame,
-                        isMine: post.authorId == myUid
-                    )
-                }
-            }
-
-            // Below-card area: an optional now-playing chip sits just under the
-            // card (outside the photo square), then a Color.clear spacer pushes
-            // the reply composer to the bottom of this 160pt zone (just above
-            // the navbar arc / bottomChrome). Living *inside* the post page (not
-            // a body overlay) means it pages vertically with the post.
-            VStack(spacing: 0) {
-                if let music = post.music {
-                    NowPlayingChip(
-                        title: "\(music.trackName) · \(music.artistName)",
-                        isPlaying: isMusicPlaying,
-                        onTap: {
-                            feedVideoMuted.toggle()
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Group {
+                        // Virtualize: mount the full page only within ±feedMountRadius
+                        // of the current post; everything else is a pure spacer (never
+                        // on screen at this radius). Keeps on-screen cost O(window)
+                        // regardless of feed length, so lifting the 50-cap stays smooth.
+                        // `.frame`/`.id` stay OUTSIDE so the pager's -index*pageH offset
+                        // math and each post's identity remain stable.
+                        if abs(idx - (currentFeedIndex ?? 0)) <= feedMountRadius {
+                            FeedPostPage(
+                                post: post,
+                                index: idx,
+                                side: HeroCameraLayout.viewfinderSide(in: geo),
+                                belowCardHeight: HeroCameraLayout.belowCardHeight,
+                                bottomChrome: HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom),
+                                isVideoActive: isActive && scenePhase == .active && activeCardID == .post(post.id),
+                                videoLive: abs(idx - (currentFeedIndex ?? 0)) <= 1,
+                                isHighlighted: highlightedPostId == post.id,
+                                myUid: myUid,
+                                keyboardHeight: keyboardHeight,
+                                composerKeyboardLift: composerKeyboardLift,
+                                postMusicPlayer: postMusicPlayer,
+                                conversationService: conversationService,
+                                onJumpToPlace: onJumpToPlace,
+                                postFocus: $postFocus
+                            )
+                        } else {
+                            Color.clear
                         }
-                    )
-                    // Clear the polaroid cream frame, which bleeds ~29pt below
-                    // the card's `side` box (the plain style barely bleeds).
-                    .padding(.top, feedCardStyle == .polaroid ? 34 : 12)
+                    }
+                    .frame(height: pageH)
+                    .frame(maxWidth: .infinity)
+                    .id(HeroCardID.post(post.id))
                 }
-                Color.clear
-                if post.authorId != myUid {
-                    PostReplyComposer(
-                        post: post,
-                        conversationService: conversationService
-                    )
-                    // Manual keyboard lift — see `composerKeyboardLift`
-                    // doc-comment. The ScrollView's
-                    // `.ignoresSafeArea(.keyboard)` disables automatic
-                    // keyboard avoidance, so we offset upward here.
-                    .offset(y: composerKeyboardLift)
-                    .animation(.easeOut(duration: 0.25), value: keyboardHeight)
-                }
-            }
-            .frame(height: belowCardHeight)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, HeroCameraLayout.horizontalPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .padding(.bottom, bottomChrome)
-        // Tap anywhere on the page that isn't consumed by a Button /
-        // TextField → dismiss keyboard. Covers the post image, header
-        // text, and the empty zone above the composer. The composer's
-        // internal Buttons/TextField consume their own taps so the
-        // user can still interact with the pill normally.
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if keyboardHeight > 0 {
-                Self.dismissKeyboard()
             }
         }
     }
@@ -1440,8 +1422,11 @@ struct HeroPageView: View {
                     // preview of the on-device Discover gate as the user reframes.
                     .overlay {
                         if cameraMode == .polaroid {
-                            HeroAestheticIndicator(
-                                score: camera.liveAestheticScore,
+                            // Leaf wrapper: the ~2.5 Hz score read lives inside it,
+                            // so score updates invalidate only the ring — not this
+                            // whole body (which rebuilds every feed page).
+                            LiveAestheticRing(
+                                camera: camera,
                                 floor: PostClassifier.aestheticFloor,
                                 cornerRadius: HeroCameraLayout.viewfinderCornerRadius
                             )
@@ -1457,8 +1442,9 @@ struct HeroPageView: View {
                     .overlay(alignment: .top) {
                         ZStack {
                             if camera.isRecording || camera.isLocked {
-                                HeroRecordingTimer(elapsed: camera.recordingProgress * 5,
-                                                   isLocked: camera.isLocked)
+                                // Leaf wrapper: the 20 Hz `recordingProgress` read
+                                // is isolated here so it ticks only the badge.
+                                RecordingTimerBadge(camera: camera)
                             }
                             HStack {
                                 HeroFlashButton(
@@ -1497,27 +1483,18 @@ struct HeroPageView: View {
                 topTrailing: {
                     spotifyAuth.isConfigured
                         ? AnyView(
-                            VStack(alignment: .trailing, spacing: 6) {
-                                musicChooseButton
-                                if let m = selectedMusic { selectedSongChip(m) }
-                            }
-                            .opacity(chromeDissolved ? 0 : 1)
+                            musicControl
+                                .opacity(chromeDissolved ? 0 : 1)
                           )
                         : AnyView(EmptyView())
-                }
+                },
+                isComposer: true
             ) {
                 captureReviewMedia
             } topLeading: {
                 placeTagArea
             } bottomCenter: {
                 captionPillBody
-            }
-        }
-        .sheet(isPresented: $showMusicPicker, onDismiss: { postMusicPlayer.stop() }) {
-            SpotifyMusicPickerView(spotifyAuth: spotifyAuth, player: postMusicPlayer) { music in
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                    selectedMusic = music
-                }
             }
         }
         .frame(width: side, height: side)
@@ -1605,81 +1582,192 @@ struct HeroPageView: View {
     /// picker panel so the button and panel read as one set.
     private static let neonGreen = Color.musicNeon
 
-    /// The music button — a neon-green-on-black **capsule** sized to match the
-    /// "Tag a place" pill (same caption font + h10/v4 padding → same height and
-    /// capsule radius) so the two top pills read as a consistent set. Black fill,
-    /// neon-green icon + outline, with a soft breathing glow.
-    private var musicChooseButton: some View {
-        Button { handleAddMusicTap() } label: {
-            Group {
+    /// The only song committed to the post is one the user hasn't opted out of.
+    private var committedMusic: PostMusic? {
+        if case let .attached(m) = musicState { return m }
+        return nil
+    }
+
+    /// Top-right music control + the neon "play a song" hint popout.
+    @ViewBuilder
+    private var musicControl: some View {
+        musicControlBody
+            .overlay(alignment: .topTrailing) {
+                if showMusicHint { musicHintPopout }
+            }
+            .task(id: showMusicHint) {
+                guard showMusicHint else { return }
+                try? await Task.sleep(for: .seconds(3))
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { showMusicHint = false }
+            }
+    }
+
+    /// Neon-green callout that pops out beside the music button when nothing's
+    /// playing — replaces the old red bottom-edge banner for this hint.
+    private var musicHintPopout: some View {
+        Text("Play a song on Spotify — it'll show here and play in your post.")
+            .font(.caption2).bold()
+            .foregroundStyle(Self.neonGreen)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: 168, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.black.opacity(0.82))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Self.neonGreen.opacity(0.6), lineWidth: 1))
+            )
+            .shadow(color: Self.neonGreen.opacity(0.4), radius: 8)
+            .offset(y: 46)
+            .transition(.scale(scale: 0.85, anchor: .top).combined(with: .opacity))
+            .allowsHitTesting(false)
+    }
+
+    /// Top-right music control. Locket-style: the cover of whatever is currently
+    /// playing (tap to opt out → greys), or a greyed `music.note` capsule when
+    /// nothing's playing / Spotify can't tell us (tap → info or reconnect).
+    @ViewBuilder
+    private var musicControlBody: some View {
+        switch musicState {
+        case .attached(let m):
+            SongArtworkTile(artworkURL: m.artworkURL)
+                .contentShape(Rectangle())
+                .onTapGesture { toggleMusicAttach() }
+                .accessibilityLabel("Now playing: \(m.trackName) by \(m.artistName). Tap to leave it off this post.")
+        case .optedOut(let m):
+            SongArtworkTile(artworkURL: m.artworkURL)
+                .saturation(0)
+                .opacity(0.45)
+                .contentShape(Rectangle())
+                .onTapGesture { toggleMusicAttach() }
+                .accessibilityLabel("\(m.trackName) won't be added. Tap to add it back.")
+        case .resolving:
+            musicCapsule { ProgressView().tint(Self.neonGreen).scaleEffect(0.6) }
+        case .notConnected:
+            musicCapsule(active: true) {
                 if spotifyAuth.isConnecting {
                     ProgressView().tint(Self.neonGreen).scaleEffect(0.6)
                 } else {
-                    Image(systemName: selectedMusic == nil ? "music.note" : "music.note.list")
-                        .font(.caption).bold()
+                    Image(systemName: "music.note").font(.caption).bold()
                         .foregroundStyle(Self.neonGreen)
                 }
             }
+            .onTapGesture { handleMusicControlTap() }
+            .accessibilityLabel("Connect Spotify to soundtrack your post")
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                    musicGlow = 0.85
+                }
+            }
+        default:   // nothingPlaying / unresolvable / permissionDenied
+            musicCapsule {
+                Image(systemName: "music.note").font(.caption).bold()
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .onTapGesture { handleMusicControlTap() }
+            .accessibilityLabel("No song playing. Tap to learn how to add one.")
+        }
+    }
+
+    /// Shared capsule chrome for the connect / empty / resolving states (mirrors
+    /// the old music button). `active` = neon outline + breathing glow.
+    @ViewBuilder
+    private func musicCapsule<V: View>(active: Bool = false, @ViewBuilder _ content: () -> V) -> some View {
+        content()
             .frame(minWidth: 16)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(Capsule().fill(Color.black.opacity(0.65)))
-            .overlay(Capsule().stroke(Self.neonGreen.opacity(0.9), lineWidth: 1))
-            // Neon glow — two layers, gently breathing.
-            .shadow(color: Self.neonGreen.opacity(musicGlow), radius: 6)
-            .shadow(color: Self.neonGreen.opacity(musicGlow * 0.5), radius: 12)
-        }
-        .buttonStyle(.scalePress)
-        .disabled(spotifyAuth.isConnecting)
-        .accessibilityLabel(selectedMusic == nil ? "Add music to this post" : "Change song")
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                musicGlow = 0.85
+            .overlay(Capsule().stroke((active ? Self.neonGreen : .white).opacity(active ? 0.9 : 0.25), lineWidth: 1))
+            .shadow(color: Self.neonGreen.opacity(active ? musicGlow : 0), radius: 6)
+            .shadow(color: Self.neonGreen.opacity(active ? musicGlow * 0.5 : 0), radius: 12)
+            .contentShape(Capsule())
+    }
+
+    /// Tap the cover to flip attach ↔ opt-out (grey).
+    @MainActor private func toggleMusicAttach() {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            switch musicState {
+            case .attached(let m): musicState = .optedOut(m)
+            case .optedOut(let m): musicState = .attached(m)
+            default: break
             }
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Tap routing for the non-cover states: connect, reconnect, or show info.
+    @MainActor private func handleMusicControlTap() {
+        guard spotifyAuth.isConfigured, !spotifyAuth.isConnecting else { return }
+        switch musicState {
+        case .notConnected:
+            connectThenRefresh(disconnectFirst: false)
+        case .permissionDenied(reconnect: true):
+            connectThenRefresh(disconnectFirst: true)
+        case .permissionDenied(reconnect: false):
+            postError = SpotifyError.api(status: 403, message: nil).errorDescription
+                ?? "Spotify won't share what's playing for this app right now."
+        case .nothingPlaying, .unresolvable:
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { showMusicHint = true }
+        default:
+            break
         }
     }
 
-    private func selectedSongChip(_ music: PostMusic) -> some View {
-        pillChrome(
-            HStack(spacing: 6) {
-                Image(systemName: "music.note").font(.caption2).bold()
-                Text("\(music.trackName) · \(music.artistName)")
-                    .font(.caption).bold().lineLimit(1)
-                Button {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { selectedMusic = nil }
-                    postMusicPlayer.stop()
-                } label: {
-                    Image(systemName: "xmark").font(.caption2).bold()
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Remove song")
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .frame(maxWidth: 180, alignment: .leading)
-        )
-    }
-
-    /// Connect-if-needed, then present the picker. Cancelling the Spotify login
-    /// is a silent no-op; other failures surface in the review error line.
-    private func handleAddMusicTap() {
-        guard spotifyAuth.isConfigured else { return }
-        if spotifyAuth.isConnected {
-            showMusicPicker = true
-            return
-        }
+    /// Run (re)authorization, then immediately pull the current song so the cover
+    /// appears without waiting for the next poll tick.
+    @MainActor private func connectThenRefresh(disconnectFirst: Bool) {
         Task {
+            if disconnectFirst { spotifyAuth.disconnect() }
             do {
                 try await spotifyAuth.connect()
-                showMusicPicker = true
+                await refreshCurrentlyPlaying()
             } catch SpotifyError.cancelled {
                 // user backed out — no-op
             } catch {
-                postError = (error as? SpotifyError)?.errorDescription
-                    ?? "Couldn't connect to Spotify."
+                postError = (error as? SpotifyError)?.errorDescription ?? "Couldn't connect to Spotify."
             }
+        }
+    }
+
+    /// One currently-playing poll tick → update `musicState`. Auth/permission
+    /// failures surface as `.permissionDenied`; transient errors keep the state.
+    @MainActor private func refreshCurrentlyPlaying() async {
+        do {
+            let track = try await spotifyAuth.currentlyPlaying()
+            applyPolledTrack(track)
+        } catch let e as SpotifyError {
+            if case .api(let status, _) = e, status == 401 || status == 403 {
+                musicState = .permissionDenied(reconnect: e.needsReconnect)
+            }
+            // transient (offline / 429 / requestFailed) → keep current state
+        } catch {
+            // transient → keep current state
+        }
+    }
+
+    /// Apply a polled track, de-duping on the Spotify id so the same song isn't
+    /// re-resolved each tick and an opt-out stays sticky until the song changes.
+    @MainActor private func applyPolledTrack(_ track: SpotifyTrack?) {
+        guard let track else {
+            musicState = .nothingPlaying
+            lastSeenTrackId = nil
+            return
+        }
+        if track.id == lastSeenTrackId {
+            switch musicState {
+            case .attached, .optedOut: return   // unchanged song — keep decision
+            default: break                       // recover from a prior error state
+            }
+        }
+        lastSeenTrackId = track.id
+        musicState = .resolving
+        Task {
+            let music = await track.toAutoPostMusic()
+            guard lastSeenTrackId == track.id else { return }   // a newer song won
+            musicState = music.map { .attached($0) } ?? .unresolvable
         }
     }
 
@@ -1728,24 +1816,28 @@ struct HeroPageView: View {
     }
 
     private var placeTagPill: some View {
-        Button {
-            showPlacePicker = true
-        } label: {
-            pillChrome(
-                HStack(spacing: 4) {
-                    Image(systemName: pendingPlace == nil ? "mappin.and.ellipse" : "mappin.circle.fill")
-                        .font(.caption2).bold()
-                    Text(pendingPlace?.name ?? "Tag a place")
+        pillChrome(
+            HStack(spacing: 4) {
+                Image(systemName: pendingPlace == nil ? "mappin.and.ellipse" : "mappin.circle.fill")
+                    .font(.caption2).bold()
+                if let place = pendingPlace {
+                    Text(place.name)
                         .font(.caption).bold()
                         .lineLimit(1)
                         .contentTransition(.opacity)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-            )
-        }
-        .buttonStyle(.plain)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+        )
+        // Tap opens the picker; once tagged, swipe the pill left to clear the
+        // place (reverts to the icon-only prompt + re-shows the suggestion).
+        // Swipe is inert while untagged. One coordinated gesture so a swipe
+        // never also fires the tap.
+        .swipeToRemove(.left, enabled: pendingPlace != nil,
+            onTap: { showPlacePicker = true },
+            onRemove: { withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { pendingPlace = nil } })
         .sheet(isPresented: $showPlacePicker) {
             PlacePickerSheet { selection in
                 pendingPlace = selection
@@ -2108,6 +2200,140 @@ private struct HeroBackgroundMusicModifier: ViewModifier {
             .onChange(of: isReviewingCapture) { _, _ in update() }
             .onChange(of: isObscured) { _, _ in update() }
             .onChange(of: scenePhase) { _, _ in update() }
+    }
+}
+
+// MARK: - High-frequency camera reads, isolated to leaf views
+
+/// Wraps `HeroAestheticIndicator` so the ~2.5 Hz `camera.liveAestheticScore`
+/// update (Vision frame-tap; the camera page is always mounted and keeps
+/// scoring even while browsing the feed) invalidates only this ring — not
+/// `HeroPageView.body`, which rebuilds every feed page. Reading the score
+/// *inside* this view is the whole point; passing `camera` by reference creates
+/// no dependency until a property is accessed.
+private struct LiveAestheticRing: View {
+    let camera: CameraService
+    let floor: Double
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        HeroAestheticIndicator(
+            score: camera.liveAestheticScore,
+            floor: floor,
+            cornerRadius: cornerRadius
+        )
+    }
+}
+
+/// Wraps `HeroRecordingTimer` so the 20 Hz `camera.recordingProgress` tick is
+/// isolated to the badge instead of re-running `HeroPageView.body` while filming.
+private struct RecordingTimerBadge: View {
+    let camera: CameraService
+
+    var body: some View {
+        HeroRecordingTimer(elapsed: camera.recordingProgress * 5,
+                           isLocked: camera.isLocked)
+    }
+}
+
+// MARK: - One feed post page (extracted from HeroPageView)
+
+/// A single full-height feed page: the polaroid card + the below-card reply
+/// composer. Extracted from the old `heroFeedPostPage(...)` *function* into its
+/// own `View` so each post has structural identity — when `HeroPageView.body`
+/// re-runs (e.g. on a settle), SwiftUI can skip the posts whose inputs are
+/// unchanged instead of rebuilding all ~50. `FriendPost` is `Equatable` and the
+/// observable refs / `onJumpToPlace` closure / `postFocus` binding are stable,
+/// so only the entering/leaving cards actually re-render.
+private struct FeedPostPage: View {
+    let post: FriendPost
+    let index: Int
+    let side: CGFloat
+    let belowCardHeight: CGFloat
+    let bottomChrome: CGFloat
+    let isVideoActive: Bool
+    let videoLive: Bool
+    let isHighlighted: Bool
+    let myUid: String
+    let keyboardHeight: CGFloat
+    let composerKeyboardLift: CGFloat
+    let postMusicPlayer: PostMusicPlayer
+    var conversationService: ConversationService
+    let onJumpToPlace: (String) -> Void
+    @Binding var postFocus: PostFocus?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            FeedPolaroidCard(
+                post: post,
+                index: index,
+                isVideoActive: isVideoActive,
+                side: side,
+                postMusicPlayer: postMusicPlayer,
+                // Pass `onJumpToPlace` directly (not re-wrapped) so this view's
+                // inputs stay stable across renders and memoization holds.
+                onPlaceTap: onJumpToPlace,
+                // Off-window posts show the poster (no live player) so only the
+                // current ±1 cards spin up AVPlayers — caps memory/bandwidth and
+                // lets the prefetch actually win.
+                staticPreview: !videoLive,
+                // Brief glow when arriving here via a notification tap.
+                isHighlighted: isHighlighted
+            )
+            // Long-press → focus menu (blurred backdrop + lifted post +
+            // action card). Report/Block for others' posts (App Store
+            // Guideline 1.2), Delete + Hide-from-Discover for your own.
+            .postFocusLongPress { frame in
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                // Low damping → the post overshoots and settles, giving a
+                // springy "bounce" that lands with the haptic.
+                withAnimation(.spring(response: 0.38, dampingFraction: 0.58)) {
+                    postFocus = PostFocus(
+                        post: post,
+                        index: index,
+                        side: side,
+                        anchor: frame,
+                        isMine: post.authorId == myUid
+                    )
+                }
+            }
+
+            // Below-card area: a Color.clear spacer pushes the reply composer to
+            // the bottom of this 160pt zone (just above the navbar arc /
+            // bottomChrome). The song's album cover now lives at the photo's
+            // top-right (inside `FeedPolaroidCard`), not as a chip under the card.
+            VStack(spacing: 0) {
+                Color.clear
+                if post.authorId != myUid {
+                    PostReplyComposer(
+                        post: post,
+                        conversationService: conversationService
+                    )
+                    // Manual keyboard lift — see `composerKeyboardLift`
+                    // doc-comment. The ScrollView's
+                    // `.ignoresSafeArea(.keyboard)` disables automatic
+                    // keyboard avoidance, so we offset upward here.
+                    .offset(y: composerKeyboardLift)
+                    .animation(.easeOut(duration: 0.25), value: keyboardHeight)
+                }
+            }
+            .frame(height: belowCardHeight)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, HeroCameraLayout.horizontalPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .padding(.bottom, bottomChrome)
+        // Tap anywhere on the page that isn't consumed by a Button /
+        // TextField → dismiss keyboard. Covers the post image, header
+        // text, and the empty zone above the composer. The composer's
+        // internal Buttons/TextField consume their own taps so the
+        // user can still interact with the pill normally.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if keyboardHeight > 0 {
+                HeroPageView.dismissKeyboard()
+            }
+        }
     }
 }
 

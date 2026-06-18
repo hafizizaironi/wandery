@@ -103,6 +103,13 @@ extension SocialService {
         // absolute `createdAt` instant, so stamp it here to drive the Night Owl
         // ("check in after 9 PM") achievement counter.
         let localHour = Calendar.current.component(.hour, from: createdAt.dateValue())
+        // Device-local calendar day (YYYY-MM-DD) — drives the server-side
+        // consecutive-day posting streak (Streak Keeper achievements).
+        let localDayFormatter = DateFormatter()
+        localDayFormatter.calendar = Calendar.current
+        localDayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        localDayFormatter.dateFormat = "yyyy-MM-dd"
+        let localDay = localDayFormatter.string(from: createdAt.dateValue())
 
         // Resolve each DISTINCT place once (sequential — usually 0-1 places;
         // dedup means a single findOrCreatePlace call even when photos share
@@ -206,6 +213,7 @@ extension SocialService {
             "mediaURL": first.url,
             "createdAt": createdAt,
             "localHour": localHour,
+            "localDay": localDay,
             "media": mediaPayload,
         ]
         if let t = first.thumbnailURL { payload["thumbnailURL"] = t }

@@ -58,23 +58,50 @@ struct MyHuntView: View {
             .map { (formatter.string(from: $0.key), $0.value) }
     }
 
+    /// Default vs Thermal Receipt look. Local-only, available to everyone; the
+    /// toggle lives in the header so it's flipped while looking at My Hunt.
+    @AppStorage(MyHuntStyle.storageKey) private var huntStyle: MyHuntStyle = .standard
+
     var body: some View {
         ZStack {
             AppTheme.surfaceCanvas.ignoresSafeArea()
 
             VStack(spacing: 0) {
                 header
-                ScrollView {
-                    VStack(spacing: 0) {
-                        heroMap
-                        milestoneStrip
-                        filterRow
-                        ForEach(groupedByMonth, id: \.label) { group in
-                            monthGroup(group.label, places: group.places)
-                        }
-                        Color.clear.frame(height: 40)
+                Group {
+                    if huntStyle == .thermalReceipt {
+                        MyHuntReceiptView(
+                            sinceLabel: sinceLabel,
+                            placeCount: myPlaces.count,
+                            cityCount: cityCount,
+                            daysActive: daysActive,
+                            counts: counts,
+                            groupedByMonth: groupedByMonth,
+                            username: username,
+                            myUid: myUid
+                        )
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    } else {
+                        standardScroll
+                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     }
                 }
+            }
+        }
+    }
+
+    /// The default My Hunt content: hero map, milestone, filter chips, and the
+    /// month-grouped place rows.
+    private var standardScroll: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                heroMap
+                milestoneStrip
+                filterRow
+                ForEach(groupedByMonth, id: \.label) { group in
+                    monthGroup(group.label, places: group.places)
+                }
+                Color.clear.frame(height: 40)
             }
         }
     }
@@ -132,6 +159,28 @@ struct MyHuntView: View {
                 }
             }
             Spacer()
+
+            // Toggle the whole screen between the default look and the printed
+            // receipt look. Tinted when the receipt is active.
+            Button {
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                    huntStyle = huntStyle == .thermalReceipt ? .standard : .thermalReceipt
+                }
+            } label: {
+                Image(systemName: "scroll")
+                    .font(.footnote)
+                    .foregroundStyle(huntStyle == .thermalReceipt ? AppTheme.cafeAccent : AppTheme.textPrimary)
+                    .frame(width: 36, height: 36)
+                    .background(
+                        Circle().fill(
+                            huntStyle == .thermalReceipt
+                                ? AppTheme.cafeAccent.opacity(0.14)
+                                : AppTheme.textPrimary.opacity(0.06)
+                        )
+                    )
+            }
+            .buttonStyle(.scalePress)
+            .accessibilityLabel(huntStyle == .thermalReceipt ? "Switch to default hunt view" : "Switch to receipt view")
 
             ShareLink(item: "Check out my hunt on Wandery") {
                 Image(systemName: "square.and.arrow.up")

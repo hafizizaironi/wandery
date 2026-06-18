@@ -22,6 +22,29 @@ final class AuthService {
         return uid == adminUID
     }
 
+    /// Testers who get early access to in-development feed-card skins
+    /// (currently the Thermal Receipt frame). Hardcoded by design — a small,
+    /// static list with no backend; grant/revoke means shipping an app update.
+    /// UIDs are opaque Firebase Auth identifiers (low-sensitivity).
+    private static let thermalFrameTesters: Set<String> = [
+        "3LVmpjEh3mfAfRsPWGfFhlYKEz52", "3LYjl5eG4VRHyEdr9WNQwavbGMt2",
+        "45zRnSqrrrf5DzN673Ystils0yt2", "59MfN7SAcZWAdVen5oOOsOu2JqW2",
+        "5Et4Xp5C17h35b9FHzVMqW7eIaL2", "A7waeoywDgdauEvQk3SsjPRYzPg2",
+        "GwNhbokFKIVOu9ZIQPyIF09sr4k1", "IdyMVyAwwtSLqmqzSQJzD05qxcz2",
+        "JoV514nX7Odm0j6vsPAdTO60G483", "VvPIvrPTLUdmJyVYJuKZEYLkmOH2",
+        "WPT9bl3OBugcn8HrNWIKmTEr1O02", "h6dWOx3vdsXYo3krn42wKme67yM2",
+        "hmbqCt8cJnTu0BM6mk7hMD2cjXg1", "jGG9TPcynnYBaGLGQ4IDTmz8Nre2",
+        "qkrAprhTC0aJpI0qrAtIBIgf8x73", "t9FV5YF88ZXgEpKhbVGkjPWSUqb2",
+        "uVt5zYYNbqOGTrg4STa6tEyObRL2", "yWKLBUWpombWGpPXhRZljNJIbao2",
+    ]
+
+    /// Whether the current user may select the Thermal Receipt feed frame.
+    /// Admins always can (to preview unreleased skins); listed testers can too.
+    var canUseThermalFrame: Bool {
+        guard let uid = user?.uid else { return false }
+        return isAdmin || Self.thermalFrameTesters.contains(uid)
+    }
+
     // `nonisolated(unsafe)` lets `deinit` (which is nonisolated) read the
     // handle to detach the listener. Only ever touched during init + deinit
     // so there's no real concurrency to protect against.

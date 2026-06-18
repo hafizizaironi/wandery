@@ -18,6 +18,7 @@ struct MainShellView: View {
     var userPrivateService:  UserPrivateService
     var spotifyAuth:         SpotifyAuthService
     var postMusicPlayer:     PostMusicPlayer
+    var frameCatalog:        FrameCatalogService
 
     // Start on the Hero (feed) page — centre of the arc.
     @State private var selectedPage: ShellPage = .hero
@@ -77,6 +78,9 @@ struct MainShellView: View {
     /// for everyone (existing users + brand-new accounts).
     @AppStorage("whatsNew.lastSeenKey") private var whatsNewLastSeen: String = ""
     @State private var showWhatsNew = false
+    /// The achievement currently shown in the unlock-celebration toast (one at a
+    /// time; the rest wait in `statsService.justUnlocked`).
+    @State private var celebratingAchievement: Achievement?
     /// One-time warm intro for testers (TestFlight/dev builds only — see
     /// `AppEnvironment.isTester`). Auto-shows once per device, re-openable
     /// from the "Welcome message" row in Profile.
@@ -164,6 +168,7 @@ struct MainShellView: View {
                         socialService:       socialService,
                         userPrivateService:  userPrivateService,
                         spotifyAuth:         spotifyAuth,
+                        frameCatalog:        frameCatalog,
                         isTabActive:         abs(pageProgress - 2) < 0.5,
                         friendPlacesService: friendPlacesService,
                         showMyHunt:          $showMyHunt,
@@ -300,6 +305,8 @@ struct MainShellView: View {
                 friendPlacesService.unsubscribeMyVisits()
             }
         }
+        // App-wide released-frames catalog (idempotent; doc is public-read).
+        .task { frameCatalog.subscribe() }
         .onChange(of: pageProgress) { _, value in
             let snapped = ShellPage(rawValue: Int(value.rounded())) ?? .hero
             if snapped != selectedPage { selectedPage = snapped }
@@ -382,6 +389,7 @@ struct MainShellView: View {
                     whatsNewLastSeen = whatsNewReleaseKey
                     showWhatsNew = false
                 },
+                canUseThermalFrame: authService.canUseThermalFrame,
                 onJumpToFeature: { feature in
                     // Mark the tour as seen + close, then route. The deeper
                     // navs (Discover sheet / My Hunt overlay) fire after a
@@ -447,6 +455,17 @@ struct MainShellView: View {
                 onClose: { showWanderyCode = false }
             )
         }
+        // Achievement unlock celebration — a confetti toast when a new badge
+        // unlocks DURING the session (queued in `statsService.justUnlocked`).
+        .overlay(alignment: .top) {
+            if let a = celebratingAchievement {
+                AchievementUnlockToast(achievement: a) { dismissCelebration() }
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(10_000)
+            }
+        }
+        .onChange(of: statsService.justUnlocked.count) { _, _ in showNextCelebrationIfIdle() }
         .onAppear {
             trackArea()   // initial area on first appearance
             // Once per cold launch: surface the soft prompt to legacy
@@ -521,6 +540,27 @@ struct MainShellView: View {
     }
 
     private func trackArea() { AnalyticsService.shared.screen(effectiveArea) }
+
+    // MARK: - Achievement unlock celebration (queue drain)
+
+    /// Show the next queued unlock if nothing's celebrating right now.
+    private func showNextCelebrationIfIdle() {
+        guard celebratingAchievement == nil, !statsService.justUnlocked.isEmpty else { return }
+        let next = statsService.justUnlocked.removeFirst()
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { celebratingAchievement = next }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3.5))
+            if celebratingAchievement?.id == next.id { dismissCelebration() }
+        }
+    }
+
+    private func dismissCelebration() {
+        withAnimation(.easeOut(duration: 0.3)) { celebratingAchievement = nil }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            showNextCelebrationIfIdle()
+        }
+    }
 
     /// Display name for the Wandery Code screen when opened from What's New.
     /// Mirrors `ProfileHomeView.displayName` so the code looks identical

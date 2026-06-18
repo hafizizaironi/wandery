@@ -31,6 +31,8 @@ struct WanderyEntryView: View {
     @State private var entryPlaces          = FriendPlacesService()
     /// Single source of truth for OS permissions; drives the queued priming gate.
     @State private var permissionsManager   = PermissionsManager()
+    /// App-wide released-frames catalog (admin publishes frames to all users).
+    @State private var frameCatalog         = FrameCatalogService()
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("hasSeenWelcome") private var hasSeenWelcome: Bool = false
@@ -89,7 +91,8 @@ struct WanderyEntryView: View {
                 conversationService: conversationService,
                 permissionsManager:  permissionsManager,
                 spotifyAuth:         spotifyAuth,
-                postMusicPlayer:     postMusicPlayer
+                postMusicPlayer:     postMusicPlayer,
+                frameCatalog:        frameCatalog
             )
 
             if coverActive {

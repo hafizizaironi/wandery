@@ -287,20 +287,55 @@ exports.onPostCreatePlaceVisit = functions.firestore
     //   nightCheckIns → Night Owl (post stamped with a device-local hour ≥ 21)
     // Plain increments, mirroring reactionsReceived — an occasional duplicate
     // trigger delivery just unlocks a hair early, which is harmless here.
+    const inc = (n) => admin.firestore.FieldValue.increment(n);
     const photoCount = Array.isArray(d.media)
       ? d.media.filter((m) => m && m.type === "image").length
       : (d.mediaType === "image" ? 1 : 0);
+    const hasVideo = Array.isArray(d.media)
+      ? d.media.some((m) => m && m.type === "video")
+      : (d.mediaType === "video");
+    // Require a real, playable song (mirrors the client decoder's non-empty
+    // previewURL rule) so a crafted `music: {}` can't inflate the counter.
+    const hasMusic = d.music != null && typeof d.music === "object"
+      && typeof d.music.previewURL === "string" && d.music.previewURL.length > 0;
     const isNight = typeof d.localHour === "number" && d.localHour >= 21;
+    const isEarly = typeof d.localHour === "number" && d.localHour < 8;
     const statUpdates = {};
-    if (photoCount > 0) {
-      statUpdates.photosShared = admin.firestore.FieldValue.increment(photoCount);
-    }
-    if (isNight) {
-      statUpdates.nightCheckIns = admin.firestore.FieldValue.increment(1);
-    }
+    if (photoCount > 0) statUpdates.photosShared = inc(photoCount);
+    if (isNight) statUpdates.nightCheckIns = inc(1);
+    if (isEarly) statUpdates.earlyBirdCount = inc(1);
+    if (hasVideo) statUpdates.videoPostsCount = inc(1);
+    if (hasMusic) statUpdates.musicPostsCount = inc(1);
     if (Object.keys(statUpdates).length > 0) {
       await userRef.set(statUpdates, { merge: true }).catch((err) => {
         logger.warn("[VISIT] stat counter update failed", {
+          postId, uid, message: err && err.message,
+        });
+      });
+    }
+
+    // Consecutive-day posting streak (Streak Keeper achievements). `localDay` is
+    // the device-local YYYY-MM-DD the client stamps on the post. Idempotent for
+    // same-day reposts; advances only when localDay is exactly the day after
+    // lastPostDay, else resets to 1.
+    const localDay = typeof d.localDay === "string" ? d.localDay : null;
+    if (localDay && /^\d{4}-\d{2}-\d{2}$/.test(localDay)) {
+      await admin.firestore().runTransaction(async (tx) => {
+        const snap = await tx.get(userRef);
+        const u = snap.data() || {};
+        if (u.lastPostDay === localDay) return; // already counted today
+        const prevMs = Date.parse((u.lastPostDay || "") + "T00:00:00Z");
+        const dayMs = Date.parse(localDay + "T00:00:00Z");
+        const continued = Number.isFinite(prevMs) && (dayMs - prevMs) === 86400000;
+        const current = continued ? (u.currentStreak || 0) + 1 : 1;
+        const longest = Math.max(u.longestStreak || 0, current);
+        tx.set(userRef, {
+          lastPostDay: localDay,
+          currentStreak: current,
+          longestStreak: longest,
+        }, { merge: true });
+      }).catch((err) => {
+        logger.warn("[VISIT] streak update failed", {
           postId, uid, message: err && err.message,
         });
       });
@@ -1051,6 +1086,11 @@ exports.acceptFriendRequest = onCall(
       tx.set(otherRef.collection("friends").doc(uid), {
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+      // friendsCount achievement counter (server-owned). Set authoritatively
+      // from the just-read sizes (+1 for this add) so it can never drift or go
+      // negative — `removeFriend` recomputes the same way.
+      tx.set(meRef, { friendsCount: mySize + 1 }, { merge: true });
+      tx.set(otherRef, { friendsCount: otherSize + 1 }, { merge: true });
       return { ok: true };
     });
   },
@@ -1144,11 +1184,23 @@ exports.removeFriend = onCall(
     // friend graph one-sided. Each edge is always the caller's own, so this
     // can't sever a third party's unrelated friendships.
     const db = admin.firestore();
-    const myEdge = db.collection("users").doc(uid).collection("friends").doc(otherUid);
-    const theirEdge = db.collection("users").doc(otherUid).collection("friends").doc(uid);
+    const myRef = db.collection("users").doc(uid);
+    const otherRef = db.collection("users").doc(otherUid);
+    const myEdge = myRef.collection("friends").doc(otherUid);
+    const theirEdge = otherRef.collection("friends").doc(uid);
     await db.runTransaction(async (tx) => {
+      // Reads first: edge existence + current sizes (to recompute friendsCount).
+      const [mySnap, theirSnap, myFriends, theirFriends] = await Promise.all([
+        tx.get(myEdge), tx.get(theirEdge),
+        tx.get(myRef.collection("friends")), tx.get(otherRef.collection("friends")),
+      ]);
       tx.delete(myEdge);
       tx.delete(theirEdge);
+      // friendsCount achievement counter — recompute from the post-delete size
+      // (size minus the edge we're removing, if it existed). Self-healing and
+      // never negative; mirrors the +1 recompute on the add paths.
+      tx.set(myRef, { friendsCount: Math.max(0, myFriends.size - (mySnap.exists ? 1 : 0)) }, { merge: true });
+      tx.set(otherRef, { friendsCount: Math.max(0, theirFriends.size - (theirSnap.exists ? 1 : 0)) }, { merge: true });
     });
     return { ok: true };
   },
@@ -2176,6 +2228,10 @@ exports.resolveWanderyCode = onCall(
         const now = admin.firestore.FieldValue.serverTimestamp();
         tx.set(meRef.collection("friends").doc(targetUid), { createdAt: now });
         tx.set(targetRef.collection("friends").doc(uid), { createdAt: now });
+        // friendsCount achievement counter (server-owned) — authoritative from
+        // the just-read sizes (+1 for this add); matches removeFriend's recompute.
+        tx.set(meRef, { friendsCount: mySize + 1 }, { merge: true });
+        tx.set(targetRef, { friendsCount: otherSize + 1 }, { merge: true });
         if (theirReq) tx.update(theirReq.ref, { status: "accepted" });
       });
       return { status: "added", profile };

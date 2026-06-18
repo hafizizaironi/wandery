@@ -14,7 +14,7 @@ import SwiftUI
 
 /// Bump when the body of `WhatsNewSheet` changes meaningfully — the
 /// AppStorage gate re-presents the sheet on next launch for everyone.
-let whatsNewReleaseKey = "2026.06-widgets-wandery-code"
+let whatsNewReleaseKey = "2026.06-finale-music-receipt"
 
 /// Features the sheet can deep-link the user into. Older cases
 /// (camera/discover/myHunt) are kept so prior routes stay valid; the
@@ -26,10 +26,13 @@ enum WhatsNewFeature: String {
 
 struct WhatsNewSheet: View {
     var onDismiss: () -> Void
+    /// True for users who can actually use the (still-gated) Receipt frame —
+    /// only they get the "exclusive frame" page. See `AuthService.canUseThermalFrame`.
+    var canUseThermalFrame: Bool = false
     var onJumpToFeature: (WhatsNewFeature) -> Void
 
     @State private var page: Int = 0
-    private let pages: [WhatsNewPage] = .v2026_06
+    private var pages: [WhatsNewPage] { .finale(includeFrame: canUseThermalFrame) }
 
     var body: some View {
         ZStack {
@@ -135,37 +138,93 @@ struct AccentIcon {
 }
 
 extension Array where Element == WhatsNewPage {
-    static var v2026_06: [WhatsNewPage] {
-        [
+    /// The final test-phase build tour. The exclusive Receipt frame page is
+    /// inserted only for users who can use it (`includeFrame`).
+    static func finale(includeFrame: Bool) -> [WhatsNewPage] {
+        // Legible green for the music page — raw `Color.musicNeon` is too
+        // low-contrast on the carousel's light `surfacePrimary` background.
+        let musicGreen = AppTheme.successGreen
+
+        var pages: [WhatsNewPage] = [
             WhatsNewPage(
-                icon: "apps.iphone",
+                icon: "party.popper.fill",
                 accentIcons: [
-                    AccentIcon(name: "photo.fill", offset: CGSize(width:  46, height: -40), scale: 0.32, anim: .bounce),
-                    AccentIcon(name: "map.fill",   offset: CGSize(width: -46, height:  44), scale: 0.32, anim: .pulse),
+                    AccentIcon(name: "sparkles", offset: CGSize(width:  46, height: -40), scale: 0.30, anim: .variableColor),
+                    AccentIcon(name: "heart.fill", offset: CGSize(width: -46, height:  44), scale: 0.28, anim: .pulse),
+                ],
+                accent: AppTheme.cafeAccent,
+                symbolAnim: .bounce,
+                headline: "One last build before launch 🥹",
+                body: "You're holding the final build of our test phase — and it's a big one. Thank you for hunting with us through every rough edge. Here's everything that's new.",
+                footnote: nil,
+                feature: nil,
+                jumpCTA: nil
+            ),
+            WhatsNewPage(
+                icon: "music.note",
+                accentIcons: [
+                    AccentIcon(name: "waveform", offset: CGSize(width:  46, height: -40), scale: 0.32, anim: .variableColor),
+                    AccentIcon(name: "dot.radiowaves.left.and.right", offset: CGSize(width: -48, height: 42), scale: 0.30, anim: .pulse),
+                ],
+                accent: musicGreen,
+                symbolAnim: .pulse,
+                headline: "Your post, soundtracked — automatically",
+                body: "Connect Spotify, play a song, then snap a moment — whatever you're listening to rides along with your post and plays for friends in the feed. No picking. Nothing playing? Hit play and it shows up.",
+                footnote: "Tap the cover to leave a song off. We find a clean preview even when Spotify doesn't have one.",
+                feature: .camera,
+                jumpCTA: "Open camera →"
+            ),
+        ]
+
+        if includeFrame {
+            pages.append(
+                WhatsNewPage(
+                    icon: "barcode",
+                    accentIcons: [
+                        AccentIcon(name: "music.note", offset: CGSize(width:  46, height: -40), scale: 0.30, anim: .pulse),
+                        AccentIcon(name: "scroll", offset: CGSize(width: -46, height: 44), scale: 0.30, anim: .bounce),
+                    ],
+                    accent: AppTheme.cafeAccent,
+                    symbolAnim: .pulse,
+                    headline: "Your exclusive Receipt frame 🧾",
+                    body: "A thank-you for testing with us: your posts can print as a thermal café receipt — torn edge, monospace rows, and a barcode that dances to your song. Tester-only, and staying that way.",
+                    footnote: "Turn it on in Profile → Frame style → Receipt.",
+                    feature: nil,
+                    jumpCTA: nil
+                )
+            )
+        }
+
+        pages.append(contentsOf: [
+            WhatsNewPage(
+                icon: "mappin.and.ellipse",
+                accentIcons: [
+                    AccentIcon(name: "sparkles", offset: CGSize(width:  46, height: -40), scale: 0.30, anim: .variableColor),
                 ],
                 accent: AppTheme.cafeAccent,
                 symbolAnim: .pulse,
-                headline: "Wandery on your Home Screen",
-                body: "Two new widgets bring the hunt out of the app. Photo Feed keeps your friends' latest spots glanceable, and Nearby Map drops their recent finds and your saved places onto a live mini-map. Touch and hold your Home Screen, tap ＋, and search “Wandery.”",
-                footnote: "Add them in any size — they refresh on their own.",
-                feature: .widgets,
-                jumpCTA: "Show me how →"
+                headline: "Tag a place, faster",
+                body: "A slimmer place pill, a one-tap nearby suggestion, and swipe a pill away to clear it — plus a sweep of smoother animations and fixes across the composer and feed.",
+                footnote: nil,
+                feature: nil,
+                jumpCTA: nil
             ),
             WhatsNewPage(
-                icon: "circle.hexagongrid.fill",
+                icon: "flame.fill",
                 accentIcons: [
-                    AccentIcon(name: "viewfinder",          offset: CGSize(width:  46, height: -40), scale: 0.32, anim: .variableColor),
-                    AccentIcon(name: "person.fill.badge.plus", offset: CGSize(width: -48, height:  42), scale: 0.30, anim: .bounce),
+                    AccentIcon(name: "hand.thumbsup.fill", offset: CGSize(width:  46, height: -40), scale: 0.28, anim: .bounce),
                 ],
                 accent: AppTheme.cafeAccent,
                 symbolAnim: .variableColor,
-                headline: "Add friends with your Wandery Code",
-                body: "Every account now has its own circular Wandery Code. Open yours, let a friend point their camera at it, and you're hunting buddies in seconds — no usernames to type. Tap Scan to read theirs.",
-                footnote: "Find it next to “Add” in your Friends list, or here on your profile.",
-                feature: .wanderyCode,
-                jumpCTA: "Open my code →"
+                headline: "That's the build 🔥",
+                body: "Poke at everything, break things, and tell us what feels off — your feedback shapes the launch. Couldn't have gotten here without you.",
+                footnote: "Stay hunting. 🔥",
+                feature: nil,
+                jumpCTA: nil
             ),
-        ]
+        ])
+
+        return pages
     }
 }
 

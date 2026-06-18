@@ -12,6 +12,8 @@ struct ProfileHomeView: View {
     var socialService:       SocialService
     var userPrivateService:  UserPrivateService
     var spotifyAuth:         SpotifyAuthService
+    /// App-wide released-frames catalog (which skins the admin has published).
+    var frameCatalog:        FrameCatalogService
     /// True while this shell page is the visible tab (Map / Hero / Profile pager).
     var isTabActive: Bool
     /// Map data + My Hunt open-state, owned by MainShellView so the overlay
@@ -59,6 +61,8 @@ struct ProfileHomeView: View {
     @State private var showDeleteConfirm   = false
     @State private var isDeleting          = false
     @State private var deleteError         = ""
+    /// Presents the swipeable frame wardrobe (Feed style row).
+    @State private var showFrameWardrobe   = false
     /// Confirmation before unlinking Spotify (re-linking needs the OAuth dance).
     @State private var confirmSpotifyDisconnect = false
     /// Pre-fetches friend profiles so the friend list panel opens with rows
@@ -75,6 +79,23 @@ struct ProfileHomeView: View {
     /// Feed card style (Classic / Polaroid / …). Read by the feed +
     /// capture-review through the same key via `FeedCardFrame`.
     @AppStorage(FeedCardStyle.storageKey) private var feedCardStyle: FeedCardStyle = .plain
+
+    /// Whether `style` is available to the current user. Admins see everything;
+    /// otherwise a style is available if it's released at the BASE (plain /
+    /// polaroid), the admin has PUBLISHED it (`config/frames` → `frameCatalog`),
+    /// or it's the Thermal Receipt and the user is on its tester allow-list.
+    func isStyleAvailable(_ style: FeedCardStyle) -> Bool {
+        authService.isAdmin
+            || style.isReleased
+            || frameCatalog.releasedFrameIDs.contains(style.rawValue)
+            || (style == .thermalReceipt && authService.canUseThermalFrame)
+    }
+
+    /// Styles offered to the current user (admins see every skin to preview +
+    /// publish; everyone else sees what's available to them).
+    private var visibleFeedCardStyles: [FeedCardStyle] {
+        FeedCardStyle.allCases.filter(isStyleAvailable)
+    }
 
 
     // Long-press-on-avatar moderation surface state. The .contextMenu on
@@ -333,6 +354,14 @@ struct ProfileHomeView: View {
         }
         .sheet(isPresented: $showWidgetTutorial) {
             WidgetTutorialView()
+        }
+        .fullScreenCover(isPresented: $showFrameWardrobe) {
+            FrameWardrobeView(
+                styles: visibleFeedCardStyles,
+                isAdmin: authService.isAdmin,
+                frameCatalog: frameCatalog,
+                onClose: { showFrameWardrobe = false }
+            )
         }
         // Pre-hydrate friend profiles while the user is still on the
         // profile page, so opening the Friends panel feels instant
@@ -1128,86 +1157,38 @@ struct ProfileHomeView: View {
     }
 
     private var settingsSection: some View {
-        VStack(spacing: 12) {
-            Button {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                showFriendFind = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "person.2.wave.2.fill")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.accentAction)
-                        .frame(width: 28)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Find friends from contacts")
-                            .font(.subheadline).bold()
-                            .foregroundStyle(AppTheme.textPrimary)
-                        Text("See who's already on the app")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.textSecondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.textSecondary.opacity(0.5))
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(AppTheme.textPrimary.opacity(0.04))
-                .clipShape(.rect(cornerRadius: 14))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Find friends from contacts")
+        VStack(spacing: 18) {
+            // Founding-hunter highlight stays up top.
+            betaInviteCard
 
-            settingsRow(icon: "apps.iphone",
-                        title: "Add the Home Screen widget",
-                        subtitle: "Show friends' latest posts at a glance") {
-                AnalyticsService.shared.log(.addWidgetTutorial, area: .profile)
-                showWidgetTutorial = true
+            // PERSONALIZE — how your posts look.
+            settingsGroup("PERSONALIZE") {
+                feedStyleRow
             }
 
-            if authService.isAdmin {
-                settingsRow(icon: "sparkles", title: "Manage Creator's Pick",
-                            subtitle: "Curate featured places") { showCreatorPicksAdmin = true }
-                settingsRow(icon: "wand.and.stars", title: "Classifier Tuning",
-                            subtitle: "Inspect on-device photo scores") { showClassifierTuning = true }
-                settingsRow(icon: "chart.bar.xaxis", title: "Analytics",
-                            subtitle: "Usage & engagement") { showAdminAnalytics = true }
-                settingsRow(icon: "sparkles.rectangle.stack.fill", title: "Preview What's New",
-                            subtitle: "Re-open the release tour") { onPreviewWhatsNew() }
-                settingsRow(icon: "photo.stack", title: "Marketing Mockups",
-                            subtitle: "Open the screenshot pages") { onShowMarketingMockups() }
-            }
-
-            // Tester-only: re-open the one-time welcome intro. Hidden on the
-            // production App Store build (AppEnvironment.isTester). Visible to
-            // every tester, not just admin — it's their message, after all.
-            if AppEnvironment.isTester {
+            // FRIENDS & DISCOVERY
+            settingsGroup("FRIENDS & DISCOVERY") {
                 Button {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    onShowTesterWelcome()
+                    showFriendFind = true
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: "flame.fill")
+                        Image(systemName: "person.2.wave.2.fill")
                             .font(.subheadline)
                             .foregroundStyle(AppTheme.accentAction)
                             .frame(width: 28)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("Welcome message")
+                            Text("Find friends from contacts")
                                 .font(.subheadline).bold()
                                 .foregroundStyle(AppTheme.textPrimary)
-                            Text("Re-read the tester intro")
+                            Text("See who's already on the app")
                                 .font(.caption2)
                                 .foregroundStyle(AppTheme.textSecondary)
                         }
                         Spacer()
                         Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.textSecondary.opacity(0.6))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.textSecondary.opacity(0.5))
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
@@ -1219,44 +1200,173 @@ struct ProfileHomeView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Re-read the welcome message")
+                .accessibilityLabel("Find friends from contacts")
+
+                // Friend-of-friend Discover opt-out (UI reads as opt-IN).
+                helpsCircleDiscoverRow
             }
 
-            // (Manual "Recompute achievements" button was removed — the
-            // user-doc listener + `persistNewlyUnlocked` chain in
-            // UserStatsService.subscribe now lays down unlock timestamps
-            // automatically the moment a stat-bumping trigger fires
-            // server-side. The backfillMyStats Cloud Function is kept on
-            // the server for support emergencies but no longer surfaced
-            // in the UI.)
+            // HOME SCREEN
+            settingsGroup("HOME SCREEN") {
+                settingsRow(icon: "apps.iphone",
+                            title: "Add the Home Screen widget",
+                            subtitle: "Show friends' latest posts at a glance") {
+                    AnalyticsService.shared.log(.addWidgetTutorial, area: .profile)
+                    showWidgetTutorial = true
+                }
+            }
 
-            // Feed card style — options come from FeedCardStyle.allCases, so a
-            // new style appears here automatically. Local-only (@AppStorage);
-            // read by the feed + capture-review via FeedCardStyle.storageKey.
+            // SUPPORT — reach a human + reviewer-required legal surfaces.
+            settingsGroup("SUPPORT") {
+                contactSupportCard
+                legalLinks
+            }
+
+            // ADMIN — team-only tools.
+            if authService.isAdmin {
+                settingsGroup("ADMIN") {
+                    settingsRow(icon: "sparkles", title: "Manage Creator's Pick",
+                                subtitle: "Curate featured places") { showCreatorPicksAdmin = true }
+                    settingsRow(icon: "wand.and.stars", title: "Classifier Tuning",
+                                subtitle: "Inspect on-device photo scores") { showClassifierTuning = true }
+                    settingsRow(icon: "chart.bar.xaxis", title: "Analytics",
+                                subtitle: "Usage & engagement") { showAdminAnalytics = true }
+                    settingsRow(icon: "sparkles.rectangle.stack.fill", title: "Preview What's New",
+                                subtitle: "Re-open the release tour") { onPreviewWhatsNew() }
+                    settingsRow(icon: "photo.stack", title: "Marketing Mockups",
+                                subtitle: "Open the screenshot pages") { onShowMarketingMockups() }
+                }
+            }
+
+            // TESTER — re-open the one-time welcome intro (TestFlight/dev only).
+            if AppEnvironment.isTester {
+                settingsGroup("TESTER") {
+                    testerWelcomeRow
+                }
+            }
+
+            // ACCOUNT
+            settingsGroup("ACCOUNT") {
+                Button(action: signOut) {
+                    Text("Sign out")
+                        .font(.subheadline).bold()
+                        .foregroundStyle(AppTheme.cafeAccent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(AppTheme.cafeAccent.opacity(0.10))
+                        .clipShape(.rect(cornerRadius: 14))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
+                        }
+                }
+
+                if !signOutError.isEmpty {
+                    Text(signOutError)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.errorRed)
+                        .multilineTextAlignment(.center)
+                }
+
+                // Permanent in-app account deletion — App Store Guideline 5.1.1(v).
+                Button {
+                    showDeleteConfirm = true
+                } label: {
+                    Group {
+                        if isDeleting {
+                            ProgressView()
+                                .tint(AppTheme.errorRed)
+                        } else {
+                            Text("Delete Account")
+                                .font(.subheadline).bold()
+                                .foregroundStyle(AppTheme.errorRed)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(AppTheme.errorRed.opacity(0.08))
+                    .clipShape(.rect(cornerRadius: 14))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(AppTheme.errorRed.opacity(0.3), lineWidth: 1)
+                    }
+                }
+                .disabled(isDeleting)
+                .alert(
+                    "Delete your account?",
+                    isPresented: $showDeleteConfirm
+                ) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Delete", role: .destructive) {
+                        Task { await deleteAccount() }
+                    }
+                } message: {
+                    Text("This permanently removes your profile, posts, friends, and chats. This can't be undone.")
+                }
+
+                if !deleteError.isEmpty {
+                    Text(deleteError)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.errorRed)
+                        .multilineTextAlignment(.center)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+    }
+
+    /// A titled settings group — a section header plus its rows, so the settings
+    /// list reads as distinct categories.
+    @ViewBuilder
+    private func settingsGroup<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title)
+            content()
+        }
+    }
+
+    /// Feed-style row — opens the swipeable frame wardrobe. The subtitle shows
+    /// the current pick. Includes the safety-reset (stored style no longer
+    /// available → fall back to Classic).
+    private var feedStyleRow: some View {
+        settingsRow(icon: "photo.on.rectangle.angled",
+                    title: "Feed style",
+                    subtitle: feedCardStyle.label) {
+            showFrameWardrobe = true
+        }
+        .onAppear { resetUnavailableStyle() }
+        .onChange(of: frameCatalog.releasedFrameIDs) { _, _ in resetUnavailableStyle() }
+    }
+
+    private func resetUnavailableStyle() {
+        if !isStyleAvailable(feedCardStyle) { feedCardStyle = .plain }
+    }
+
+    /// Tester-only "re-read the welcome intro" row.
+    private var testerWelcomeRow: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            onShowTesterWelcome()
+        } label: {
             HStack(spacing: 10) {
-                Image(systemName: "photo.on.rectangle.angled")
+                Image(systemName: "flame.fill")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.accentAction)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Feed style")
+                    Text("Welcome message")
                         .font(.subheadline).bold()
                         .foregroundStyle(AppTheme.textPrimary)
-                    Text("How feed photos are framed")
+                    Text("Re-read the tester intro")
                         .font(.caption2)
                         .foregroundStyle(AppTheme.textSecondary)
                 }
                 Spacer()
-                Picker("", selection: $feedCardStyle) {
-                    // Users pick from released skins only; admins also see
-                    // unreleased ones (flagged) to preview before the team ships.
-                    ForEach(authService.isAdmin ? FeedCardStyle.allCases : FeedCardStyle.released) { style in
-                        Text(style.isReleased ? style.label : "\(style.label) (unreleased)").tag(style)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .tint(AppTheme.accentAction)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary.opacity(0.6))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -1266,98 +1376,9 @@ struct ProfileHomeView: View {
                 RoundedRectangle(cornerRadius: 14)
                     .stroke(AppTheme.borderSubtle, lineWidth: 1)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Feed style")
-            .accessibilityValue(feedCardStyle.label)
-
-            // Friend-of-friend Discover opt-out. The Cloud Function checks
-            // `users/{uid}.optedOutOfDiscovery` before letting this user's
-            // visits surface in others' circle pins. UI reads as opt-IN
-            // ("Help") while the stored field stays opt-OUT (default-falsey
-            // → an absent field is treated as opted in).
-            helpsCircleDiscoverRow
-
-            // Final-phase beta growth. The public TestFlight link is capped
-            // at 100 testers, so the copy leans into urgency + belonging to
-            // turn every tester into a referrer.
-            betaInviteCard
-
-            // Warm "reach a human" surface. Also satisfies App Store
-            // Guideline 1.2 (developer reachable from inside the app).
-            contactSupportCard
-
-            // Reviewer-required legal surfaces — Guideline 5.1.1 expects the
-            // Privacy Policy + Terms of Use linkable post-onboarding.
-            legalLinks
-
-            Button(action: signOut) {
-                Text("Sign out")
-                    .font(.subheadline).bold()
-                    .foregroundStyle(AppTheme.cafeAccent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(AppTheme.cafeAccent.opacity(0.10))
-                    .clipShape(.rect(cornerRadius: 14))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(AppTheme.cafeAccent.opacity(0.3), lineWidth: 1)
-                    }
-            }
-
-            if !signOutError.isEmpty {
-                Text(signOutError)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.errorRed)
-                    .multilineTextAlignment(.center)
-            }
-
-            // Permanent in-app account deletion — required by App Store
-            // Guideline 5.1.1(v) for any app with account creation.
-            Button {
-                showDeleteConfirm = true
-            } label: {
-                Group {
-                    if isDeleting {
-                        ProgressView()
-                            .tint(AppTheme.errorRed)
-                    } else {
-                        Text("Delete Account")
-                            .font(.subheadline).bold()
-                            .foregroundStyle(AppTheme.errorRed)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(AppTheme.errorRed.opacity(0.08))
-                .clipShape(.rect(cornerRadius: 14))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(AppTheme.errorRed.opacity(0.3), lineWidth: 1)
-                }
-            }
-            .disabled(isDeleting)
-            .alert(
-                "Delete your account?",
-                isPresented: $showDeleteConfirm
-            ) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) {
-                    Task { await deleteAccount() }
-                }
-            } message: {
-                Text("This permanently removes your profile, posts, friends, and chats. This can't be undone.")
-            }
-
-            if !deleteError.isEmpty {
-                Text(deleteError)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.errorRed)
-                    .multilineTextAlignment(.center)
-            }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Re-read the welcome message")
     }
 
     private func signOut() {

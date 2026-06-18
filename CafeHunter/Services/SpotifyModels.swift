@@ -57,6 +57,14 @@ struct SpotifyPlaylistItem: Decodable { let track: SpotifyTrack? }
 /// A "Liked Songs" entry — wraps the track under `track`.
 struct SpotifySavedTrackItem: Decodable { let track: SpotifyTrack? }
 
+/// `GET /me/player/currently-playing` envelope. `item` is null for ads, podcast
+/// episodes, or when nothing is active; `currently_playing_type` disambiguates.
+struct SpotifyCurrentlyPlaying: Decodable {
+    let is_playing: Bool?
+    let currently_playing_type: String?   // "track" | "episode" | "ad" | "unknown"
+    let item: SpotifyTrack?
+}
+
 struct SpotifyUser: Decodable {
     let id: String
     let display_name: String?
@@ -68,4 +76,11 @@ struct SpotifyTokenResponse: Decodable {
     let expires_in: Int
     let refresh_token: String?
     let scope: String?
+}
+
+/// The error envelope Spotify returns on a non-2xx Web API response, e.g.
+/// `{ "error": { "status": 403, "message": "Insufficient client scope" } }`.
+struct SpotifyAPIError: Decodable {
+    struct E: Decodable { let status: Int; let message: String }
+    let error: E
 }

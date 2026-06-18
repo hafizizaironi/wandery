@@ -35,6 +35,11 @@ struct PostReplyComposer: View {
     @State private var errorMessage:   String? = nil
     @State private var showFullPicker        = false
     @FocusState private var focused: Bool
+    /// Lazy text input: the real `TextField` (a UIKit-backed text-input view) is
+    /// only built once the user taps to type. A feed can mount ~50 of these at
+    /// once, so deferring them to actual use is a big win — until then this shows
+    /// a cheap placeholder label. Quick-emoji reactions stay one-tap regardless.
+    @State private var activated = false
 
     // 3-phase emoji reaction animation: spring slide-in → 1.5s hold
     // → float-out. Renders ABOVE the composer pill in the empty zone
@@ -73,16 +78,31 @@ struct PostReplyComposer: View {
 
     private var pill: some View {
         HStack(spacing: 10) {
-            TextField("Send message…", text: $text)
-                .font(.body)
-                .foregroundStyle(AppTheme.textPrimary)
-                .tint(AppTheme.accentAction)
-                .textInputAutocapitalization(.sentences)
-                .focused($focused)
-                .submitLabel(.send)
-                .onSubmit { Task { await sendText() } }
-                .disabled(isSending)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if activated {
+                TextField("Send message…", text: $text)
+                    .font(.body)
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .tint(AppTheme.accentAction)
+                    .textInputAutocapitalization(.sentences)
+                    .focused($focused)
+                    .submitLabel(.send)
+                    .onSubmit { Task { await sendText() } }
+                    .disabled(isSending)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Tapping the placeholder is the user's intent to type — focus
+                    // as soon as the real field appears. Hop a runloop so the
+                    // just-inserted field is first-responder-ready (setting focus
+                    // synchronously in the same render can miss).
+                    .onAppear { DispatchQueue.main.async { focused = true } }
+            } else {
+                // Cheap stand-in (no UITextField) until the user taps to type.
+                Text("Send message…")
+                    .font(.body)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { activated = true }
+            }
 
             // Trailing slot — quick emojis + "+" picker when empty,
             // animated swap to terracotta send button once the user

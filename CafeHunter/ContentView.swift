@@ -17,6 +17,7 @@ struct RootRouterView: View {
     var permissionsManager:   PermissionsManager
     var spotifyAuth:          SpotifyAuthService
     var postMusicPlayer:      PostMusicPlayer
+    var frameCatalog:         FrameCatalogService
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -84,7 +85,8 @@ struct RootRouterView: View {
                     conversationService: conversationService,
                     userPrivateService:  userPrivateService,
                     spotifyAuth:         spotifyAuth,
-                    postMusicPlayer:     postMusicPlayer
+                    postMusicPlayer:     postMusicPlayer,
+                    frameCatalog:        frameCatalog
                 )
                 // Fresh identity per signed-in user so a re-login always
                 // rebuilds the shell from its defaults — i.e. lands on the

@@ -11,30 +11,50 @@ import SwiftUI
 enum FeedCardStyle: String, CaseIterable, Identifiable {
     case plain
     case polaroid
+    case thermalReceipt
+    case filmStrip
+    case holo
+    case starPass
+    case parAvion
 
     var id: String { rawValue }
 
     /// Shown in the settings picker.
     var label: String {
         switch self {
-        case .plain:    "Classic"
-        case .polaroid: "Polaroid"
+        case .plain:          "Classic"
+        case .polaroid:       "Polaroid"
+        case .thermalReceipt: "Thermal Receipt"
+        case .filmStrip:      "Film Strip"
+        case .holo:           "Holo Card"
+        case .starPass:       "Star Pass"
+        case .parAvion:       "Par Avion"
         }
     }
 
     /// One-liner under the settings row.
     var subtitle: String {
         switch self {
-        case .plain:    "Clean square cards"
-        case .polaroid: "Framed like printed prints"
+        case .plain:          "Clean square cards"
+        case .polaroid:       "Framed like printed prints"
+        case .thermalReceipt: "Printed café receipt"
+        case .filmStrip:      "35mm celluloid strip"
+        case .holo:           "Iridescent trading card"
+        case .starPass:       "Celestial admit-one ticket"
+        case .parAvion:       "Airmail love postcard"
         }
     }
 
     /// SF Symbol for the settings row.
     var icon: String {
         switch self {
-        case .plain:    "square"
-        case .polaroid: "photo.on.rectangle.angled"
+        case .plain:          "square"
+        case .polaroid:       "photo.on.rectangle.angled"
+        case .thermalReceipt: "scroll"
+        case .filmStrip:      "film"
+        case .holo:           "sparkles"
+        case .starPass:       "ticket"
+        case .parAvion:       "envelope"
         }
     }
 
@@ -46,8 +66,16 @@ enum FeedCardStyle: String, CaseIterable, Identifiable {
     /// it's ready; admins can still preview it (see `ProfileHomeView`).
     var isReleased: Bool {
         switch self {
-        case .plain:    true
-        case .polaroid: true
+        case .plain:          true
+        case .polaroid:       true
+        // Not released at the BASE — exposed to admins (preview) + allow-listed
+        // testers (thermal), and to everyone once the admin PUBLISHES them via
+        // the wardrobe (`config/frames` → `FrameCatalogService`). See `ProfileHomeView`.
+        case .thermalReceipt: false
+        case .filmStrip:      false
+        case .holo:           false
+        case .starPass:       false
+        case .parAvion:       false
         }
     }
 
@@ -93,11 +121,31 @@ struct FeedCardFrame<Content: View, TopLeading: View, BottomCenter: View>: View 
     /// Optional top-right control (the composer music button). Routed into each
     /// frame's top-trailing slot — same level/inset as the top-left location pill.
     var topTrailing: () -> AnyView = { AnyView(EmptyView()) }
+    /// Raw place name / caption strings. Most styles render location + caption
+    /// as the `topLeading` / `bottomCenter` pill *views*, but `.thermalReceipt`
+    /// prints them as receipt text rows, so it needs the plain strings. Defaulted
+    /// nil — the non-feed call sites (empty state) don't pass them.
+    var placeName: String? = nil
+    var caption: String? = nil
+    /// Feed post's attached song — used only by `.thermalReceipt`, which prints a
+    /// `♪ track — artist` row and reacts the barcode to `musicPlaying` (tap =
+    /// `onMusicTap`, the mute toggle). Other styles show the cover via `topTrailing`.
+    var music: PostMusic? = nil
+    var musicPlaying: Bool = false
+    var onMusicTap: (() -> Void)? = nil
+    /// True in the post composer (capture-review). The `.thermalReceipt` style
+    /// uses this to overlay the SAME interactive top pills as the other frames
+    /// (place top-left, music top-right) instead of its receipt-native rows.
+    var isComposer: Bool = false
+    /// Render a SPECIFIC style regardless of the stored preference — used by the
+    /// wardrobe preview to show each frame. Nil → use the user's selected style.
+    var styleOverride: FeedCardStyle? = nil
     @ViewBuilder var content: () -> Content
     @ViewBuilder var topLeading: () -> TopLeading
     @ViewBuilder var bottomCenter: () -> BottomCenter
 
-    @AppStorage(FeedCardStyle.storageKey) private var style: FeedCardStyle = .plain
+    @AppStorage(FeedCardStyle.storageKey) private var storedStyle: FeedCardStyle = .plain
+    private var style: FeedCardStyle { styleOverride ?? storedStyle }
 
     var body: some View {
         switch style {
@@ -125,6 +173,82 @@ struct FeedCardFrame<Content: View, TopLeading: View, BottomCenter: View>: View 
                 topLeading()
             } bottomCenter: {
                 bottomCenter()
+            }
+        case .thermalReceipt:
+            // In the FEED the receipt prints location / caption / song as text
+            // rows (ignoring the pill slots). In the COMPOSER it overlays the
+            // interactive place + music pills on the photo, like the other styles.
+            ThermalReceiptFeedFrame(
+                username: username,
+                date: date,
+                placeName: placeName,
+                caption: caption,
+                photoSide: photoSide,
+                topLeading: { AnyView(topLeading()) },
+                topTrailing: topTrailing,
+                bottomCenter: { AnyView(bottomCenter()) },
+                isComposer: isComposer,
+                music: music,
+                musicPlaying: musicPlaying,
+                onMusicTap: onMusicTap
+            ) {
+                content()
+            }
+        case .filmStrip:
+            // Uses the pill slots like Plain/Polaroid; adds the celluloid chrome.
+            FilmStripFeedFrame(
+                username: username,
+                placeName: placeName,
+                photoSide: photoSide,
+                topTrailing: topTrailing
+            ) {
+                content()
+            } topLeading: {
+                topLeading()
+            } bottomCenter: {
+                bottomCenter()
+            }
+        case .holo:
+            HoloCardFeedFrame(
+                username: username,
+                placeName: placeName,
+                photoSide: photoSide,
+                topTrailing: topTrailing
+            ) {
+                content()
+            } topLeading: {
+                topLeading()
+            } bottomCenter: {
+                bottomCenter()
+            }
+        case .starPass:
+            // Text-native (caption/place print in the stub); composer overlays
+            // the interactive pills on the photo — same shape as the receipt.
+            StarPassTicketFeedFrame(
+                username: username,
+                placeName: placeName,
+                caption: caption,
+                photoSide: photoSide,
+                topLeading: { AnyView(topLeading()) },
+                topTrailing: topTrailing,
+                bottomCenter: { AnyView(bottomCenter()) },
+                isComposer: isComposer
+            ) {
+                content()
+            }
+        case .parAvion:
+            ParAvionPostcardFeedFrame(
+                username: username,
+                placeName: placeName,
+                caption: caption,
+                date: date,
+                photoSide: photoSide,
+                topLeading: { AnyView(topLeading()) },
+                topTrailing: topTrailing,
+                bottomCenter: { AnyView(bottomCenter()) },
+                isComposer: isComposer
+            ) {
+                content()
             }
         }
     }
