@@ -9,12 +9,12 @@ import SwiftUI
 //
 // Each page carries an animated SF Symbol illustration and an OPTIONAL
 // "jump to feature" button — tapping it dismisses the sheet and routes
-// the host (`MainShellView`) to the relevant page. Users who prefer to
-// read all three pages can swipe through and hit "Got it" at the end.
+// the host (`MainShellView`) to the relevant page. Users can swipe through
+// every page and hit "Got it" at the end.
 
 /// Bump when the body of `WhatsNewSheet` changes meaningfully — the
 /// AppStorage gate re-presents the sheet on next launch for everyone.
-let whatsNewReleaseKey = "2026.06-finale-music-receipt"
+let whatsNewReleaseKey = "2026.06-badges-streaks"
 
 /// Features the sheet can deep-link the user into. Older cases
 /// (camera/discover/myHunt) are kept so prior routes stay valid; the
@@ -32,7 +32,7 @@ struct WhatsNewSheet: View {
     var onJumpToFeature: (WhatsNewFeature) -> Void
 
     @State private var page: Int = 0
-    private var pages: [WhatsNewPage] { .finale(includeFrame: canUseThermalFrame) }
+    private var pages: [WhatsNewPage] { .badgesAndStreaks(includeFrame: canUseThermalFrame) }
 
     var body: some View {
         ZStack {
@@ -138,14 +138,11 @@ struct AccentIcon {
 }
 
 extension Array where Element == WhatsNewPage {
-    /// The final test-phase build tour. The exclusive Receipt frame page is
-    /// inserted only for users who can use it (`includeFrame`).
-    static func finale(includeFrame: Bool) -> [WhatsNewPage] {
-        // Legible green for the music page — raw `Color.musicNeon` is too
-        // low-contrast on the carousel's light `surfacePrimary` background.
-        let musicGreen = AppTheme.successGreen
-
-        var pages: [WhatsNewPage] = [
+    /// This build's tour — the achievements glow-up + posting streaks, plus the
+    /// frame wardrobe. The Receipt-frame footnote only shows for testers who can
+    /// use it (`includeFrame`).
+    static func badgesAndStreaks(includeFrame: Bool) -> [WhatsNewPage] {
+        [
             WhatsNewPage(
                 icon: "party.popper.fill",
                 accentIcons: [
@@ -154,77 +151,70 @@ extension Array where Element == WhatsNewPage {
                 ],
                 accent: AppTheme.cafeAccent,
                 symbolAnim: .bounce,
-                headline: "One last build before launch 🥹",
-                body: "You're holding the final build of our test phase — and it's a big one. Thank you for hunting with us through every rough edge. Here's everything that's new.",
+                headline: "A big new drop 🎉",
+                body: "Thanks for hunting with us through the test phase. This build is all about showing off — new badges to earn, streaks to keep, and a fresh home for your frames. Here's the tour.",
                 footnote: nil,
                 feature: nil,
                 jumpCTA: nil
             ),
             WhatsNewPage(
-                icon: "music.note",
+                icon: "trophy.fill",
                 accentIcons: [
-                    AccentIcon(name: "waveform", offset: CGSize(width:  46, height: -40), scale: 0.32, anim: .variableColor),
-                    AccentIcon(name: "dot.radiowaves.left.and.right", offset: CGSize(width: -48, height: 42), scale: 0.30, anim: .pulse),
-                ],
-                accent: musicGreen,
-                symbolAnim: .pulse,
-                headline: "Your post, soundtracked — automatically",
-                body: "Connect Spotify, play a song, then snap a moment — whatever you're listening to rides along with your post and plays for friends in the feed. No picking. Nothing playing? Hit play and it shows up.",
-                footnote: "Tap the cover to leave a song off. We find a clean preview even when Spotify doesn't have one.",
-                feature: .camera,
-                jumpCTA: "Open camera →"
-            ),
-        ]
-
-        if includeFrame {
-            pages.append(
-                WhatsNewPage(
-                    icon: "barcode",
-                    accentIcons: [
-                        AccentIcon(name: "music.note", offset: CGSize(width:  46, height: -40), scale: 0.30, anim: .pulse),
-                        AccentIcon(name: "scroll", offset: CGSize(width: -46, height: 44), scale: 0.30, anim: .bounce),
-                    ],
-                    accent: AppTheme.cafeAccent,
-                    symbolAnim: .pulse,
-                    headline: "Your exclusive Receipt frame 🧾",
-                    body: "A thank-you for testing with us: your posts can print as a thermal café receipt — torn edge, monospace rows, and a barcode that dances to your song. Tester-only, and staying that way.",
-                    footnote: "Turn it on in Profile → Frame style → Receipt.",
-                    feature: nil,
-                    jumpCTA: nil
-                )
-            )
-        }
-
-        pages.append(contentsOf: [
-            WhatsNewPage(
-                icon: "mappin.and.ellipse",
-                accentIcons: [
-                    AccentIcon(name: "sparkles", offset: CGSize(width:  46, height: -40), scale: 0.30, anim: .variableColor),
+                    AccentIcon(name: "star.fill", offset: CGSize(width:  46, height: -40), scale: 0.30, anim: .variableColor),
+                    AccentIcon(name: "lock.fill", offset: CGSize(width: -46, height:  44), scale: 0.26, anim: .pulse),
                 ],
                 accent: AppTheme.cafeAccent,
-                symbolAnim: .pulse,
-                headline: "Tag a place, faster",
-                body: "A slimmer place pill, a one-tap nearby suggestion, and swipe a pill away to clear it — plus a sweep of smoother animations and fixes across the composer and feed.",
-                footnote: nil,
+                symbolAnim: .bounce,
+                headline: "47 badges to chase 🏆",
+                body: "Achievements got a massive glow-up. Climb tiered ladders for cafés, stalls, photos, friends and more — with a few secret ??? badges hidden for you to uncover. Earn one and watch it pop.",
+                footnote: "Find them all in Profile → Achievements.",
                 feature: nil,
                 jumpCTA: nil
             ),
             WhatsNewPage(
                 icon: "flame.fill",
                 accentIcons: [
-                    AccentIcon(name: "hand.thumbsup.fill", offset: CGSize(width:  46, height: -40), scale: 0.28, anim: .bounce),
+                    AccentIcon(name: "calendar", offset: CGSize(width:  46, height: -40), scale: 0.28, anim: .pulse),
+                    AccentIcon(name: "checkmark.circle.fill", offset: CGSize(width: -46, height:  44), scale: 0.28, anim: .bounce),
                 ],
                 accent: AppTheme.cafeAccent,
                 symbolAnim: .variableColor,
-                headline: "That's the build 🔥",
-                body: "Poke at everything, break things, and tell us what feels off — your feedback shapes the launch. Couldn't have gotten here without you.",
+                headline: "Keep the streak alive 🔥",
+                body: "Post on back-to-back days and your streak climbs. Your profile now shows a live flame counter — lock in today's hunt before midnight, or watch it cool off. How long can you go?",
+                footnote: "Your current run + personal best sit at the top of Profile.",
+                feature: nil,
+                jumpCTA: nil
+            ),
+            WhatsNewPage(
+                icon: "square.stack.3d.up.fill",
+                accentIcons: [
+                    AccentIcon(name: "sparkles", offset: CGSize(width:  46, height: -40), scale: 0.30, anim: .variableColor),
+                    AccentIcon(name: "scroll", offset: CGSize(width: -46, height:  44), scale: 0.28, anim: .bounce),
+                ],
+                accent: AppTheme.cafeAccent,
+                symbolAnim: .pulse,
+                headline: "Your frame wardrobe 🖼️",
+                body: "Browse your post styles in one swipeable place and preview each on a sample before you wear it. We'll keep dropping new frames into your wardrobe — so check back often.",
+                footnote: includeFrame
+                    ? "Your exclusive Receipt frame is waiting in there. 🧾"
+                    : "Open it in Profile → Frame style.",
+                feature: nil,
+                jumpCTA: nil
+            ),
+            WhatsNewPage(
+                icon: "heart.fill",
+                accentIcons: [
+                    AccentIcon(name: "flame.fill", offset: CGSize(width:  46, height: -40), scale: 0.28, anim: .variableColor),
+                ],
+                accent: AppTheme.cafeAccent,
+                symbolAnim: .bounce,
+                headline: "That's the drop 🔥",
+                body: "Poke at everything, earn some badges, start a streak, and tell us what feels off — your feedback is shaping the launch. Couldn't have gotten here without you.",
                 footnote: "Stay hunting. 🔥",
                 feature: nil,
                 jumpCTA: nil
             ),
-        ])
-
-        return pages
+        ]
     }
 }
 
