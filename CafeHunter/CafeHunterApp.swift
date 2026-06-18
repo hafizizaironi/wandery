@@ -15,6 +15,10 @@ struct CafeHunterApp: App {
     init() {
         AppAudioSession.registerObservers()
         Self.configureGooglePlaces()
+        // Carry an existing feed-style preference from the old boolean key
+        // (`feed.usePolaroidFrame`) to the new enum key, once, on first launch
+        // after the update — so polaroid users aren't reset to Classic.
+        FeedCardStyle.migrateLegacyKeyIfNeeded()
         // Touch the LocationProvider singleton so it starts asking for / caching
         // a location before the user ever opens the place picker.
         _ = LocationProvider.shared
@@ -57,6 +61,14 @@ struct CafeHunterApp: App {
                             NotificationRouter.shared.pending = .feed
                             return
                         }
+                    }
+                    // Spotify PKCE callback. ASWebAuthenticationSession normally
+                    // consumes this via its own completion handler, so this
+                    // branch is a fallback — and it stops the redirect falling
+                    // through to the Firebase/Google handlers below.
+                    if url.scheme == "cafehunter-spotify" {
+                        SpotifyRedirectInbox.shared.consume(url)
+                        return
                     }
                     if Auth.auth().canHandle(url) { return }
                     GIDSignIn.sharedInstance.handle(url)

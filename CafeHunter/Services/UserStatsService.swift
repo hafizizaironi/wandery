@@ -116,17 +116,10 @@ final class UserStatsService {
         try? await db.collection("users").document(uid).setData(updates, merge: true)
     }
 
-    // MARK: - Increment helpers
-
-    /// Generic increment — field names match Firestore document keys.
-    func increment(_ field: String, uid: String) {
-        db.collection("users").document(uid)
-            .setData([field: FieldValue.increment(Int64(1))], merge: true)
-    }
-
-    func recordCafeVisit(uid: String)        { increment("cafesVisited",        uid: uid) }
-    func recordStallVisit(uid: String)       { increment("stallsVisited",       uid: uid) }
-    func recordPhotoShared(uid: String)      { increment("photosShared",        uid: uid) }
-    func recordFriendHunt(uid: String)       { increment("friendsHunted",       uid: uid) }
-    func recordNightCheckIn(uid: String)     { increment("nightCheckIns",       uid: uid) }
+    // NOTE: the former `increment` / `record*` helpers were removed — they were
+    // dead code (no callers) and these counters are written exclusively
+    // server-side by Cloud Function triggers (onPostCreatePlaceVisit etc.) and
+    // are now locked against client writes in firestore.rules. See
+    // SECURITY_REVIEW.md (H2). The subscribe listener above remains the only
+    // reader; persistNewlyUnlocked still writes `unlockedAchievements` (allowed).
 }

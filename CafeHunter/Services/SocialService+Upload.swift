@@ -81,7 +81,8 @@ extension SocialService {
     /// Discover-eligible). A non-empty set restricts the post to those friends
     /// — the author is always added so they see their own restricted post, and
     /// the post is forced non-discoverable.
-    func uploadAndCreatePost(drafts: [MediaDraft], recipientUids: [String]? = nil) async throws {
+    func uploadAndCreatePost(drafts: [MediaDraft], recipientUids: [String]? = nil,
+                             music: PostMusic? = nil) async throws {
         guard let authorUid = uid else { throw SocialError.notSignedIn }
         guard let username = profile?.username else { throw SocialError.needsUsername }
         guard !drafts.isEmpty, drafts.count <= 6 else { throw SocialError.uploadFailed }
@@ -227,6 +228,10 @@ extension SocialService {
             payload["recipientUids"] = finalRecipients
             payload["discoverable"] = false
         }
+        // Optional attached song — one per post, stored as a nested map the feed
+        // plays as background music. No Firestore-rule change needed (the posts
+        // rules validate authorId/audience, not an exact field allowlist).
+        if let music { payload["music"] = music.firestoreDict }
 
         // Optimistic feed insert (media-aware) so the caller's spinner stops now.
         prependOptimisticFeedPost(FriendPost(
@@ -242,7 +247,8 @@ extension SocialService {
             placeName: first.placeName,
             restricted: isRestricted,
             recipientUids: finalRecipients,
-            media: media
+            media: media,
+            music: music
         ))
 
         // Fire-and-forget the doc write (SDK caches locally + retries) — the

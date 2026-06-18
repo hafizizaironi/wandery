@@ -32,6 +32,16 @@
 				<string>wandery</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>TechVision.CafeHunter.spotify</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>cafehunter-spotify</string>
+			</array>
+		</dict>
 	</array>
 	<key>FirebaseAppDelegateProxyEnabled</key>
 	<false/>
@@ -41,6 +51,8 @@
 	<string>$(GMS_PLACES_API_KEY)</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>SpotifyClientID</key>
+	<string>$(SPOTIFY_CLIENT_ID)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

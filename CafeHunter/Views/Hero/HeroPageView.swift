@@ -26,6 +26,10 @@ struct HeroPageView: View {
     /// Live inbox snapshot — used to derive the Messages button's unread
     /// dot. Owned by ContentView, passed via MainShellView.
     var conversationService: ConversationService
+    /// Spotify connection — lets the poster attach a song to a post.
+    var spotifyAuth: SpotifyAuthService
+    /// Feed-scoped player — plays the active post's song + previews picker rows.
+    var postMusicPlayer: PostMusicPlayer
     /// Two-way binding owned by MainShellView. Set by chat's post-reference
     /// bubble when the user taps it; this view consumes the value by
     /// scrolling to the matching post, then resets the binding to nil so
@@ -151,6 +155,19 @@ struct HeroPageView: View {
     // Place tagging
     @State private var pendingPlace: PlaceSelection?
     @State private var showPlacePicker = false
+
+    // Background music (one song per post). The poster picks a track in the
+    // review screen; it rides along into the upload payload.
+    @State private var selectedMusic: PostMusic?
+    @State private var showMusicPicker = false
+    /// Drives the neon music button's breathing glow (shadow opacity).
+    @State private var musicGlow: Double = 0.4
+    /// Global feed-audio toggle (shared with FeedPolaroidCard's speaker button).
+    /// Gates whether the active post's song is audible — default muted, so the
+    /// feed never interrupts the user's own audio until they tap unmute.
+    @AppStorage("feed.videoMuted") private var feedVideoMuted = true
+    /// Read so the vinyl disc's peek clears each feed style's bottom bleed.
+    @AppStorage(FeedCardStyle.storageKey) private var feedCardStyle: FeedCardStyle = .plain
     /// Nearest place (top of the picker's nearby list), offered as a one-tap
     /// suggestion next to "Tag a place". Fetched once per compose session.
     @State private var suggestedPlace: PlaceCandidate?
@@ -436,6 +453,40 @@ struct HeroPageView: View {
                 lastSeenPostId = firstId
             }
         }
+        // ── Background music ── start/stop the active post's song as the user
+        // pages the feed, toggles mute, leaves Hero, composes, or backgrounds
+        // the app. Extracted into a modifier (like FeedModerationModifier) so
+        // the six onChange observers don't blow the body's type-check budget.
+        .modifier(HeroBackgroundMusicModifier(
+            activeCardID:       activeCardID,
+            feedVideoMuted:     feedVideoMuted,
+            isActive:           isActive,
+            isReviewingCapture: isReviewingCapture,
+            isObscured:         isObscured,
+            scenePhase:         scenePhase,
+            update:             { updateBackgroundMusic() }
+        ))
+    }
+
+    // MARK: - Background music (feed)
+
+    /// The settled feed post whose song should play, or nil while on the camera
+    /// card / empty feed.
+    private var activeMusicPost: FriendPost? {
+        guard case .post(let id)? = activeCardID else { return nil }
+        return socialService.feedPosts.first(where: { $0.id == id })
+    }
+
+    /// Drive the shared `PostMusicPlayer` from the feed's live state. Music only
+    /// plays while Hero is the foreground tab, not composing/obscured, the scene
+    /// is active, and the feed is unmuted.
+    private func updateBackgroundMusic() {
+        let feedAudible = isActive && !isReviewingCapture && !isObscured
+        postMusicPlayer.update(
+            activePost: feedAudible ? activeMusicPost : nil,
+            muted: feedVideoMuted,
+            scenePhaseActive: scenePhase == .active
+        )
     }
 
     // MARK: - New moments pill
@@ -698,7 +749,7 @@ struct HeroPageView: View {
         // Hand the upload to the service (runs in the background); the
         // choreography returns the user to the camera. Errors surface via the
         // app-wide retry banner.
-        socialService.enqueuePost(drafts: drafts, recipientUids: recipients)
+        socialService.enqueuePost(drafts: drafts, recipientUids: recipients, music: selectedMusic)
         launchPostChoreography()
     }
 
@@ -886,6 +937,7 @@ struct HeroPageView: View {
         pendingPlace = nil
         suggestedPlace = nil
         excludedFriendUids = []
+        selectedMusic = nil
     }
 
     /// Copies the focused draft's place onto every draft (the common
@@ -962,14 +1014,11 @@ struct HeroPageView: View {
         switch status {
         case .authorized, .limited:
             fetchRecentLibraryImages()
-        case .notDetermined:
-            // First run: ask for read access so the recent-photos stack can show.
-            PHPhotoLibrary.requestAuthorization(for: .readWrite) { newStatus in
-                guard newStatus == .authorized || newStatus == .limited else { return }
-                Task { @MainActor in self.fetchRecentLibraryImages() }
-            }
         default:
-            break  // denied/restricted — placeholder stays; user grants in Settings
+            // notDetermined/denied/restricted — placeholder stays; never prompt
+            // here. The priming queue (or the picker / save-to-library flows)
+            // own the Photos prompt, so it stays out of the camera-screen burst.
+            break
         }
     }
 
@@ -1089,26 +1138,12 @@ struct HeroPageView: View {
         let side = HeroCameraLayout.viewfinderSide(in: geo)
         return VStack(spacing: HeroCameraLayout.viewfinderShutterSpacing) {
             Group {
-                if usePolaroidFrame {
-                    PolaroidFrame(
-                        username: nil,
-                        date: nil,
-                        placeName: nil,
-                        caption: nil,
-                        tilt: 0,
-                        showTape: false,
-                        photoSide: side
-                    ) {
-                        emptyFeedPlaceholder
-                    }
-                } else {
-                    PlainFeedFrame(username: nil, photoSide: side) {
-                        emptyFeedPlaceholder
-                    } topLeading: {
-                        EmptyView()
-                    } bottomCenter: {
-                        EmptyView()
-                    }
+                FeedCardFrame(username: nil, date: nil, tilt: 0, showTape: false, photoSide: side) {
+                    emptyFeedPlaceholder
+                } topLeading: {
+                    EmptyView()
+                } bottomCenter: {
+                    EmptyView()
                 }
             }
             .frame(width: side, height: side)
@@ -1222,9 +1257,10 @@ struct HeroPageView: View {
         return socialService.feedPosts.firstIndex(where: { $0.id == id })
     }
 
-    /// Warm the on-disk `VideoCache` for the current + next two posts' videos
-    /// so they play from local disk (instant) by the time they're swiped to.
-    /// Already-cached / in-flight URLs are no-ops (deduped in the cache).
+    /// Warm the on-disk caches for the current + next two posts' videos AND
+    /// attached song previews, so both play from local disk (instant) by the
+    /// time they're swiped to — keeping the settle slide smooth. Already-cached
+    /// / in-flight URLs are no-ops (deduped in the caches).
     private func prefetchFeedVideos() {
         let posts = socialService.feedPosts
         guard !posts.isEmpty else { return }
@@ -1235,6 +1271,11 @@ struct HeroPageView: View {
             for media in posts[i].media where media.isVideo {
                 guard let url = URL(string: media.url) else { continue }
                 Task.detached(priority: .utility) { await VideoCache.shared.prefetch(url) }
+            }
+            // Warm the song's 30s preview clip too — this is what stops the
+            // pager hitching when it settles on a music post.
+            if let music = posts[i].music, let url = URL(string: music.previewURL) {
+                Task.detached(priority: .utility) { _ = await AudioCache.shared.prefetch(url) }
             }
         }
     }
@@ -1260,7 +1301,8 @@ struct HeroPageView: View {
                 ForEach(Array(socialService.feedPosts.enumerated()), id: \.element.id) { idx, post in
                     heroFeedPostPage(geometry: geo, post: post, index: idx,
                                        isVideoActive: isActive && scenePhase == .active && activeCardID == .post(post.id),
-                                       videoLive: abs(idx - (currentFeedIndex ?? 0)) <= 1)
+                                       videoLive: abs(idx - (currentFeedIndex ?? 0)) <= 1,
+                                       isMusicPlaying: post.music != nil && postMusicPlayer.isPlaying && activeCardID == .post(post.id))
                         .frame(height: pageH)
                         .frame(maxWidth: .infinity)
                         .id(HeroCardID.post(post.id))
@@ -1269,7 +1311,7 @@ struct HeroPageView: View {
         }
     }
 
-    private func heroFeedPostPage(geometry geo: GeometryProxy, post: FriendPost, index: Int, isVideoActive: Bool, videoLive: Bool) -> some View {
+    private func heroFeedPostPage(geometry geo: GeometryProxy, post: FriendPost, index: Int, isVideoActive: Bool, videoLive: Bool, isMusicPlaying: Bool) -> some View {
         let bottomChrome = HeroCameraLayout.bottomChromeHeight(safeBottom: geo.safeAreaInsets.bottom)
         let side = HeroCameraLayout.viewfinderSide(in: geo)
         // Total reserved height below the card stays identical to the camera layout
@@ -1309,14 +1351,25 @@ struct HeroPageView: View {
                 }
             }
 
-            // Below-card area: composer pinned to the bottom of this
-            // 160pt zone (just above the navbar arc / bottomChrome),
-            // with a Color.clear above it filling the leftover space.
-            // By living *inside* the post page (not as a body overlay),
-            // the composer pages vertically with the post — same scroll
-            // animation as the image card itself, no separate
-            // transition needed.
+            // Below-card area: an optional now-playing chip sits just under the
+            // card (outside the photo square), then a Color.clear spacer pushes
+            // the reply composer to the bottom of this 160pt zone (just above
+            // the navbar arc / bottomChrome). Living *inside* the post page (not
+            // a body overlay) means it pages vertically with the post.
             VStack(spacing: 0) {
+                if let music = post.music {
+                    NowPlayingChip(
+                        title: "\(music.trackName) · \(music.artistName)",
+                        isPlaying: isMusicPlaying,
+                        onTap: {
+                            feedVideoMuted.toggle()
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }
+                    )
+                    // Clear the polaroid cream frame, which bleeds ~29pt below
+                    // the card's `side` box (the plain style barely bleeds).
+                    .padding(.top, feedCardStyle == .polaroid ? 34 : 12)
+                }
                 Color.clear
                 if post.authorId != myUid {
                     PostReplyComposer(
@@ -1435,29 +1488,35 @@ struct HeroPageView: View {
         }
     }
 
-    /// Display preference (Profile → "Polaroid frames"). Off = plain cards.
-    /// Shared across the feed + this review screen via the same AppStorage key.
-    @AppStorage("feed.usePolaroidFrame") private var usePolaroidFrame = false
-
     @ViewBuilder
     private func captureReviewSquare(side: CGFloat) -> some View {
         let username = "@\(socialService.profile?.username ?? "you")"
         Group {
-            if usePolaroidFrame {
-                PolaroidFrame(username: username, date: Date(), photoSide: side) {
-                    captureReviewMedia
-                } topLeading: {
-                    placeTagArea
-                } bottomCenter: {
-                    captionPillBody
+            FeedCardFrame(
+                username: username, date: Date(), photoSide: side,
+                topTrailing: {
+                    spotifyAuth.isConfigured
+                        ? AnyView(
+                            VStack(alignment: .trailing, spacing: 6) {
+                                musicChooseButton
+                                if let m = selectedMusic { selectedSongChip(m) }
+                            }
+                            .opacity(chromeDissolved ? 0 : 1)
+                          )
+                        : AnyView(EmptyView())
                 }
-            } else {
-                PlainFeedFrame(username: username, photoSide: side) {
-                    captureReviewMedia
-                } topLeading: {
-                    placeTagArea
-                } bottomCenter: {
-                    captionPillBody
+            ) {
+                captureReviewMedia
+            } topLeading: {
+                placeTagArea
+            } bottomCenter: {
+                captionPillBody
+            }
+        }
+        .sheet(isPresented: $showMusicPicker, onDismiss: { postMusicPlayer.stop() }) {
+            SpotifyMusicPickerView(spotifyAuth: spotifyAuth, player: postMusicPlayer) { music in
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                    selectedMusic = music
                 }
             }
         }
@@ -1542,6 +1601,99 @@ struct HeroPageView: View {
         }
     }
 
+    /// Neon green for the music button (green + black only). Shared with the
+    /// picker panel so the button and panel read as one set.
+    private static let neonGreen = Color.musicNeon
+
+    /// The music button — a neon-green-on-black **capsule** sized to match the
+    /// "Tag a place" pill (same caption font + h10/v4 padding → same height and
+    /// capsule radius) so the two top pills read as a consistent set. Black fill,
+    /// neon-green icon + outline, with a soft breathing glow.
+    private var musicChooseButton: some View {
+        Button { handleAddMusicTap() } label: {
+            Group {
+                if spotifyAuth.isConnecting {
+                    ProgressView().tint(Self.neonGreen).scaleEffect(0.6)
+                } else {
+                    Image(systemName: selectedMusic == nil ? "music.note" : "music.note.list")
+                        .font(.caption).bold()
+                        .foregroundStyle(Self.neonGreen)
+                }
+            }
+            .frame(minWidth: 16)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.black.opacity(0.65)))
+            .overlay(Capsule().stroke(Self.neonGreen.opacity(0.9), lineWidth: 1))
+            // Neon glow — two layers, gently breathing.
+            .shadow(color: Self.neonGreen.opacity(musicGlow), radius: 6)
+            .shadow(color: Self.neonGreen.opacity(musicGlow * 0.5), radius: 12)
+        }
+        .buttonStyle(.scalePress)
+        .disabled(spotifyAuth.isConnecting)
+        .accessibilityLabel(selectedMusic == nil ? "Add music to this post" : "Change song")
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                musicGlow = 0.85
+            }
+        }
+    }
+
+    private func selectedSongChip(_ music: PostMusic) -> some View {
+        pillChrome(
+            HStack(spacing: 6) {
+                Image(systemName: "music.note").font(.caption2).bold()
+                Text("\(music.trackName) · \(music.artistName)")
+                    .font(.caption).bold().lineLimit(1)
+                Button {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { selectedMusic = nil }
+                    postMusicPlayer.stop()
+                } label: {
+                    Image(systemName: "xmark").font(.caption2).bold()
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove song")
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(maxWidth: 180, alignment: .leading)
+        )
+    }
+
+    /// Connect-if-needed, then present the picker. Cancelling the Spotify login
+    /// is a silent no-op; other failures surface in the review error line.
+    private func handleAddMusicTap() {
+        guard spotifyAuth.isConfigured else { return }
+        if spotifyAuth.isConnected {
+            showMusicPicker = true
+            return
+        }
+        Task {
+            do {
+                try await spotifyAuth.connect()
+                showMusicPicker = true
+            } catch SpotifyError.cancelled {
+                // user backed out — no-op
+            } catch {
+                postError = (error as? SpotifyError)?.errorDescription
+                    ?? "Couldn't connect to Spotify."
+            }
+        }
+    }
+
+    /// Pill background. On the polaroid frame, use the default `.ultraThinMaterial`
+    /// (matching the feed's place pill) instead of the heavier liquid glass.
+    @ViewBuilder
+    private func pillChrome<V: View>(_ content: V) -> some View {
+        if feedCardStyle == .polaroid {
+            content.background(.ultraThinMaterial, in: Capsule())
+        } else {
+            content.liquidGlassChrome(in: Capsule())
+        }
+    }
+
     private func placeSuggestionPill(_ c: PlaceCandidate) -> some View {
         Button {
             withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
@@ -1556,18 +1708,19 @@ struct HeroPageView: View {
                 )
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "sparkles")
-                    .font(.caption2).bold()
-                Text(c.name)
-                    .font(.caption).bold()
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .frame(maxWidth: 140)
-            .liquidGlassChrome(in: Capsule())
+            pillChrome(
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles")
+                        .font(.caption2).bold()
+                    Text(c.name)
+                        .font(.caption).bold()
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .frame(maxWidth: 140)
+            )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Suggested place: \(c.name)")
@@ -1578,18 +1731,19 @@ struct HeroPageView: View {
         Button {
             showPlacePicker = true
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: pendingPlace == nil ? "mappin.and.ellipse" : "mappin.circle.fill")
-                    .font(.caption2).bold()
-                Text(pendingPlace?.name ?? "Tag a place")
-                    .font(.caption).bold()
-                    .lineLimit(1)
-                    .contentTransition(.opacity)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .liquidGlassChrome(in: Capsule())
+            pillChrome(
+                HStack(spacing: 4) {
+                    Image(systemName: pendingPlace == nil ? "mappin.and.ellipse" : "mappin.circle.fill")
+                        .font(.caption2).bold()
+                    Text(pendingPlace?.name ?? "Tag a place")
+                        .font(.caption).bold()
+                        .lineLimit(1)
+                        .contentTransition(.opacity)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+            )
         }
         .buttonStyle(.plain)
         .sheet(isPresented: $showPlacePicker) {
@@ -1930,6 +2084,30 @@ struct HeroPageView: View {
                     .clipShape(Capsule())
             }
         }
+    }
+}
+
+/// Observes the feed-music drivers and re-evaluates playback on any change.
+/// Lives here (not inline in `HeroPageView.body`) so the six `onChange`
+/// observers don't blow the body's already-large type-check budget — same
+/// reason `FeedModerationModifier` is extracted.
+private struct HeroBackgroundMusicModifier: ViewModifier {
+    let activeCardID: HeroCardID?
+    let feedVideoMuted: Bool
+    let isActive: Bool
+    let isReviewingCapture: Bool
+    let isObscured: Bool
+    let scenePhase: ScenePhase
+    let update: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: activeCardID) { _, _ in update() }
+            .onChange(of: feedVideoMuted) { _, _ in update() }
+            .onChange(of: isActive) { _, _ in update() }
+            .onChange(of: isReviewingCapture) { _, _ in update() }
+            .onChange(of: isObscured) { _, _ in update() }
+            .onChange(of: scenePhase) { _, _ in update() }
     }
 }
 

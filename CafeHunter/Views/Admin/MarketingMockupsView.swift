@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Photos
+import CoreImage
 
 // MARK: - Marketing mockups (admin-only)
 //
@@ -16,6 +17,9 @@ import Photos
 /// the save / save-all renderers, so adding a page is a one-line change.
 private enum MockupPage: Int, CaseIterable, Identifiable {
     case camera, discover, myHunt, wanderyCode, placeCards, chat, widgets
+    // Instagram invite story — a 3-frame sequence (ache → turn → call).
+    // Exported at 9:16 instead of the App Store device ratio (see exportSize).
+    case storyAche, storyTurn, storyCall
 
     var id: Int { rawValue }
 
@@ -29,6 +33,9 @@ private enum MockupPage: Int, CaseIterable, Identifiable {
         case .placeCards:  return "Place cards"
         case .chat:        return "Chat"
         case .widgets:     return "Widgets"
+        case .storyAche:   return "Story · Ache"
+        case .storyTurn:   return "Story · Turn"
+        case .storyCall:   return "Story · Call"
         }
     }
 
@@ -41,6 +48,19 @@ private enum MockupPage: Int, CaseIterable, Identifiable {
         case .placeCards:  PlaceCardsMockPage()
         case .chat:        ChatThreadMockPage()
         case .widgets:     HomeWidgetsMockPage()
+        case .storyAche:   StoryAchePage()
+        case .storyTurn:   StoryTurnPage()
+        case .storyCall:   StoryCallPage()
+        }
+    }
+
+    /// Fixed export canvas for pages that aren't device-ratio App Store
+    /// screenshots. Instagram stories must be 9:16 → 360×640 pt renders at
+    /// `scale = 3` to exactly 1080×1920 px. `nil` = use the live cover size.
+    var exportSize: CGSize? {
+        switch self {
+        case .storyAche, .storyTurn, .storyCall: return CGSize(width: 360, height: 640)
+        default: return nil
         }
     }
 
@@ -105,7 +125,7 @@ struct MarketingMockupsView: View {
     /// button, no page-indicator dots (those all live in the cover wrapper /
     /// TabView, not in the page) — and saves it to Photos for App Store use.
     private func saveCurrentPage() {
-        let size = renderSize == .zero ? CGSize(width: 393, height: 852) : renderSize
+        let size = page.exportSize ?? (renderSize == .zero ? CGSize(width: 393, height: 852) : renderSize)
         let pageView = page.anyView
             .environment(\.mockImageEditing, false)   // never draw the edit affordance
             .frame(width: size.width, height: size.height)
@@ -137,7 +157,7 @@ struct MarketingMockupsView: View {
     /// order. One auth request up front; the per-page `await` keeps a single
     /// image alive at a time and guarantees each PHAsset write lands.
     private func saveAllPages() {
-        let size = renderSize == .zero ? CGSize(width: 393, height: 852) : renderSize
+        let deviceSize = renderSize == .zero ? CGSize(width: 393, height: 852) : renderSize
         Task { @MainActor in
             let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
             guard status == .authorized || status == .limited else {
@@ -148,6 +168,7 @@ struct MarketingMockupsView: View {
             let pages = MockupPage.allCases
             var saved = 0
             for mockPage in pages {
+                let size = mockPage.exportSize ?? deviceSize
                 let renderer = ImageRenderer(content:
                     mockPage.anyView
                         .environment(\.mockImageEditing, false)
@@ -1003,5 +1024,221 @@ private struct HomeWidgetsMockPage: View {
             Circle().fill(persimmon).frame(width: 14, height: 14)
                 .overlay(Circle().stroke(.white, lineWidth: 2))
         }
+    }
+}
+
+// MARK: - Instagram invite story (9:16)
+//
+// A 3-frame sequence — ache → turn → call — that turns a relatable pain ("my
+// friends post the food, never the place") into Wandery's promise (pin the spot,
+// share it with only your circle) and lands on a scannable TestFlight QR.
+//
+// Each frame is authored on a fixed 360×640 design canvas (see `StoryFrame`) so
+// the on-screen preview and the 1080×1920 export are pixel-for-pixel identical:
+// the export renders the canvas at scale 1 (×3 = 1080×1920); the live preview
+// just scales the same canvas up to fill the taller device screen.
+
+/// 9:16 design canvas. Lays children out at a fixed 360×640 and scales that
+/// whole canvas to fit the available space (letterboxing on a taller screen),
+/// so authored point sizes map straight to the export with no proportion drift.
+private struct StoryFrame<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    private let design = CGSize(width: 360, height: 640)
+
+    var body: some View {
+        GeometryReader { geo in
+            let scale = min(geo.size.width / design.width,
+                            geo.size.height / design.height)
+            ZStack {
+                Color.black
+                content()
+                    .frame(width: design.width, height: design.height)
+                    .scaleEffect(scale)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+/// The hero polaroid shared by frames 1 & 2 — same photo, same caption, but the
+/// location pill flips from redacted to revealed (the "let's change that" beat).
+/// The photo is a `MockImage` slot so Edit mode can drop in a real food pic; both
+/// frames share the `"story_dish"` name so they update together.
+private struct StoryPolaroid: View {
+    var locationRevealed: Bool
+    var photoSide: CGFloat
+
+    private let fixedDate = Date(timeIntervalSince1970: 1_780_000_000)
+
+    var body: some View {
+        PolaroidFrame(
+            username: "@yourbff",
+            date: fixedDate,
+            placeName: locationRevealed ? "Kopi & Co · Bangsar" : "? ? ? ? ?",
+            caption: "okay this looks unreal 🤤",
+            photoSide: photoSide
+        ) {
+            MockImage(name: "story_dish")
+        }
+    }
+}
+
+// MARK: - Story · Ache (the problem)
+
+private struct StoryAchePage: View {
+    var body: some View {
+        StoryFrame {
+            ZStack {
+                AppTheme.cafeGradient(0)
+                VStack(spacing: 0) {
+                    Spacer().frame(height: 64)
+                    Text("WE'VE ALL BEEN HERE")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .tracking(2)
+                        .foregroundStyle(AppTheme.cafeAccent)
+                    Spacer(minLength: 18)
+                    StoryPolaroid(locationRevealed: false, photoSide: 218)
+                    Spacer(minLength: 22)
+                    Text("…but where is that?")
+                        .font(.huntSerif(34))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .multilineTextAlignment(.center)
+                    Spacer().frame(height: 12)
+                    Text("Your bff. Your cousin. That friend with great taste. They post the food — never the place.")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                        .padding(.horizontal, 42)
+                    Spacer().frame(height: 56)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Story · Turn (the solution)
+
+private struct StoryTurnPage: View {
+    var body: some View {
+        StoryFrame {
+            ZStack {
+                AppTheme.cafeGradient(1)
+                VStack(spacing: 0) {
+                    Spacer().frame(height: 60)
+                    StoryPolaroid(locationRevealed: true, photoSide: 210)
+                    Spacer(minLength: 22)
+                    Text("Let's change that.")
+                        .font(.huntSerif(34))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .multilineTextAlignment(.center)
+                    Spacer().frame(height: 14)
+                    Text("Wandery pins every food pic to the exact spot — and you share it with only your circle. The people you'd actually go eat with. No algorithm, no randoms.")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                        .padding(.horizontal, 38)
+                    Spacer(minLength: 20)
+                    Text("SHARE YOUR SPOTS · SEE THEIRS · MAP IT")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .tracking(1.4)
+                        .foregroundStyle(AppTheme.cafeAccent)
+                    Spacer().frame(height: 52)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Story · Call (the CTA + QR)
+
+private struct StoryCallPage: View {
+    /// Generated once from the live TestFlight invite URL.
+    private let qr = StoryQR.image(LegalURLs.testFlightInvite.absoluteString)
+    private let cream = Color(hex: "#F7F5F2")
+
+    var body: some View {
+        StoryFrame {
+            ZStack {
+                LinearGradient(
+                    colors: [Color(hex: "#9A3E2A"), AppTheme.cafeAccent, Color(hex: "#C56A50")],
+                    startPoint: .top, endPoint: .bottom
+                )
+                VStack(spacing: 0) {
+                    Spacer().frame(height: 76)
+                    Text("wandery")
+                        .font(.wanderyWordmark(50))
+                        .foregroundStyle(cream)
+                    Spacer().frame(height: 10)
+                    Text("Join the hunt. 🔥")
+                        .font(.huntSerif(28))
+                        .foregroundStyle(cream)
+                    Spacer().frame(height: 8)
+                    Text("FINAL BETA · 100 SEATS ONLY")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .tracking(1.8)
+                        .foregroundStyle(cream.opacity(0.85))
+                    Spacer(minLength: 26)
+                    qrCard
+                    Spacer(minLength: 22)
+                    Text("Stay hunting. 🔥")
+                        .font(.huntSerif(20))
+                        .foregroundStyle(cream.opacity(0.9))
+                    Spacer().frame(height: 84)
+                }
+            }
+        }
+    }
+
+    private var qrCard: some View {
+        VStack(spacing: 12) {
+            Group {
+                if let qr {
+                    Image(uiImage: qr)
+                        .interpolation(.none)
+                        .resizable()
+                        .frame(width: 162, height: 162)
+                } else {
+                    // Defensive: QR generation virtually never fails, but keep
+                    // the card legible (and the link usable) if it ever does.
+                    Text(LegalURLs.testFlightInvite.absoluteString)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .multilineTextAlignment(.center)
+                        .frame(width: 162, height: 162)
+                }
+            }
+            Text("SCAN TO JOIN")
+                .font(.system(size: 13, weight: .heavy, design: .monospaced))
+                .tracking(2)
+                .foregroundStyle(AppTheme.textPrimary)
+            Text("testflight.apple.com/join/fhTBWC45")
+                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(AppTheme.textSecondary)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .shadow(color: .black.opacity(0.22), radius: 14, y: 6)
+    }
+}
+
+// MARK: - QR generator
+
+/// Minimal CoreImage QR builder for the invite story's CTA. Generated at most
+/// once per page render (never a hot loop), so no caching is needed.
+private enum StoryQR {
+    static func image(_ string: String) -> UIImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(string.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard
+            let output = filter.outputImage?
+                .transformed(by: CGAffineTransform(scaleX: 12, y: 12)),
+            let cgImage = CIContext().createCGImage(output, from: output.extent)
+        else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 }

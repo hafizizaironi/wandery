@@ -26,6 +26,14 @@ struct PlainFeedFrame<Content: View, TopLeading: View, BottomCenter: View>: View
     /// image is the same size in both styles.
     var photoSide: CGFloat
 
+    /// Optional pill on the photo's bottom-left corner (the music sticker).
+    /// Same inset convention as the location/caption pills. Default = omit.
+    var bottomLeading: () -> AnyView = { AnyView(EmptyView()) }
+
+    /// Optional control on the photo's top-right corner (mirrors `topLeading`).
+    /// Same inset, same level as the location pill. Default = omit.
+    var topTrailing: () -> AnyView = { AnyView(EmptyView()) }
+
     /// The square media (image, video, or live preview), sized to `photoSide`.
     @ViewBuilder var content: () -> Content
 
@@ -37,6 +45,7 @@ struct PlainFeedFrame<Content: View, TopLeading: View, BottomCenter: View>: View
 
     private let cornerRadius:  CGFloat = 14
     private let pillEdgeInset: CGFloat = 10
+    private let captionBottomInset: CGFloat = 10  // caption sits higher off the bottom edge
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -62,7 +71,10 @@ struct PlainFeedFrame<Content: View, TopLeading: View, BottomCenter: View>: View
                     .padding(.top, pillEdgeInset)
                     .padding(.leading, pillEdgeInset)
 
-                // Caption pill — bottom-center.
+                // Caption pill — bottom-center. The bottom inset lives INSIDE the
+                // photoSide frame (on the HStack) so it lifts the caption off the
+                // photo's bottom edge — applying it outside the frame would only
+                // add empty space below the box and never move the pill.
                 VStack {
                     Spacer(minLength: 0)
                     HStack {
@@ -70,9 +82,35 @@ struct PlainFeedFrame<Content: View, TopLeading: View, BottomCenter: View>: View
                         bottomCenter()
                         Spacer(minLength: 0)
                     }
+                    .padding(.bottom, captionBottomInset)
                 }
                 .frame(width: photoSide, height: photoSide)
-                .padding(.bottom, pillEdgeInset)
+
+                // Bottom-leading pill (the music sticker) — mirrors the
+                // location pill's inset on the opposite (bottom-left) corner.
+                VStack {
+                    Spacer(minLength: 0)
+                    HStack {
+                        bottomLeading()
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.leading, pillEdgeInset)
+                    .padding(.bottom, captionBottomInset)
+                }
+                .frame(width: photoSide, height: photoSide)
+
+                // Top-trailing control (the music button) — mirrors the
+                // location pill's inset on the opposite (top-right) corner.
+                VStack {
+                    HStack {
+                        Spacer(minLength: 0)
+                        topTrailing()
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, pillEdgeInset)
+                .padding(.trailing, pillEdgeInset)
+                .frame(width: photoSide, height: photoSide)
             }
         }
         .frame(width: photoSide)

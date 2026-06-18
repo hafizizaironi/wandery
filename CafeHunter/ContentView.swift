@@ -14,12 +14,21 @@ struct RootRouterView: View {
     var userPrivateService:   UserPrivateService
     var visitTracker:         VisitTrackerService
     var conversationService:  ConversationService
+    var permissionsManager:   PermissionsManager
+    var spotifyAuth:          SpotifyAuthService
+    var postMusicPlayer:      PostMusicPlayer
 
     @Environment(\.scenePhase) private var scenePhase
 
     /// Persists across launches — set true after a user finishes (or skips)
     /// the welcome carousel. Returning users skip straight to LoginView.
     @AppStorage("hasSeenWelcome") private var hasSeenWelcome: Bool = false
+
+    /// Per-install latch for the queued permission-priming flow. Wiped on
+    /// re-download (so the flow re-shows), persists across logout (so it never
+    /// re-fires on a same-device account switch). The flag — not the live
+    /// status — is the latch, so a user tapping "Maybe later" can't loop it.
+    @AppStorage("hasSeenPermissionPriming") private var hasSeenPermissionPriming: Bool = false
 
     var body: some View {
         ZStack {
@@ -58,6 +67,14 @@ struct RootRouterView: View {
                     userPrivateService: userPrivateService,
                     authService:        authService
                 )
+            } else if !hasSeenPermissionPriming && permissionsManager.hasUndeterminedCorePermission {
+                // Queued, one-at-a-time permission priming — runs once after
+                // onboarding, before the main app, so the OS prompts never burst.
+                PermissionPrimingView(permissions: permissionsManager) {
+                    withAnimation(Motion.modal) { hasSeenPermissionPriming = true }
+                }
+                .transition(.opacity)
+                .task { await permissionsManager.refreshAllStatuses() }
             } else {
                 MainShellView(
                     authService:         authService,
@@ -65,7 +82,9 @@ struct RootRouterView: View {
                     statsService:        statsService,
                     socialService:       socialService,
                     conversationService: conversationService,
-                    userPrivateService:  userPrivateService
+                    userPrivateService:  userPrivateService,
+                    spotifyAuth:         spotifyAuth,
+                    postMusicPlayer:     postMusicPlayer
                 )
                 // Fresh identity per signed-in user so a re-login always
                 // rebuilds the shell from its defaults — i.e. lands on the
@@ -79,12 +98,17 @@ struct RootRouterView: View {
         .animation(Motion.modal, value: authService.isLoading)
         .animation(Motion.modal, value: authService.user?.uid)
         .animation(Motion.modal, value: hasSeenWelcome)
+        .animation(Motion.modal, value: hasSeenPermissionPriming)
         // Subscribe / unsubscribe stats listener when auth state changes
         .onChange(of: authService.user?.uid) { _, uid in
             if let uid {
                 statsService.subscribe(uid: uid)
             } else {
                 statsService.unsubscribe()
+                // Sign-out: drop in-memory Spotify state and silence any feed
+                // music. Tokens stay in the keychain so a re-login reconnects.
+                spotifyAuth.reset()
+                postMusicPlayer.stop()
             }
         }
         .onAppear {
@@ -96,6 +120,7 @@ struct RootRouterView: View {
             socialService.start(for: authService.user)
             userPrivateService.start(for: authService.user)
             conversationService.start(for: authService.user)
+            spotifyAuth.start(for: authService.user)
             // Catch up on any visit sessions that need to close after a
             // cold start. Cheap no-op when nothing's open.
             if authService.user != nil {

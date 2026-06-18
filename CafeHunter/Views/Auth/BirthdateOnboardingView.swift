@@ -32,9 +32,18 @@ struct BirthdateOnboardingView: View {
         let min = cal.date(byAdding: .year, value: -120, to: now) ?? now
         self.maxBirthdate = max
         self.minBirthdate = min
-        // Default to the max so the wheel starts on the latest legal date
-        // rather than today — fewer scrolls for the typical young user.
-        _birthdate = State(initialValue: max)
+        // Pre-fill the saved birthdate when one exists — this screen also
+        // re-appears just to re-collect consent after a legal-version bump, and
+        // resetting the wheel there would make it look like the birthdate was
+        // lost AND would overwrite the correct value with the default on submit.
+        // Fall back to `max` (latest legal date — fewer scrolls) for genuine
+        // first-time users.
+        if let existing = userPrivateService.profile?.birthdate,
+           existing >= min, existing <= max {
+            _birthdate = State(initialValue: existing)
+        } else {
+            _birthdate = State(initialValue: max)
+        }
     }
 
     var body: some View {

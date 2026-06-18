@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Photos
+import PhotosUI
 
 /// The user's Wandery Profile Code. Two tabs:
 ///  • My Code — your circular friend-code full-bleed on cream, with a "hold
@@ -24,6 +25,11 @@ struct WanderyCodeSpikeView: View {
     @State private var decoded: WanderyCodeDetector.Result?
     @State private var scanAttempt = 0
     @State private var resolveResult: WanderyCodeService.ResolveResult?
+
+    // Photo-scan state (scan a code from the library, not just the live camera)
+    @State private var photoPickerItem: PhotosPickerItem?
+    @State private var isScanningPhoto = false
+    @State private var photoNoCodeFound = false
 
     // Share / Save
     @State private var shareImage: UIImage?
@@ -227,33 +233,87 @@ struct WanderyCodeSpikeView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            WanderyCodeScannerView(
-                onDecode: { result in
-                    decoded = result
-                    resolveResult = nil
-                    Task { resolveResult = await codeService.resolve(accountId: result.accountId) }
-                }
-            )
-            .id(scanAttempt)
-            .ignoresSafeArea()
+            WanderyCodeScannerView(onDecode: { handleDecoded($0) })
+                .id(scanAttempt)
+                .ignoresSafeArea()
 
-            if decoded == nil { RadialPulse().frame(width: 300, height: 300) }
+            if decoded == nil && !isScanningPhoto && !photoNoCodeFound {
+                RadialPulse().frame(width: 300, height: 300)
+            }
+
+            if isScanningPhoto {
+                VStack(spacing: 12) {
+                    ProgressView().tint(.white)
+                    Text("Looking for a code…")
+                        .font(.subheadline).foregroundStyle(.white.opacity(0.85))
+                }
+                .padding(24)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+            }
 
             VStack {
                 Spacer()
                 if let d = decoded {
                     resultBanner(d)
-                } else {
+                } else if photoNoCodeFound {
+                    noCodeBanner()
+                } else if !isScanningPhoto {
                     Text("Point at a friend's Wandery code")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white.opacity(0.85))
                         .padding(.horizontal, 18).padding(.vertical, 11)
                         .background(.black.opacity(0.35))
                         .clipShape(Capsule())
+                    photosPickerButton()
                 }
             }
             .padding(20)
         }
+        .onChange(of: photoPickerItem) { _, item in
+            if let item { scanPhoto(item) }
+        }
+    }
+
+    /// Library entry point — pick a still image and decode it through the same
+    /// detector as the live camera.
+    private func photosPickerButton() -> some View {
+        PhotosPicker(selection: $photoPickerItem, matching: .images) {
+            Label("Scan from Photos", systemImage: "photo.on.rectangle")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18).padding(.vertical, 11)
+                .background(.white.opacity(0.18))
+                .clipShape(Capsule())
+        }
+        .padding(.top, 10)
+    }
+
+    private func noCodeBanner() -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: "photo.badge.exclamationmark")
+                .font(.largeTitle).foregroundStyle(.white.opacity(0.85))
+            Text("No Wandery code found in that photo")
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.center).foregroundStyle(.white)
+            Text("Make sure the whole circular code is sharp and fills the frame.")
+                .font(.caption).multilineTextAlignment(.center)
+                .foregroundStyle(.white.opacity(0.7))
+            HStack(spacing: 10) {
+                PhotosPicker(selection: $photoPickerItem, matching: .images) {
+                    Text("Pick another photo")
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 18).padding(.vertical, 11)
+                        .background(.white).clipShape(Capsule())
+                }
+                Button("Use camera") { resetScan() }
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 24))
     }
 
     private func resultBanner(_ d: WanderyCodeDetector.Result) -> some View {
@@ -288,9 +348,7 @@ struct WanderyCodeSpikeView: View {
             }
 
             Button {
-                decoded = nil
-                resolveResult = nil
-                scanAttempt += 1
+                resetScan()
             } label: {
                 Text("Scan again")
                     .font(.subheadline.weight(.semibold))
@@ -348,6 +406,64 @@ struct WanderyCodeSpikeView: View {
     }
 
     // MARK: - Actions
+
+    /// Shared by the live scanner and the photo path: show the result banner and
+    /// kick off the backend resolve. Always clears the photo-scan transient state.
+    @MainActor
+    private func handleDecoded(_ result: WanderyCodeDetector.Result) {
+        isScanningPhoto = false
+        photoNoCodeFound = false
+        decoded = result
+        resolveResult = nil
+        Task { resolveResult = await codeService.resolve(accountId: result.accountId) }
+    }
+
+    /// Decode a Wandery code from a picked still image. Downsample off-main via
+    /// `ImageDecoding`, then run a FRESH detector (agreement = 1) entirely inside
+    /// one detached task so its JSContext is created and used on a single thread
+    /// with no awaits between. Falls back to a horizontal-flip retry for mirrored
+    /// exports/screenshots before giving up.
+    private func scanPhoto(_ item: PhotosPickerItem) {
+        Task { @MainActor in
+            isScanningPhoto = true
+            photoNoCodeFound = false
+            decoded = nil
+            resolveResult = nil
+
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  let image = await ImageDecoding.prepared(from: data, maxPixel: 1600),
+                  let cg = image.cgImage else {
+                isScanningPhoto = false
+                photoNoCodeFound = true
+                return
+            }
+
+            let result = await Task.detached(priority: .userInitiated) { () -> WanderyCodeDetector.Result? in
+                let detector = WanderyCodeDetector()
+                detector.requiredAgreement = 1      // a single still image
+                detector.debugLogging = false
+                return detector.analyze(cgImage: cg) ?? detector.analyze(cgImage: cg, mirrored: true)
+            }.value
+
+            if let result {
+                handleDecoded(result)
+            } else {
+                isScanningPhoto = false
+                photoNoCodeFound = true
+            }
+        }
+    }
+
+    /// Reset both scan paths. Nils `photoPickerItem` so re-picking the SAME asset
+    /// re-fires `.onChange`, and bumps `scanAttempt` to recreate the live scanner.
+    private func resetScan() {
+        decoded = nil
+        resolveResult = nil
+        isScanningPhoto = false
+        photoNoCodeFound = false
+        photoPickerItem = nil
+        scanAttempt += 1
+    }
 
     private func loadCode() async {
         do {

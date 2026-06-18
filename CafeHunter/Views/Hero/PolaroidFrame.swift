@@ -55,6 +55,15 @@ struct PolaroidFrame<Content: View, TopLeading: View, BottomCenter: View>: View 
     /// photo keeps its full size and the frame may bleed past the layout slot.
     var photoSide: CGFloat
 
+    /// Optional pill on the photo's bottom-left corner (the music sticker).
+    /// Uses the SAME inset convention as the location/caption pills so it sits
+    /// like the other default pills. Default = omit.
+    var bottomLeading: () -> AnyView = { AnyView(EmptyView()) }
+
+    /// Optional control on the photo's top-right corner (mirrors `topLeading`).
+    /// Same inset, same level as the location pill. Default = omit.
+    var topTrailing: () -> AnyView = { AnyView(EmptyView()) }
+
     /// The square media — typically a FeedPostCard, captured image,
     /// or live preview. Sized to `photoSide`; the cream card wraps around it.
     @ViewBuilder var content: () -> Content
@@ -77,6 +86,7 @@ struct PolaroidFrame<Content: View, TopLeading: View, BottomCenter: View>: View 
     private let cornerRadius:  CGFloat = 4
 
     private let pillEdgeInset: CGFloat = 10   // pill inset from photo edge
+    private let captionBottomInset: CGFloat = 10  // caption sits higher off the bottom edge
 
     private var frameColor: Color {
         // Warm cream — matches the Wandery brand palette.
@@ -117,7 +127,11 @@ struct PolaroidFrame<Content: View, TopLeading: View, BottomCenter: View>: View 
                     .padding(.top, pillEdgeInset)
                     .padding(.leading, pillEdgeInset)
 
-                // 2b. Caption pill — bottom-center
+                // 2b. Caption pill — bottom-center. The bottom inset lives INSIDE
+                // the photoSide frame (on the HStack): applying it outside the
+                // frame made the overlay taller than photoSide, which the parent
+                // `.frame(height: photoSide)` then centred — shoving the photo up
+                // and eating the top padding. Inside, it just lifts the caption.
                 VStack {
                     Spacer(minLength: 0)
                     HStack {
@@ -125,9 +139,36 @@ struct PolaroidFrame<Content: View, TopLeading: View, BottomCenter: View>: View 
                         bottomCenter()
                         Spacer(minLength: 0)
                     }
+                    .padding(.bottom, captionBottomInset)
                 }
                 .frame(width: photoSide, height: photoSide)
-                .padding(.bottom, pillEdgeInset)
+
+                // 2c. Bottom-leading pill (the music sticker) — mirrors the
+                // location pill's inset, on the opposite (bottom-left) corner,
+                // so it reads as one of the card's default pills.
+                VStack {
+                    Spacer(minLength: 0)
+                    HStack {
+                        bottomLeading()
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.leading, pillEdgeInset)
+                    .padding(.bottom, captionBottomInset)
+                }
+                .frame(width: photoSide, height: photoSide)
+
+                // 2d. Top-trailing control (the music button) — mirrors the
+                // location pill's inset on the opposite (top-right) corner.
+                VStack {
+                    HStack {
+                        Spacer(minLength: 0)
+                        topTrailing()
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, pillEdgeInset)
+                .padding(.trailing, pillEdgeInset)
+                .frame(width: photoSide, height: photoSide)
             }
             .frame(width: photoSide, height: photoSide)
             .padding(.top, topPadding)

@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "C4795F332F8ADCC7002495D1"
-               BuildableName = "CafeHunter.app"
+               BuildableName = "Wandery.app"
                BlueprintName = "CafeHunter"
                ReferencedContainer = "container:CafeHunter.xcodeproj">
             </BuildableReference>
@@ -46,7 +46,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C4795F332F8ADCC7002495D1"
-            BuildableName = "CafeHunter.app"
+            BuildableName = "Wandery.app"
             BlueprintName = "CafeHunter"
             ReferencedContainer = "container:CafeHunter.xcodeproj">
          </BuildableReference>
@@ -63,7 +63,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C4795F332F8ADCC7002495D1"
-            BuildableName = "CafeHunter.app"
+            BuildableName = "Wandery.app"
             BlueprintName = "CafeHunter"
             ReferencedContainer = "container:CafeHunter.xcodeproj">
          </BuildableReference>

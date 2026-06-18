@@ -16,6 +16,8 @@ struct MainShellView: View {
     var socialService:       SocialService
     var conversationService: ConversationService
     var userPrivateService:  UserPrivateService
+    var spotifyAuth:         SpotifyAuthService
+    var postMusicPlayer:     PostMusicPlayer
 
     // Start on the Hero (feed) page — centre of the arc.
     @State private var selectedPage: ShellPage = .hero
@@ -139,6 +141,8 @@ struct MainShellView: View {
                         isActive: selectedPage == .hero,
                         socialService: socialService,
                         conversationService: conversationService,
+                        spotifyAuth: spotifyAuth,
+                        postMusicPlayer: postMusicPlayer,
                         pendingPostJumpId: $pendingHeroPostJumpId,
                         highlightedPostId: $highlightedPostId,
                         edgeDragActive: edgeDragActive,
@@ -159,6 +163,7 @@ struct MainShellView: View {
                         statsService:        statsService,
                         socialService:       socialService,
                         userPrivateService:  userPrivateService,
+                        spotifyAuth:         spotifyAuth,
                         isTabActive:         abs(pageProgress - 2) < 0.5,
                         friendPlacesService: friendPlacesService,
                         showMyHunt:          $showMyHunt,

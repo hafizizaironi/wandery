@@ -22,8 +22,6 @@ struct FeedPolaroidCard: View {
     /// notification tap (cleared by the parent after ~1.5s).
     var isHighlighted: Bool = false
 
-    /// Display preference (Profile → "Polaroid frames"). Off = plain cards.
-    @AppStorage("feed.usePolaroidFrame") private var usePolaroidFrame = false
     /// Global feed-video mute, shared across all posts (like IG/TikTok).
     /// Defaults to muted/silent; the speaker button toggles it.
     @AppStorage("feed.videoMuted") private var videoMuted = true
@@ -43,6 +41,38 @@ struct FeedPolaroidCard: View {
     private var visibleDepth: Int { min(stackDepth, media.count) }
 
     var body: some View {
+        cardStack
+            // Photo stays full `side`; the cream frame bleeds past this square
+            // slot, so the composer below doesn't move. (The vinyl record that
+            // peeks below a music post is hosted by `heroFeedPostPage` so its
+            // peeking part stays inside a hit-testable container.)
+            .frame(width: side, height: side)
+            .frame(maxWidth: .infinity)
+            .scaleEffect(isHighlighted ? 1.03 : 1)
+            .shadow(color: AppTheme.cafeAccent.opacity(isHighlighted ? 0.55 : 0), radius: 18)
+            .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isHighlighted)
+        // Audience badge for restricted (private) posts.
+        .overlay(alignment: .topTrailing) {
+            if let text = restrictedBadgeText {
+                HStack(spacing: 4) {
+                    Image(systemName: "lock.fill").font(.system(size: 9, weight: .bold))
+                    Text(text).font(.system(size: 10, weight: .bold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(AppTheme.accentAction.opacity(0.92)))
+                .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+                .padding(.top, 12)
+                .padding(.trailing, 12)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// The single polaroid or the swipeable multi-photo stack (unchanged from
+    /// before — just extracted so the body can layer the vinyl record behind it).
+    private var cardStack: some View {
         Group {
             if media.count <= 1 {
                 polaroid(for: media.first, rel: 0)
@@ -64,30 +94,6 @@ struct FeedPolaroidCard: View {
                 .simultaneousGesture(swipeGesture)
             }
         }
-        // Photo stays full `side`; the cream frame bleeds past this square slot,
-        // so the composer below doesn't move.
-        .frame(width: side, height: side)
-        .frame(maxWidth: .infinity)
-        .scaleEffect(isHighlighted ? 1.03 : 1)
-        .shadow(color: AppTheme.cafeAccent.opacity(isHighlighted ? 0.55 : 0), radius: 18)
-        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isHighlighted)
-        // Audience badge for restricted (private) posts.
-        .overlay(alignment: .topTrailing) {
-            if let text = restrictedBadgeText {
-                HStack(spacing: 4) {
-                    Image(systemName: "lock.fill").font(.system(size: 9, weight: .bold))
-                    Text(text).font(.system(size: 10, weight: .bold))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(AppTheme.accentAction.opacity(0.92)))
-                .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
-                .padding(.top, 12)
-                .padding(.trailing, 12)
-                .allowsHitTesting(false)
-            }
-        }
     }
 
     private var myUid: String { Auth.auth().currentUser?.uid ?? "" }
@@ -106,30 +112,17 @@ struct FeedPolaroidCard: View {
     @ViewBuilder
     private func polaroid(for item: PostMedia?, rel: Int) -> some View {
         let isTop = rel == 0
-        if usePolaroidFrame {
-            PolaroidFrame(
-                username: "@\(post.authorUsername)",
-                date: post.createdAt,
-                tilt: Self.tilt(seed: item?.url ?? post.id),
-                photoSide: side
-            ) {
-                mediaCell(item, isActive: isVideoActive && isTop)
-            } topLeading: {
-                placeOverlay(for: item, isTop: isTop)
-            } bottomCenter: {
-                captionOverlay(for: item)
-            }
-        } else {
-            PlainFeedFrame(
-                username: "@\(post.authorUsername)",
-                photoSide: side
-            ) {
-                mediaCell(item, isActive: isVideoActive && isTop)
-            } topLeading: {
-                placeOverlay(for: item, isTop: isTop)
-            } bottomCenter: {
-                captionOverlay(for: item)
-            }
+        FeedCardFrame(
+            username: "@\(post.authorUsername)",
+            date: post.createdAt,
+            tilt: Self.tilt(seed: item?.url ?? post.id),
+            photoSide: side
+        ) {
+            mediaCell(item, isActive: isVideoActive && isTop)
+        } topLeading: {
+            placeOverlay(for: item, isTop: isTop)
+        } bottomCenter: {
+            captionOverlay(for: item)
         }
     }
 
@@ -160,8 +153,14 @@ struct FeedPolaroidCard: View {
     private func mediaCell(_ item: PostMedia?, isActive: Bool) -> some View {
         Group {
             if let item, !item.url.isEmpty, item.isVideo, !staticPreview, let u = URL(string: item.url) {
-                SquareVideoFillView(url: u, isPlaying: isActive, muted: videoMuted)
-                    .overlay(alignment: .bottomTrailing) { muteButton.padding(10) }
+                // A song replaces the video's own audio, so force the player
+                // muted when the post has music (the song is the post's audio).
+                SquareVideoFillView(url: u, isPlaying: isActive, muted: videoMuted || post.music != nil)
+                    .overlay(alignment: .bottomTrailing) {
+                        // For music posts the chip is the audio control, so hide
+                        // the per-video speaker to avoid two competing toggles.
+                        if post.music == nil { muteButton.padding(10) }
+                    }
             } else if let item, !item.displayURL.isEmpty, let u = URL(string: item.displayURL) {
                 // `displayURL` is the image URL for photos and the poster
                 // thumbnail for videos — so static video previews show a frame.

@@ -24,8 +24,13 @@ struct WanderyEntryView: View {
     @State private var userPrivateService   = UserPrivateService()
     @State private var visitTracker         = VisitTrackerService()
     @State private var conversationService  = ConversationService()
+    /// Spotify connection (poster picks a song) + the feed-scoped preview player.
+    @State private var spotifyAuth          = SpotifyAuthService()
+    @State private var postMusicPlayer      = PostMusicPlayer()
     /// Lightweight instance just for the close-in map's pins.
     @State private var entryPlaces          = FriendPlacesService()
+    /// Single source of truth for OS permissions; drives the queued priming gate.
+    @State private var permissionsManager   = PermissionsManager()
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("hasSeenWelcome") private var hasSeenWelcome: Bool = false
@@ -81,7 +86,10 @@ struct WanderyEntryView: View {
                 socialService:       socialService,
                 userPrivateService:  userPrivateService,
                 visitTracker:        visitTracker,
-                conversationService: conversationService
+                conversationService: conversationService,
+                permissionsManager:  permissionsManager,
+                spotifyAuth:         spotifyAuth,
+                postMusicPlayer:     postMusicPlayer
             )
 
             if coverActive {

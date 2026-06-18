@@ -1,5 +1,6 @@
 import Foundation
 import CoreVideo
+import CoreGraphics
 import simd
 
 /// Camera-side detector: turns a grayscale frame into the 156 module bits and
@@ -420,5 +421,49 @@ final class WanderyCodeDetector {
     private func log(_ msg: @autoclosure () -> String) {
         guard debugLogging else { return }
         dlog("[WanderyDetector] \(msg())")
+    }
+}
+
+// MARK: - Still-image entry (Photos-library scan)
+
+extension WanderyCodeDetector {
+
+    /// One-shot decode of a still image (the Photos-library path). Draws the
+    /// `CGImage` into a tight device-gray buffer with a vertical CTM flip so the
+    /// buffer's row 0 is the image's TOP edge — matching the camera luma plane's
+    /// y-down, non-mirrored layout that the clockwise pin-ordering relies on.
+    /// `mirrored` additionally flips X (a cheap failure-path retry for mirrored
+    /// exports/screenshots). The caller must set `requiredAgreement = 1` on a
+    /// FRESH instance — a single frame can never reach the default agreement of 2.
+    ///
+    /// Run this off the main thread; like `analyze(base:…)` it is NOT thread-safe
+    /// and its `WanderyCodec` JSContext lives wherever this instance was created.
+    func analyze(cgImage: CGImage, mirrored: Bool = false) -> Result? {
+        let width = cgImage.width, height = cgImage.height
+        guard width > 0, height > 0 else { return nil }
+
+        var buffer = [UInt8](repeating: 0, count: width * height)
+        let drawn = buffer.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(
+                data: raw.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width,        // tight, no padding
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+
+            // CG's origin is bottom-left; flip vertically so the drawn row 0 is
+            // the image's TOP scanline (camera y-down convention). This is what
+            // keeps clockwise pin ordering correct — do not remove.
+            ctx.translateBy(x: 0, y: CGFloat(height)); ctx.scaleBy(x: 1, y: -1)
+            if mirrored { ctx.translateBy(x: CGFloat(width), y: 0); ctx.scaleBy(x: -1, y: 1) }
+            ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+
+        return buffer.withUnsafeBufferPointer { ptr in
+            ptr.baseAddress.flatMap {
+                analyze(base: $0, width: width, height: height, bytesPerRow: width)
+            }
+        }
     }
 }

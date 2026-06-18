@@ -80,7 +80,7 @@
 		C46962B02FD2C2F1005DA267 /* FriendsFeedWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FriendsFeedWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C46962CD2FD2C448005DA267 /* WanderyUploadWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WanderyUploadWidgetExtension.entitlements; sourceTree = "<group>"; };
 		C46962CE2FD2C4AB005DA267 /* FriendsFeedWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FriendsFeedWidgetExtension.entitlements; sourceTree = "<group>"; };
-		C4795F342F8ADCC7002495D1 /* CafeHunter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CafeHunter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C4795F342F8ADCC7002495D1 /* Wandery.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Wandery.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D1E2F3A4B5C6D70080000001 /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
 		D1E2F3A4B5C6D70080000002 /* Secrets.xcconfig.sample */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig.sample; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -260,7 +260,7 @@
 		C4795F352F8ADCC7002495D1 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				C4795F342F8ADCC7002495D1 /* CafeHunter.app */,
+				C4795F342F8ADCC7002495D1 /* Wandery.app */,
 				C45CFB832FC96C9C003AEC18 /* WanderyNotificationService.appex */,
 				C45CFEB42FC9F90E003AEC18 /* WanderyUploadWidgetExtension.appex */,
 				C46962B02FD2C2F1005DA267 /* FriendsFeedWidgetExtension.appex */,
@@ -376,7 +376,7 @@
 				C424C2E62FC15C97003256A0 /* FirebaseAppCheck */,
 			);
 			productName = CafeHunter;
-			productReference = C4795F342F8ADCC7002495D1 /* CafeHunter.app */;
+			productReference = C4795F342F8ADCC7002495D1 /* Wandery.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -517,7 +517,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = WanderyNotificationService/WanderyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 12;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WanderyNotificationService/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = WanderyNotificationService;
@@ -546,7 +546,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = WanderyNotificationService/WanderyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 12;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WanderyNotificationService/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = WanderyNotificationService;
@@ -577,7 +577,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = WanderyUploadWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = 5GQ3DBXL52;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WanderyUploadWidget/Info.plist;
@@ -613,7 +613,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = WanderyUploadWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = 5GQ3DBXL52;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WanderyUploadWidget/Info.plist;
@@ -649,7 +649,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = FriendsFeedWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 12;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = FriendsFeedWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = FriendsFeedWidget;
@@ -680,7 +680,7 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = FriendsFeedWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 12;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = FriendsFeedWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = FriendsFeedWidget;
@@ -836,12 +836,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = CafeHunter/CafeHunter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 12;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CafeHunter/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Wanderyy;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Wandery;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.lifestyle";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Wandery uses the camera to share cafe moments with friends.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Find friends already on the app by matching against your contacts. Your contacts stay on this device — only hashed phone numbers are checked, and only your matches are shown.";
@@ -861,7 +861,7 @@
 				);
 				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = TechVision.CafeHunter;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Wandery;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -879,12 +879,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = CafeHunter/CafeHunter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 12;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CafeHunter/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Wanderyy;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Wandery;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.lifestyle";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Wandery uses the camera to share cafe moments with friends.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Find friends already on the app by matching against your contacts. Your contacts stay on this device — only hashed phone numbers are checked, and only your matches are shown.";
@@ -904,7 +904,7 @@
 				);
 				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = TechVision.CafeHunter;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Wandery;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;

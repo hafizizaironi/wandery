@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import FirebaseAuth
 import FirebaseFirestore
 import FirebaseFunctions
@@ -10,6 +11,7 @@ struct ProfileHomeView: View {
     var statsService:        UserStatsService
     var socialService:       SocialService
     var userPrivateService:  UserPrivateService
+    var spotifyAuth:         SpotifyAuthService
     /// True while this shell page is the visible tab (Map / Hero / Profile pager).
     var isTabActive: Bool
     /// Map data + My Hunt open-state, owned by MainShellView so the overlay
@@ -52,9 +54,13 @@ struct ProfileHomeView: View {
     /// render in a ForEach — the busy state has to be per-row.
     @State private var processingRequestId: String?
     @State private var signOutError       = ""
+    /// Transient "copied ✓" state for the invite card's copy-link fallback.
+    @State private var inviteCopied        = false
     @State private var showDeleteConfirm   = false
     @State private var isDeleting          = false
     @State private var deleteError         = ""
+    /// Confirmation before unlinking Spotify (re-linking needs the OAuth dance).
+    @State private var confirmSpotifyDisconnect = false
     /// Pre-fetches friend profiles so the friend list panel opens with rows
     /// already cached. Owned here so the cache survives floating-panel
     /// open/close cycles, and so sync can happen while the user is still
@@ -66,9 +72,9 @@ struct ProfileHomeView: View {
     /// suggestions survive across re-renders triggered by other state.
     @State private var friendSearch = FriendSearchModel()
 
-    /// Feed display style. Off = plain cards (default); on = polaroid frames.
-    /// Read by HeroPageView's feed + capture-review via the same key.
-    @AppStorage("feed.usePolaroidFrame") private var usePolaroidFrame = false
+    /// Feed card style (Classic / Polaroid / …). Read by the feed +
+    /// capture-review through the same key via `FeedCardFrame`.
+    @AppStorage(FeedCardStyle.storageKey) private var feedCardStyle: FeedCardStyle = .plain
 
 
     // Long-press-on-avatar moderation surface state. The .contextMenu on
@@ -203,6 +209,7 @@ struct ProfileHomeView: View {
                             }
                         )
                         achievementsSection
+                        musicSection
                         settingsSection
                     }
                     .padding(.bottom, ArcNavBar.frameContentHeight + 24)
@@ -994,6 +1001,108 @@ struct ProfileHomeView: View {
         .accessibilityLabel(title)
     }
 
+    /// "MUSIC" profile section — shows the connection status of the music
+    /// provider (Spotify) and lets the user connect / disconnect. Picking the
+    /// actual song happens from the composer's round music button.
+    private var musicSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader("MUSIC")
+            musicProviderCard
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+        .animation(Motion.dropdown, value: spotifyAuth.isConnected)
+        .animation(Motion.dropdown, value: spotifyAuth.isConnecting)
+    }
+
+    /// Spotify brand green for the provider badge so it reads as the provider.
+    private var spotifyGreen: Color { Color(red: 0.114, green: 0.725, blue: 0.329) }
+
+    private var spotifyStatusText: String {
+        guard spotifyAuth.isConfigured else { return "Not available yet" }
+        if spotifyAuth.isConnected {
+            return spotifyAuth.displayName.map { "Connected · @\($0)" } ?? "Connected"
+        }
+        return spotifyAuth.isConnecting ? "Connecting…" : "Not connected"
+    }
+
+    private var musicProviderCard: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().fill(spotifyGreen)
+                Image(systemName: "music.note")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 46, height: 46)
+            .shadow(color: spotifyGreen.opacity(0.4), radius: 6, y: 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Spotify")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(AppTheme.textPrimary)
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(spotifyAuth.isConnected ? AppTheme.successGreen : AppTheme.textSecondary.opacity(0.5))
+                        .frame(width: 7, height: 7)
+                    Text(spotifyStatusText)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            musicProviderAction
+        }
+        .padding(14)
+        .background(AppTheme.textPrimary.opacity(0.04))
+        .clipShape(.rect(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        }
+        .confirmationDialog("Disconnect Spotify?",
+                            isPresented: $confirmSpotifyDisconnect,
+                            titleVisibility: .visible) {
+            Button("Disconnect", role: .destructive) { spotifyAuth.disconnect() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You can reconnect anytime to add music to new posts.")
+        }
+    }
+
+    @ViewBuilder
+    private var musicProviderAction: some View {
+        if !spotifyAuth.isConfigured {
+            EmptyView()
+        } else if spotifyAuth.isConnected {
+            Button { confirmSpotifyDisconnect = true } label: {
+                Text("Disconnect")
+                    .font(.caption.bold())
+                    .foregroundStyle(AppTheme.accentAction)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(AppTheme.accentAction.opacity(0.12), in: Capsule())
+            }
+            .buttonStyle(.plain)
+        } else if spotifyAuth.isConnecting {
+            ProgressView().tint(spotifyGreen)
+        } else {
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                Task { try? await spotifyAuth.connect() }
+            } label: {
+                Text("Connect")
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(spotifyGreen, in: Capsule())
+            }
+            .buttonStyle(.scalePress)
+        }
+    }
+
     /// Wandery Profile Code entry (show + scan), sized to sit beside the Add
     /// button in the friends section.
     private var profileCodeButton: some View {
@@ -1121,26 +1230,33 @@ struct ProfileHomeView: View {
             // the server for support emergencies but no longer surfaced
             // in the UI.)
 
-            // Display preference: polaroid frames vs. plain feed cards.
-            // Local-only (@AppStorage); read by HeroPageView's feed +
-            // capture-review under the same "feed.usePolaroidFrame" key.
+            // Feed card style — options come from FeedCardStyle.allCases, so a
+            // new style appears here automatically. Local-only (@AppStorage);
+            // read by the feed + capture-review via FeedCardStyle.storageKey.
             HStack(spacing: 10) {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.accentAction)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Polaroid frames")
+                    Text("Feed style")
                         .font(.subheadline).bold()
                         .foregroundStyle(AppTheme.textPrimary)
-                    Text("Frame feed photos like printed prints")
+                    Text("How feed photos are framed")
                         .font(.caption2)
                         .foregroundStyle(AppTheme.textSecondary)
                 }
                 Spacer()
-                Toggle("", isOn: $usePolaroidFrame)
-                    .labelsHidden()
-                    .tint(AppTheme.accentAction)
+                Picker("", selection: $feedCardStyle) {
+                    // Users pick from released skins only; admins also see
+                    // unreleased ones (flagged) to preview before the team ships.
+                    ForEach(authService.isAdmin ? FeedCardStyle.allCases : FeedCardStyle.released) { style in
+                        Text(style.isReleased ? style.label : "\(style.label) (unreleased)").tag(style)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(AppTheme.accentAction)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -1151,8 +1267,8 @@ struct ProfileHomeView: View {
                     .stroke(AppTheme.borderSubtle, lineWidth: 1)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Polaroid frames")
-            .accessibilityValue(usePolaroidFrame ? "On" : "Off")
+            .accessibilityLabel("Feed style")
+            .accessibilityValue(feedCardStyle.label)
 
             // Friend-of-friend Discover opt-out. The Cloud Function checks
             // `users/{uid}.optedOutOfDiscovery` before letting this user's
@@ -1161,10 +1277,17 @@ struct ProfileHomeView: View {
             // → an absent field is treated as opted in).
             helpsCircleDiscoverRow
 
-            // Reviewer-required legal + support surfaces. App Store
-            // Guideline 1.2 expects users to reach the developer from
-            // inside the app, and 5.1.1 expects the Privacy Policy +
-            // Terms of Use to be linkable post-onboarding.
+            // Final-phase beta growth. The public TestFlight link is capped
+            // at 100 testers, so the copy leans into urgency + belonging to
+            // turn every tester into a referrer.
+            betaInviteCard
+
+            // Warm "reach a human" surface. Also satisfies App Store
+            // Guideline 1.2 (developer reachable from inside the app).
+            contactSupportCard
+
+            // Reviewer-required legal surfaces — Guideline 5.1.1 expects the
+            // Privacy Policy + Terms of Use linkable post-onboarding.
             legalLinks
 
             Button(action: signOut) {
@@ -1291,9 +1414,6 @@ struct ProfileHomeView: View {
     @ViewBuilder
     private var legalLinks: some View {
         VStack(spacing: 8) {
-            legalRow(label: "Contact support",
-                     systemImage: "envelope",
-                     url: LegalURLs.supportMailto)
             legalRow(label: "Terms of Use",
                      systemImage: "doc.text",
                      url: LegalURLs.termsOfUse)
@@ -1301,6 +1421,134 @@ struct ProfileHomeView: View {
                      systemImage: "lock.shield",
                      url: LegalURLs.privacyPolicy)
         }
+    }
+
+    /// Final-phase beta invite. Apple caps the public TestFlight link at 100
+    /// testers, so this leans on urgency ("seats are filling") + belonging
+    /// ("founding hunter") to turn every tester into a referrer. Shares the
+    /// warm copy in `LegalURLs.inviteShareText` through the system share sheet
+    /// so it travels intact across Messages, WhatsApp, IG DMs, and email.
+    @ViewBuilder
+    private var betaInviteCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "flame.fill")
+                    .font(.title3)
+                    .foregroundStyle(AppTheme.accentAction)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("You're a founding hunter 🔥")
+                        .font(.subheadline).bold()
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text("Wandery's better with your people on it.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+            }
+
+            Text("We're in the final stretch of testing — and the beta is capped at 100 seats. Every friend you bring means more spots on the map and more bugs caught before launch. Pull in the people you'd actually love to hunt cafés with, and help us build this thing.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ShareLink(
+                item: LegalURLs.inviteShareText,
+                subject: Text(LegalURLs.inviteSubject),
+                preview: SharePreview("Wandery beta invite")
+            ) {
+                HStack(spacing: 8) {
+                    Image(systemName: "paperplane.fill")
+                    Text("Invite friends to the beta").bold()
+                }
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.textOnAccent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .background(AppTheme.accentAction)
+                .clipShape(.rect(cornerRadius: 12))
+            }
+            .simultaneousGesture(TapGesture().onEnded {
+                AnalyticsService.shared.log(.inviteContact, area: .profile)
+            })
+
+            // Bulletproof fallback. The system share sheet hands off to each
+            // target app's own extension, and some (notably WhatsApp) can show
+            // a blank compose panel or a dead "Next" — a third-party bug we
+            // can't fix from here. Copying the full invite text lets the user
+            // paste it into literally any chat, no extension involved.
+            Button {
+                UIPasteboard.general.string = LegalURLs.inviteShareText
+                AnalyticsService.shared.log(.inviteContact, area: .profile)
+                withAnimation(.easeInOut(duration: 0.2)) { inviteCopied = true }
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    withAnimation(.easeInOut(duration: 0.2)) { inviteCopied = false }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: inviteCopied ? "checkmark.circle.fill" : "doc.on.doc")
+                    Text(inviteCopied ? "Copied — paste it in any chat" : "Or copy the invite")
+                        .bold()
+                }
+                .font(.caption)
+                .foregroundStyle(AppTheme.accentAction)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(inviteCopied ? "Invite copied to clipboard" : "Copy the invite to paste anywhere")
+        }
+        .padding(16)
+        .background(AppTheme.accentAction.opacity(0.06))
+        .clipShape(.rect(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(AppTheme.accentAction.opacity(0.25), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Invite friends to the Wandery beta")
+        .accessibilityHint("Opens the share sheet with an invite link. The beta is limited to 100 testers.")
+    }
+
+    /// Warmer "talk to a human" surface than a bare link row. During the beta
+    /// the most valuable thing a tester can do is tell us what broke, so the
+    /// copy invites exactly that. Opens a pre-filled mail draft.
+    @ViewBuilder
+    private var contactSupportCard: some View {
+        Link(destination: LegalURLs.supportMailto) {
+            HStack(spacing: 12) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.accentAction)
+                    .frame(width: 28)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Got a question or hit a bug?")
+                        .font(.subheadline).bold()
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text("Tell us anything — we read every message.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption2).bold()
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.textPrimary.opacity(0.04))
+            .clipShape(.rect(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            }
+        }
+        .accessibilityLabel("Contact support")
+        .accessibilityHint("Opens an email to the Wandery team")
     }
 
     private func legalRow(label: String, systemImage: String, url: URL) -> some View {

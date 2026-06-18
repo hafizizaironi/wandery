@@ -64,9 +64,37 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Fields on users/{uid} written ONLY by Cloud Functions / triggers via the
+    // admin SDK (which bypasses these rules). The client never writes them —
+    // the `record*` increment helpers in UserStatsService were dead code and
+    // have been removed — so denying client writes here can't break the app; it
+    // stops a user from forging achievement / leaderboard / hunt-reputation
+    // counters (cafes/stalls/restaurants are shown to strangers on the scanned
+    // Wandery-code card).
+    //
+    // STAGED FOLLOW-UP: once the app build that routes phone verification
+    // through the `commitVerifiedPhone` callable is live, add 'phoneHash' to
+    // BOTH lists below to close the phone-hash impersonation hole. Do NOT add it
+    // before then — older installs still write phoneHash directly during phone
+    // verification and would break. See SECURITY_REVIEW.md (H2).
+    function touchesServerOwnedStats() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['pioneerCount', 'uniquePlacesVisited', 'topAreaPlaceCount',
+                 'areaPlaceCounts', 'reactionsReceived', 'topPlaceVisitCount',
+                 'restaurantsVisited', 'cafesVisited', 'stallsVisited',
+                 'photosShared', 'nightCheckIns', 'friendsHunted']);
+    }
     match /users/{uid} {
       allow read: if signedIn();
-      allow create, update: if isSelf(uid);
+      // On create the doc doesn't exist yet, so check the incoming keys
+      // directly; on update, diff against the stored doc.
+      allow create: if isSelf(uid)
+        && !request.resource.data.keys()
+             .hasAny(['pioneerCount', 'uniquePlacesVisited', 'topAreaPlaceCount',
+                      'areaPlaceCounts', 'reactionsReceived', 'topPlaceVisitCount',
+                      'restaurantsVisited', 'cafesVisited', 'stallsVisited',
+                      'photosShared', 'nightCheckIns', 'friendsHunted']);
+      allow update: if isSelf(uid) && !touchesServerOwnedStats();
       allow delete: if false;
 
       match /friends/{friendUid} {
@@ -177,6 +205,11 @@ service cloud.firestore {
     match /friendRequests/{requestId} {
       allow read: if signedIn() &&
         (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      // STAGED: once the app build that routes sends through the
+      // `sendFriendRequest` callable is live, replace this create rule with
+      // `if false` (server-owned, like the friends subcollection) to kill the
+      // direct client-write spam path. The callable + resolveWanderyCode use the
+      // admin SDK and bypass rules, so they keep working. See SECURITY_REVIEW.md (M5).
       allow create: if signedIn()
         && request.resource.data.fromUid == request.auth.uid
         && request.resource.data.status == "pending";

@@ -47,6 +47,56 @@ struct PostMedia: Identifiable, Equatable {
     }
 }
 
+/// The Spotify song a poster attached as the post's background music. One per
+/// post (not per media). `previewURL` is Spotify's 30-second `preview_url`
+/// clip — stored at post time so VIEWERS can play it with a plain `AVPlayer`
+/// without needing their own Spotify connection. `trackId` is kept so a future
+/// server job can re-resolve a rotated/expired preview URL.
+struct PostMusic: Equatable, Codable {
+    let trackId: String
+    let trackName: String
+    let artistName: String
+    let artworkURL: String?
+    let previewURL: String
+
+    /// Firestore map shape written into the post document.
+    var firestoreDict: [String: Any] {
+        var d: [String: Any] = [
+            "trackId": trackId,
+            "trackName": trackName,
+            "artistName": artistName,
+            "previewURL": previewURL,
+        ]
+        if let artworkURL { d["artworkURL"] = artworkURL }
+        return d
+    }
+
+    init(trackId: String, trackName: String, artistName: String,
+         artworkURL: String?, previewURL: String) {
+        self.trackId = trackId
+        self.trackName = trackName
+        self.artistName = artistName
+        self.artworkURL = artworkURL
+        self.previewURL = previewURL
+    }
+
+    /// Decode from a post document's nested `music` map. Requires a non-empty
+    /// `previewURL` — a music attachment with nothing playable is treated as
+    /// absent so the feed doesn't render a dead chip.
+    init?(dict: [String: Any]) {
+        guard let trackId = dict["trackId"] as? String,
+              let trackName = dict["trackName"] as? String,
+              let artistName = dict["artistName"] as? String,
+              let previewURL = dict["previewURL"] as? String, !previewURL.isEmpty
+        else { return nil }
+        self.trackId = trackId
+        self.trackName = trackName
+        self.artistName = artistName
+        self.artworkURL = dict["artworkURL"] as? String
+        self.previewURL = previewURL
+    }
+}
+
 struct FriendPost: Identifiable, Equatable {
     let id: String
     let authorId: String
@@ -85,6 +135,11 @@ struct FriendPost: Identifiable, Equatable {
     /// All media items in display order (always ≥1). Legacy single-media
     /// docs are synthesized into a one-item array from the top-level fields.
     let media: [PostMedia]
+
+    /// Optional Spotify song attached as the post's background music. When set,
+    /// the feed plays `music.previewURL` while this post is on-screen and any
+    /// video in the post is forced muted (the song is the post's audio).
+    let music: PostMusic?
 
     var isVideo: Bool { media.first?.isVideo ?? (mediaType == "video") }
     var isMultiMedia: Bool { media.count > 1 }
@@ -135,7 +190,8 @@ struct FriendPost: Identifiable, Equatable {
         containsFaces: Bool? = nil,
         restricted: Bool = false,
         recipientUids: [String] = [],
-        media: [PostMedia]? = nil
+        media: [PostMedia]? = nil,
+        music: PostMusic? = nil
     ) {
         self.id = id
         self.authorId = authorId
@@ -157,6 +213,7 @@ struct FriendPost: Identifiable, Equatable {
             placeId: placeId, placeName: placeName,
             caption: caption.isEmpty ? nil : caption
         )]
+        self.music = music
     }
 
     init?(document: QueryDocumentSnapshot) {
@@ -201,6 +258,14 @@ struct FriendPost: Identifiable, Equatable {
             media = parsed.isEmpty ? [synthesized] : parsed
         } else {
             media = [synthesized]
+        }
+        // Optional attached song. `PostMusic.init?(dict:)` returns nil unless a
+        // playable `previewURL` is present, so a half-written/legacy map decodes
+        // to no music rather than a dead chip.
+        if let rawMusic = d["music"] as? [String: Any] {
+            music = PostMusic(dict: rawMusic)
+        } else {
+            music = nil
         }
     }
 }

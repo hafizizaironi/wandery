@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 @preconcurrency import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 
 /// Listener + writer for the owner-only `userPrivate/{uid}` doc plus the
 /// `lastSeenAt` field on the public `users/{uid}` doc. Mirrors the
@@ -210,7 +211,6 @@ final class UserPrivateService {
             throw NSError(domain: "UserPrivateService", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Not signed in."])
         }
-        let hash = Self.phoneHash(phoneE164)
         let now = FieldValue.serverTimestamp()
 
         try await db.collection("userPrivate").document(uid).setData([
@@ -222,9 +222,21 @@ final class UserPrivateService {
             "updatedAt":              now,
         ], merge: true)
 
-        try await db.collection("users").document(uid).setData([
-            "phoneHash": hash,
-        ], merge: true)
+        // The cross-readable `users/{uid}.phoneHash` is now written SERVER-SIDE
+        // by the `commitVerifiedPhone` callable, which derives it from the
+        // VERIFIED phone number on our Auth token — not from this client — which
+        // closes the phone-hash impersonation hole. Force-refresh the ID token
+        // first so the `phone_number` claim is present right after linking.
+        // Best-effort: a failure here only delays contact-matching (recoverable
+        // on a later verify) and must not strand phone onboarding.
+        do {
+            _ = try await Auth.auth().currentUser?.getIDTokenResult(forcingRefresh: true)
+            _ = try await Functions.functions().httpsCallable("commitVerifiedPhone").call()
+        } catch {
+            #if DEBUG
+            print("[UserPrivate] commitVerifiedPhone failed (will retry on next verify): \(error.localizedDescription)")
+            #endif
+        }
     }
 
     /// SHA-256(E.164) as a lowercase hex string. Normalise upstream — the

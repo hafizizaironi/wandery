@@ -38,8 +38,8 @@ final class SocialService {
     /// so the in-app DI ring can splash/ripple in reaction. Bumped by the view.
     private(set) var cardImpactTick = 0
     func signalCardImpact() { cardImpactTick += 1 }
-    /// Drafts + audience kept so a failed upload can be retried verbatim.
-    private var savedUpload: (drafts: [MediaDraft], recipients: [String]?)?
+    /// Drafts + audience + attached song kept so a failed upload can be retried verbatim.
+    private var savedUpload: (drafts: [MediaDraft], recipients: [String]?, music: PostMusic?)?
 
     /// Raw posts from Firestore before blocked-user filtering. Kept private
     /// so callers always see the filtered `feedPosts`. Re-applied through
@@ -557,15 +557,13 @@ final class SocialService {
         if friendIds.contains(toUid) {
             throw SocialError.alreadyFriends(username: lower)
         }
-        let fromName = profile?.username ?? (Auth.auth().currentUser?.email ?? "user")
-        try await db.collection("friendRequests").addDocument(data: [
-            "fromUid": fromUid,
-            "toUid": toUid,
-            "fromUsername": fromName,
-            "toUsername": lower,
-            "status": "pending",
-            "createdAt": FieldValue.serverTimestamp(),
-        ])
+        // Routed through the `sendFriendRequest` callable so the server can
+        // rate-limit, cap outstanding requests, and enforce block / dedup
+        // checks. The callable re-reads usernames, so we only pass the resolved
+        // target uid. (After the rules lock `friendRequests` create to
+        // server-only, this becomes the only path that works.)
+        let callable = Functions.functions().httpsCallable("sendFriendRequest")
+        _ = try await callable.call(["toUid": toUid])
     }
 
     func acceptRequest(_ request: FriendRequestModel) async throws {
@@ -685,8 +683,8 @@ final class SocialService {
     /// on a service-owned Task that outlives the capture view. On success the
     /// post lands in the feed via the existing optimistic prepend; on failure
     /// `pendingUploadError` is set (and the drafts are kept for `retryUpload`).
-    func enqueuePost(drafts: [MediaDraft], recipientUids: [String]?) {
-        savedUpload = (drafts, recipientUids)
+    func enqueuePost(drafts: [MediaDraft], recipientUids: [String]?, music: PostMusic? = nil) {
+        savedUpload = (drafts, recipientUids, music)
         pendingUploadError = nil
         isUploadingPost = true
         uploadProgress = 0
@@ -694,10 +692,10 @@ final class SocialService {
         Task { await runUpload() }
     }
 
-    /// Re-run the last failed upload with the saved drafts/audience.
+    /// Re-run the last failed upload with the saved drafts/audience/song.
     func retryUpload() {
         guard let s = savedUpload else { return }
-        enqueuePost(drafts: s.drafts, recipientUids: s.recipients)
+        enqueuePost(drafts: s.drafts, recipientUids: s.recipients, music: s.music)
     }
 
     func dismissUploadError() { pendingUploadError = nil }
@@ -705,7 +703,7 @@ final class SocialService {
     private func runUpload() async {
         guard let s = savedUpload else { return }
         do {
-            try await uploadAndCreatePost(drafts: s.drafts, recipientUids: s.recipients)
+            try await uploadAndCreatePost(drafts: s.drafts, recipientUids: s.recipients, music: s.music)
             uploadProgress = 1
             isUploadingPost = false
             savedUpload = nil

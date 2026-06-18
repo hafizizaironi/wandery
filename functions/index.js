@@ -1,5 +1,6 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
+const crypto = require("crypto");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const { logger } = require("firebase-functions/v2");
@@ -10,6 +11,59 @@ admin.initializeApp();
 // Replicate API token — injected at runtime from Firebase Secret Manager.
 // Set via:  firebase functions:secrets:set REPLICATE_API_TOKEN --project look-cafe
 const REPLICATE_API_TOKEN = defineSecret("REPLICATE_API_TOKEN");
+
+// ── App Check enforcement flag ────────────────────────────────────────────
+// SHIPPED AS false so deploying these functions never locks out a client that
+// isn't yet attaching App Check tokens. Rollout: (1) confirm Firebase console
+// → App Check shows ~100% verified requests for the callables, THEN (2) set
+// this to true and redeploy. See SECURITY_REVIEW.md (H4).
+const ENFORCE_APP_CHECK = false;
+
+// ── Generic per-user rate limiter ─────────────────────────────────────────
+// Stored in the server-only `rateLimits/{uid__action}` collection (no security
+// rule grants client access; the admin SDK used here bypasses rules). Throws
+// `resource-exhausted` past `perDay` calls in a UTC day or within `cooldownMs`
+// of the previous call. Pass either bound (or both); omit one to skip it.
+async function enforceUserRateLimit(uid, action, { perDay = null, cooldownMs = null } = {}) {
+  const db = admin.firestore();
+  const ref = db.collection("rateLimits").doc(`${uid}__${action}`);
+  const today = new Date().toISOString().slice(0, 10);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const d = snap.exists ? snap.data() : {};
+    const count = d.day === today ? (d.count || 0) : 0;
+    const lastAtMs = d.lastAt && d.lastAt.toMillis ? d.lastAt.toMillis() : 0;
+    if (perDay != null && count >= perDay) {
+      throw new HttpsError("resource-exhausted",
+        `Daily limit reached for ${action}. Try again tomorrow.`);
+    }
+    if (cooldownMs != null && Date.now() - lastAtMs < cooldownMs) {
+      throw new HttpsError("resource-exhausted",
+        "You're doing that a bit too fast — give it a moment.");
+    }
+    tx.set(ref, {
+      day: today,
+      count: count + 1,
+      lastAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+}
+
+// Server-side whitelist of analytics event/area names (mirror of the client
+// AnalyticsEvent / AnalyticsArea enums in AnalyticsService.swift). Only these
+// become map keys in the shared adminAnalytics rollup, so a forged event can't
+// inject arbitrary keys or bloat the doc toward Firestore's 1 MiB limit.
+const KNOWN_ANALYTICS_EVENTS = new Set([
+  "post_publish", "open_messages", "send_message", "react_post", "add_friend",
+  "accept_friend", "open_wandery_code", "scan_wandery_code", "save_place",
+  "open_trending", "recenter_map", "toggle_circle", "open_place_detail",
+  "open_google_maps", "open_waze", "invite_contact", "edit_profile",
+  "open_library", "tag_place", "open_widget_tutorial",
+]);
+const KNOWN_ANALYTICS_AREAS = new Set([
+  "map", "hero", "profile", "chat", "camera", "placeDetail",
+  "friends", "myHunt", "trending", "code",
+]);
 
 async function sendToUser(uid, title, body, data = {}, options = {}) {
   const snap = await admin
@@ -443,10 +497,12 @@ exports.onAnalyticsEvent = functions.firestore
     };
     // Only real button actions feed the leaderboard; screen-view / dwell
     // pseudo-events are reflected in `areas` instead.
-    if (event && kind === "button") agg.events = { [event]: inc(1) };
-    if (area && kind === "screen_view") {
+    if (event && kind === "button" && KNOWN_ANALYTICS_EVENTS.has(event)) {
+      agg.events = { [event]: inc(1) };
+    }
+    if (area && KNOWN_ANALYTICS_AREAS.has(area) && kind === "screen_view") {
       agg.areas = { [area]: { views: inc(1) } };
-    } else if (area && kind === "screen_dwell") {
+    } else if (area && KNOWN_ANALYTICS_AREAS.has(area) && kind === "screen_dwell") {
       const secs = Number(e.value);
       const safe = Number.isFinite(secs) && secs > 0 ? Math.min(secs, 3600) : 0;
       agg.areas = { [area]: { dwellSeconds: inc(safe), dwellCount: inc(1) } };
@@ -524,8 +580,8 @@ exports.onReplyEngagement = functions.firestore
 // Body is chosen to match what the client renders in the inbox preview
 // so the user reads the same string in both places.
 //
-// NOTE: not deployed yet. Run `firebase deploy --only functions:onNewMessage`
-// from the repo root once you're ready to enable chat push.
+// NOTE: changes here take effect only after
+// `firebase deploy --only functions:onNewMessage` from the repo root.
 exports.onNewMessage = functions.firestore
   .document("conversations/{convId}/messages/{msgId}")
   .onCreate(async (snap, context) => {
@@ -561,17 +617,25 @@ exports.onNewMessage = functions.firestore
       });
     }
 
-    // Generic body — the server can't read E2EE message text. The recipient's
-    // Notification Service Extension decrypts the ciphertext on-device (only
-    // while the phone is unlocked, via the key's keychain accessibility) and
-    // rewrites the body; otherwise this generic body stands.
+    // Notification body, built to match the inbox preview string. With message-
+    // body encryption OFF (encv 0 — the current default) the text is plaintext
+    // server-side, so we surface the real message for a richer banner. Still-
+    // encrypted history (encv >= 1) keeps a generic body and the recipient's
+    // Notification Service Extension rewrites it on-device after decrypting.
+    const encv = m.encv || 0;
+    const trim = (s, max = 140) => {
+      const t = (s || "").trim();
+      return t.length > max ? t.slice(0, max - 1) + "…" : t;
+    };
+    const canShowText =
+      encv === 0 && typeof m.text === "string" && m.text.trim().length > 0;
     let body;
     if (m.kind === "reaction") {
-      body = "Reacted to your post";
+      body = `Reacted ${m.emoji || "•"} to your post`;
     } else if (m.kind === "reply") {
-      body = "Replied to your post";
+      body = canShowText ? `Replied: ${trim(m.text)}` : "Replied to your post";
     } else {
-      body = "New message";
+      body = canShowText ? trim(m.text) : "New message";
     }
 
     // The extension decrypts on-device. We send the ciphertext plus the key
@@ -588,7 +652,6 @@ exports.onNewMessage = functions.firestore
       convId: context.params.convId,
       senderId,
     };
-    const encv = m.encv || 0;
     let mutable = false;
     if (m.kind === "text" && typeof m.text === "string") {
       if (encv >= 2) {
@@ -641,6 +704,7 @@ exports.generateCharacter = onCall(
     secrets: [REPLICATE_API_TOKEN],
     timeoutSeconds: 60,
     memory: "512MiB",
+    enforceAppCheck: ENFORCE_APP_CHECK,
   },
   async (request) => {
     const uid = request.auth?.uid;
@@ -657,6 +721,41 @@ exports.generateCharacter = onCall(
     if (typeof seed !== "string" || seed.length === 0 || seed.length > 200) {
       throw new HttpsError("invalid-argument", "Invalid seed.");
     }
+
+    // ── Abuse / cost guard ────────────────────────────────────────────────
+    // Each call bills a paid Replicate generation + a public Storage write,
+    // and there is no App Check enforcement, so a single account could loop
+    // this into an unbounded spend. Enforce a per-user daily quota and a short
+    // cooldown atomically in a transaction. genQuota/{uid} is server-only (no
+    // Firestore rule grants client access; the admin SDK bypasses rules).
+    const GEN_MAX_PER_DAY = 10;
+    const GEN_COOLDOWN_MS = 15 * 1000;
+    const db = admin.firestore();
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+    const quotaRef = db.collection("genQuota").doc(uid);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(quotaRef);
+      const q = snap.exists ? snap.data() : {};
+      const count = q.day === today ? (q.count || 0) : 0;
+      const lastAtMs = q.lastAt?.toMillis ? q.lastAt.toMillis() : 0;
+      if (count >= GEN_MAX_PER_DAY) {
+        throw new HttpsError(
+          "resource-exhausted",
+          "Daily character-generation limit reached. Try again tomorrow.",
+        );
+      }
+      if (Date.now() - lastAtMs < GEN_COOLDOWN_MS) {
+        throw new HttpsError(
+          "resource-exhausted",
+          "You're generating too fast — give it a few seconds.",
+        );
+      }
+      tx.set(quotaRef, {
+        day: today,
+        count: count + 1,
+        lastAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
 
     logger.info("generateCharacter: start", {
       uid,
@@ -754,10 +853,12 @@ exports.generateCharacter = onCall(
 //   areaPlaceCounts      ← { geohash5 → count } map
 //   reactionsReceived    ← total reactions across this user's posts
 exports.backfillMyStats = onCall(
-  { timeoutSeconds: 60, memory: "256MiB" },
+  { timeoutSeconds: 60, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    // Expensive read fan-out over the caller's whole history — cap to once / 6h.
+    await enforceUserRateLimit(uid, "backfillMyStats", { cooldownMs: 6 * 60 * 60 * 1000 });
     const db = admin.firestore();
 
     // Run the four queries in parallel — they're independent.
@@ -895,7 +996,7 @@ exports.backfillMyStats = onCall(
 const FRIENDS_MAX = 20;
 
 exports.acceptFriendRequest = onCall(
-  { timeoutSeconds: 15, memory: "256MiB" },
+  { timeoutSeconds: 15, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in to accept.");
@@ -955,8 +1056,79 @@ exports.acceptFriendRequest = onCall(
   },
 );
 
+// ─── Send friend request (server-owned to stop spam) ─────────────────────
+// Routes friend-request creation through the server so we can rate-limit, cap
+// outstanding requests, and enforce block / already-friends / dedup checks the
+// rules can't express. The client passes the resolved target uid; usernames are
+// re-read here so the denormalized display fields can't be forged. STAGED: once
+// the app build shipping this is live, set the `friendRequests` create rule to
+// `if false` so the old direct-write spam path is denied. See SECURITY_REVIEW.md (M5).
+exports.sendFriendRequest = onCall(
+  { timeoutSeconds: 10, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const toUid = request.data?.toUid;
+    if (typeof toUid !== "string" || toUid.length === 0) {
+      throw new HttpsError("invalid-argument", "Missing toUid.");
+    }
+    if (toUid === uid) {
+      throw new HttpsError("invalid-argument", "You can't add yourself.");
+    }
+
+    // Throttle outbound sends (the anti-spam point of this callable).
+    await enforceUserRateLimit(uid, "sendFriendRequest", { perDay: 50, cooldownMs: 1500 });
+
+    const db = admin.firestore();
+    const meRef = db.collection("users").doc(uid);
+    const targetRef = db.collection("users").doc(toUid);
+
+    const targetSnap = await targetRef.get();
+    if (!targetSnap.exists) {
+      throw new HttpsError("not-found", "That user doesn't exist.");
+    }
+
+    // Blocks (either direction) → refuse.
+    const [iBlockedThem, theyBlockedMe] = await Promise.all([
+      meRef.collection("blockedUsers").doc(toUid).get(),
+      targetRef.collection("blockedUsers").doc(uid).get(),
+    ]);
+    if (iBlockedThem.exists || theyBlockedMe.exists) {
+      throw new HttpsError("permission-denied", "Can't add this person.");
+    }
+
+    // Already friends?
+    const friendDoc = await meRef.collection("friends").doc(toUid).get();
+    if (friendDoc.exists) return { status: "alreadyFriends" };
+
+    // Dedup + outbound cap against my pending requests.
+    const myOutbound = await db.collection("friendRequests")
+      .where("fromUid", "==", uid).where("status", "==", "pending").get();
+    if (myOutbound.docs.some((d) => d.data().toUid === toUid)) {
+      return { status: "requested" };
+    }
+    if (myOutbound.size >= 50) {
+      throw new HttpsError("resource-exhausted",
+        "You have too many pending friend requests. Cancel a few first.");
+    }
+
+    // Denormalized display fields read server-side (never trusted from client).
+    const myUsername = (await meRef.get()).data()?.username || "";
+    const targetUsername = targetSnap.data()?.username || "";
+    await db.collection("friendRequests").add({
+      fromUid: uid,
+      toUid,
+      fromUsername: myUsername,
+      toUsername: targetUsername,
+      status: "pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return { status: "requested" };
+  },
+);
+
 exports.removeFriend = onCall(
-  { timeoutSeconds: 10, memory: "256MiB" },
+  { timeoutSeconds: 10, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
@@ -968,15 +1140,16 @@ exports.removeFriend = onCall(
       throw new HttpsError("invalid-argument", "Cannot remove yourself.");
     }
 
+    // Delete both edges atomically so a concurrent accept can't leave the
+    // friend graph one-sided. Each edge is always the caller's own, so this
+    // can't sever a third party's unrelated friendships.
     const db = admin.firestore();
-    const batch = db.batch();
-    batch.delete(
-      db.collection("users").doc(uid).collection("friends").doc(otherUid),
-    );
-    batch.delete(
-      db.collection("users").doc(otherUid).collection("friends").doc(uid),
-    );
-    await batch.commit();
+    const myEdge = db.collection("users").doc(uid).collection("friends").doc(otherUid);
+    const theirEdge = db.collection("users").doc(otherUid).collection("friends").doc(uid);
+    await db.runTransaction(async (tx) => {
+      tx.delete(myEdge);
+      tx.delete(theirEdge);
+    });
     return { ok: true };
   },
 );
@@ -1000,7 +1173,7 @@ function normalizeName(s) {
 }
 
 exports.findOrCreatePlace = onCall(
-  { timeoutSeconds: 15, memory: "256MiB" },
+  { timeoutSeconds: 15, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) {
@@ -1067,6 +1240,10 @@ exports.findOrCreatePlace = onCall(
 
     // 3) Create — transaction re-checks googlePlaceId to close the race.
     // On conflict (RACE_LOST), re-read the winning row outside the txn.
+    // Cap brand-new place creation per user/day. Only reached on an actual
+    // create (dedup hits above already returned), so tagging existing places
+    // is unaffected; this stops global-namespace spam + pioneerCount inflation.
+    await enforceUserRateLimit(uid, "createPlace", { perDay: 30 });
     const RACE_LOST = "race-lost";
     const newRef = placesCol.doc();
     const geohash = geofire.geohashForLocation(center);
@@ -1142,7 +1319,7 @@ exports.findOrCreatePlace = onCall(
 // thousands of messages + posts. The function streams batches of 400 to
 // stay under Firestore's 500-op batch limit.
 exports.deleteMyAccount = onCall(
-  { timeoutSeconds: 540, memory: "512MiB" },
+  { timeoutSeconds: 540, memory: "512MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
@@ -1223,6 +1400,27 @@ exports.deleteMyAccount = onCall(
       ...outboundRequests.docs.map((d) => d.ref),
     ]);
 
+    // 6b. Wandery code identity (server-owned). Without this, the deleted
+    //     user's scannable accountId still reverse-resolves via
+    //     resolveWanderyCode to a now-missing user. Read the accountId off the
+    //     userCodes doc first so we can also drop the reverse-lookup entry.
+    const codeRef = db.collection("userCodes").doc(uid);
+    const codeSnap = await codeRef.get();
+    const accountId = codeSnap.data()?.accountId;
+    const codeRefs = [codeRef];
+    if (accountId != null) {
+      codeRefs.push(db.collection("accountIds").doc(String(accountId)));
+    }
+    await deleteAll(codeRefs);
+
+    // 6c. Remaining owner-only subcollections. Deleting the parent user doc
+    //     does NOT delete subcollections in Firestore, so they'd orphan.
+    for (const sub of ["visits", "discover", "blockedUsers",
+      "savedPlaces", "hiddenPlaces"]) {
+      const subSnap = await userRef.collection(sub).get();
+      await deleteAll(subSnap.docs.map((d) => d.ref));
+    }
+
     // 7. Free the username and then delete the user doc itself.
     if (usernameLower) {
       await db.collection("usernames").doc(usernameLower).delete();
@@ -1252,7 +1450,7 @@ exports.deleteMyAccount = onCall(
 // Rules + client filters use users/{uid}/blockedUsers/{otherUid} to suppress
 // the blocked user's posts in the feed and their messages in the inbox.
 exports.blockUser = onCall(
-  { timeoutSeconds: 10, memory: "256MiB" },
+  { timeoutSeconds: 10, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
@@ -1264,27 +1462,23 @@ exports.blockUser = onCall(
       throw new HttpsError("invalid-argument", "Cannot block yourself.");
     }
 
+    // Write the block record + tear down both friendship edges atomically so
+    // a concurrent accept can't resurrect a one-sided edge after a block.
     const db = admin.firestore();
-    const batch = db.batch();
-    batch.set(
-      db.collection("users").doc(uid)
-        .collection("blockedUsers").doc(otherUid),
-      { blockedAt: admin.firestore.FieldValue.serverTimestamp() },
-    );
-    // Friendship goes away in both directions.
-    batch.delete(
-      db.collection("users").doc(uid).collection("friends").doc(otherUid),
-    );
-    batch.delete(
-      db.collection("users").doc(otherUid).collection("friends").doc(uid),
-    );
-    await batch.commit();
+    const blockRef = db.collection("users").doc(uid).collection("blockedUsers").doc(otherUid);
+    const myEdge = db.collection("users").doc(uid).collection("friends").doc(otherUid);
+    const theirEdge = db.collection("users").doc(otherUid).collection("friends").doc(uid);
+    await db.runTransaction(async (tx) => {
+      tx.set(blockRef, { blockedAt: admin.firestore.FieldValue.serverTimestamp() });
+      tx.delete(myEdge);
+      tx.delete(theirEdge);
+    });
     return { ok: true };
   },
 );
 
 exports.unblockUser = onCall(
-  { timeoutSeconds: 10, memory: "256MiB" },
+  { timeoutSeconds: 10, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
@@ -1296,6 +1490,35 @@ exports.unblockUser = onCall(
       .collection("users").doc(uid)
       .collection("blockedUsers").doc(otherUid)
       .delete();
+    return { ok: true };
+  },
+);
+
+// ─── Commit verified phone (server-derived hash) ─────────────────────────
+// The cross-readable `users/{uid}.phoneHash` (the join key for contact-based
+// friend matching) is derived HERE from the caller's VERIFIED phone number on
+// their Auth token — never from client-supplied data. This closes the
+// impersonation hole where a user could write SHA-256(someone-else's-number)
+// as their own phoneHash and hijack contact matches. The client calls this
+// right after linking phone auth (force-refreshing the ID token first so the
+// `phone_number` claim is present). The SHA-256(E.164) hex MUST match the
+// client's contact-hash format (UserPrivateService.phoneHash) so matching works.
+exports.commitVerifiedPhone = onCall(
+  { timeoutSeconds: 10, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
+    const phone = request.auth.token?.phone_number;
+    if (typeof phone !== "string" || phone.length === 0) {
+      throw new HttpsError("failed-precondition",
+        "No verified phone on your account yet.");
+    }
+    const hash = crypto.createHash("sha256").update(phone, "utf8").digest("hex");
+    const db = admin.firestore();
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    await db.collection("users").doc(uid).set({ phoneHash: hash }, { merge: true });
+    await db.collection("userPrivate").doc(uid).set(
+      { phoneVerifiedAt: now, updatedAt: now }, { merge: true });
     return { ok: true };
   },
 );
@@ -1313,7 +1536,7 @@ const ALLOWED_REPORT_REASONS = new Set([
 ]);
 
 exports.reportContent = onCall(
-  { timeoutSeconds: 10, memory: "256MiB" },
+  { timeoutSeconds: 10, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const reporterUid = request.auth?.uid;
     if (!reporterUid) throw new HttpsError("unauthenticated", "Sign in.");
@@ -1333,6 +1556,24 @@ exports.reportContent = onCall(
       throw new HttpsError("invalid-argument", "Invalid reason.");
     }
 
+    const db = admin.firestore();
+
+    // Per-reporter throttle so the moderation queue can't be flooded.
+    await enforceUserRateLimit(reporterUid, "reportContent", { perDay: 50, cooldownMs: 3000 });
+
+    // Dedup: if this reporter already has an OPEN report against the same
+    // target, don't pile on — treat as success. (Equality-only query, served
+    // by single-field indexes; no composite index needed.)
+    const dupe = await db.collection("reports")
+      .where("reporterUid", "==", reporterUid)
+      .where("targetId", "==", targetId)
+      .where("status", "==", "open")
+      .limit(1)
+      .get();
+    if (!dupe.empty) {
+      return { ok: true, deduped: true };
+    }
+
     const report = {
       reporterUid,
       targetType,
@@ -1344,7 +1585,7 @@ exports.reportContent = onCall(
     if (details && details.trim().length > 0) {
       report.details = details.slice(0, 500);
     }
-    await admin.firestore().collection("reports").add(report);
+    await db.collection("reports").add(report);
     return { ok: true };
   },
 );
@@ -1466,11 +1707,18 @@ function classifyPhoto(data) {
 }
 
 exports.discoverFeed = onCall(
-  { timeoutSeconds: 60, memory: "512MiB" },
+  { timeoutSeconds: 60, memory: "512MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
     const force = request.data?.force === true;
+
+    // A forced refresh bypasses the cache and re-runs a thousands-of-reads
+    // fan-out — limit how often one user can force it. The normal cache-served
+    // path stays unlimited.
+    if (force) {
+      await enforceUserRateLimit(uid, "discoverForce", { cooldownMs: 2 * 60 * 1000 });
+    }
 
     const db = admin.firestore();
     const cacheRef = db.collection("users").doc(uid).collection("discover").doc("cache");
@@ -1789,7 +2037,7 @@ function randomAccountId() {
 // call. The id and its reverse lookup are server-owned (clients can never read
 // `userCodes`/`accountIds` directly), so an id can't be forged or claimed.
 exports.ensureWanderyCode = onCall(
-  { timeoutSeconds: 15, memory: "256MiB" },
+  { timeoutSeconds: 15, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
@@ -1833,7 +2081,7 @@ exports.ensureWanderyCode = onCall(
 // Mark the caller as actively presenting their code (≤60s). Scans during this
 // window add instantly; outside it they become a request to approve.
 exports.beginPresenting = onCall(
-  { timeoutSeconds: 10, memory: "128MiB" },
+  { timeoutSeconds: 10, memory: "128MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
@@ -1851,7 +2099,7 @@ exports.beginPresenting = onCall(
 //   • target is presenting        → instant mutual add → { status: "added" }
 //   • otherwise                   → create a friend request → { status: "requested" }
 exports.resolveWanderyCode = onCall(
-  { timeoutSeconds: 15, memory: "256MiB" },
+  { timeoutSeconds: 15, memory: "256MiB", enforceAppCheck: ENFORCE_APP_CHECK },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in.");
@@ -1859,6 +2107,10 @@ exports.resolveWanderyCode = onCall(
     if (typeof accountId !== "number" || !Number.isFinite(accountId)) {
       throw new HttpsError("invalid-argument", "Missing accountId.");
     }
+
+    // Resolving a code returns a profile AND can fire a friend request, so it's
+    // a lookup + request oracle — rate-limit how fast/often one caller probes.
+    await enforceUserRateLimit(uid, "resolveWanderyCode", { perDay: 100, cooldownMs: 2000 });
 
     const db = admin.firestore();
     const idSnap = await db.collection("accountIds").doc(String(accountId)).get();
@@ -1934,6 +2186,11 @@ exports.resolveWanderyCode = onCall(
       .where("fromUid", "==", uid).where("status", "==", "pending").get();
     if (myOutbound.docs.some((d) => d.data().toUid === targetUid)) {
       return { status: "requested", profile };
+    }
+    // Cap outstanding outbound requests to curb request / push-notification spam.
+    if (myOutbound.size >= 50) {
+      throw new HttpsError("resource-exhausted",
+        "You have too many pending friend requests. Cancel a few first.");
     }
 
     const myProfile = (await meRef.get()).data() || {};

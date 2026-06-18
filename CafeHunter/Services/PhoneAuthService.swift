@@ -86,7 +86,14 @@ enum PhoneAuthService {
             _ = try await user.link(with: credential)
             UserDefaults.standard.removeObject(forKey: Self.verificationIDKey)
         } catch let error as NSError {
-            throw map(error)
+            let mapped = map(error)
+            // A dead/expired verificationID is useless for retry — clear it so a
+            // stale token doesn't linger in UserDefaults (and device backups).
+            // Keep it for a mistyped code (.invalidCode) so the user can retry.
+            if mapped == .codeExpired {
+                UserDefaults.standard.removeObject(forKey: Self.verificationIDKey)
+            }
+            throw mapped
         }
     }
 

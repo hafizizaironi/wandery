@@ -21,16 +21,16 @@ final class NotificationService: NSObject, ObservableObject {
         Messaging.messaging().delegate = self
     }
 
-    func requestAuthorizationAndRegister() {
-        // Register for remote notifications unconditionally — silent-push
-        // (used by Firebase Phone Auth verification) only needs an APNs
-        // device token, not visible-notification permission. Gating this
-        // on `granted` would break Phone Auth for any user who declines
-        // the alerts prompt.
+    /// Register for remote notifications unconditionally at launch — silent
+    /// push (used by Firebase Phone Auth verification) only needs an APNs
+    /// device token, not visible-notification permission, so this never shows
+    /// a prompt. The VISIBLE alert permission is requested separately, one card
+    /// at a time, by `PermissionsManager.requestNotifications()` in the
+    /// post-onboarding priming queue — keeping it out of the launch-time burst.
+    func registerForRemoteNotifications() {
         DispatchQueue.main.async {
             UIApplication.shared.registerForRemoteNotifications()
         }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in }
     }
 
     func saveFCMToken(_ token: String?) {

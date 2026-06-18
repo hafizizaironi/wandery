@@ -1,23 +1,45 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+
+    // Per-object upload size cap. A backstop against large-file cost abuse and
+    // using the bucket as free hosting. `request.resource` is null on delete,
+    // so deletes are unaffected. NOTE: these are generous backstops, not tight
+    // limits — measure your real media sizes and tune down. Content-TYPE is NOT
+    // enforced here on purpose: the client uploads images via `putData(_,
+    // metadata: nil)`, which lands as `application/octet-stream`, so a
+    // `contentType.matches('image/.*')` rule would reject legitimate uploads
+    // from already-installed apps. Enforcing type requires first setting
+    // StorageMetadata(contentType:) client-side and shipping that build — see
+    // SECURITY_REVIEW.md (H3).
+    function withinSize(maxBytes) {
+      return request.resource == null || request.resource.size < maxBytes;
+    }
+
+    // Shared place photos. Any signed-in user may contribute (places are a
+    // shared namespace), but capped in size. Owner-scoping / callable-mediated
+    // uploads to stop cross-overwrite are tracked in SECURITY_REVIEW.md (H3).
     match /places/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow write: if request.auth != null && withinSize(20 * 1024 * 1024);
     }
+    // Social media (images + short videos), owner-only writes.
     match /social/{uid}/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && withinSize(250 * 1024 * 1024);
     }
     // Profile photos: one folder per user, versioned filenames (new URL per upload).
     match /avatars/{uid}/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && withinSize(10 * 1024 * 1024);
     }
     // Legacy flat object: avatars/{uid}.jpg
     match /avatars/{legacy} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null && legacy == request.auth.uid + '.jpg';
+      allow write: if request.auth != null && legacy == request.auth.uid + '.jpg'
+        && withinSize(10 * 1024 * 1024);
     }
   }
 }

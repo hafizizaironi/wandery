@@ -27,6 +27,20 @@ final class ConversationService {
 
     // MARK: - E2EE
 
+    /// Master switch for message-body encryption.
+    ///
+    /// Disabled 2026-06-08: per-conversation key (CEK) recovery after a device
+    /// reinstall / new device is still unreliable, so received messages too
+    /// often render the "🔒 Can't decrypt" placeholder. While this is `false`,
+    /// NEW messages are sent in plaintext (`encv 0`, `lastMessageEnc false`).
+    ///
+    /// This gates the SEND path only — decryption of already-encrypted history
+    /// (`encv 1/2`), identity-key publication, the shared-keychain mirror, and
+    /// the notification-service decrypt path all stay live, so nothing already
+    /// sent becomes unreadable and re-enabling is just flipping this back to
+    /// `true` once CEK re-wrap recovery is solid.
+    static let encryptionEnabled = false
+
     /// Per-conversation content key (CEK) cache (convId → key). The CEK is
     /// **stable for the life of the thread** (encv 2): a participant rotating
     /// identity keys re-wraps the same CEK rather than changing the message key,
@@ -359,29 +373,38 @@ final class ConversationService {
             return String(trimmed.prefix(120))
         }()
 
-        // E2EE: encrypt human-readable fields when we can derive the
-        // conversation key. Falls back to plaintext when the partner hasn't
-        // published a key yet (rollout) or sealing fails — messaging keeps
-        // working either way. Metadata (senderId/kind/emoji/postMediaURL/etc.)
-        // is never encrypted.
-        // E2EE: encrypt all human-readable fields with the conversation's stable
-        // content key (encv 2). If a CEK can't be established yet — the peer
-        // hasn't published an identity key — THROW so the caller's
-        // PendingMessageQueue retries; we NEVER store plaintext. Metadata
-        // (senderId/kind/emoji/postMediaURL/postId/replyToId) is not encrypted.
-        guard let key = await contentKey(convId: convId, establish: true) else {
-            throw ConversationError.notEncryptable
+        // E2EE (gated by `encryptionEnabled`):
+        //  - ON  → encrypt all human-readable fields with the conversation's
+        //    stable content key (encv 2). If a CEK can't be established yet (the
+        //    peer hasn't published an identity key) THROW so the caller's
+        //    PendingMessageQueue retries; we NEVER store plaintext.
+        //  - OFF → send plaintext (encv 0); no CEK needed, never throws.
+        // Metadata (senderId/kind/emoji/postMediaURL/postId/replyToId) is never
+        // encrypted either way.
+        let key: SymmetricKey?
+        if Self.encryptionEnabled {
+            guard let k = await contentKey(convId: convId, establish: true) else {
+                throw ConversationError.notEncryptable
+            }
+            key = k
+        } else {
+            key = nil
+        }
+        // Seal with the CEK when encryption is on, else pass plaintext through.
+        func body(_ s: String) throws -> String {
+            guard let key else { return s }
+            return try MessageCrypto.seal(s, key: key)
         }
         var msgData: [String: Any] = [
             "senderId": me,
             "kind": kind,
             "createdAt": FieldValue.serverTimestamp(),
-            "encv": 2,
+            "encv": Self.encryptionEnabled ? 2 : 0,
         ]
-        msgData["text"] = trimmed.isEmpty ? "" : (try MessageCrypto.seal(trimmed, key: key))
-        if let postPreview { msgData["postPreview"] = try MessageCrypto.seal(postPreview, key: key) }
-        if let replyToText { msgData["replyToText"] = try MessageCrypto.seal(replyToText, key: key) }
-        let lastMessageValue = try MessageCrypto.seal(preview, key: key)
+        msgData["text"] = trimmed.isEmpty ? "" : (try body(trimmed))
+        if let postPreview { msgData["postPreview"] = try body(postPreview) }
+        if let replyToText { msgData["replyToText"] = try body(replyToText) }
+        let lastMessageValue = try body(preview)
         if let postId { msgData["postId"] = postId }
         if let emoji { msgData["emoji"] = emoji }
         if let postMediaURL { msgData["postMediaURL"] = postMediaURL }
@@ -396,7 +419,7 @@ final class ConversationService {
             "lastMessage": lastMessageValue,
             "lastMessageSenderId": me,
             "lastMessageAt": FieldValue.serverTimestamp(),
-            "lastMessageEnc": true,
+            "lastMessageEnc": Self.encryptionEnabled,
         ], forDocument: convRef)
         try await batch.commit()
     }
@@ -441,7 +464,7 @@ final class ConversationService {
         // inbox preview ("Reacted X to your post") is derived from the `emoji`
         // metadata, so it stays plaintext / `lastMessageEnc` false.
         let preview = "Reacted \(emoji) to your post"
-        let cek = await contentKey(convId: convId, establish: true)
+        let cek = Self.encryptionEnabled ? await contentKey(convId: convId, establish: true) : nil
         var msgData: [String: Any] = [
             "senderId": me,
             "text": "",
@@ -450,9 +473,14 @@ final class ConversationService {
             "postId": postId,
             "createdAt": FieldValue.serverTimestamp(),
         ]
-        if let postPreview, let cek {
-            msgData["postPreview"] = try MessageCrypto.seal(postPreview, key: cek)
-            msgData["encv"] = 2
+        if let postPreview {
+            if !Self.encryptionEnabled {
+                msgData["postPreview"] = postPreview          // plaintext (encv 0)
+            } else if let cek {
+                msgData["postPreview"] = try MessageCrypto.seal(postPreview, key: cek)
+                msgData["encv"] = 2
+            }
+            // encryption ON but no CEK yet → omit (never store plaintext)
         }
         if let postMediaURL { msgData["postMediaURL"] = postMediaURL }
         if postIsVideo { msgData["postIsVideo"] = true }

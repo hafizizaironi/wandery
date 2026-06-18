@@ -43,7 +43,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // bypass for offline dev, set the flag here.
 
         NotificationService.shared.configure()
-        NotificationService.shared.requestAuthorizationAndRegister()
+        // Silent APNs registration only (no visible prompt) — Phone Auth needs
+        // the device token early. The visible notification permission is asked
+        // later in the post-onboarding priming queue (PermissionsManager).
+        NotificationService.shared.registerForRemoteNotifications()
         return true
     }
 

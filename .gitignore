@@ -33,6 +33,10 @@ functions/yarn-error.log*
 .env.*
 Secrets.xcconfig
 
+# Internal security audit — contains a real (leaked) API key + vulnerability
+# notes; must NOT land in the public repo. Keep local-only.
+SECURITY_REVIEW.md
+
 # Claude Code local state
 .claude/
 

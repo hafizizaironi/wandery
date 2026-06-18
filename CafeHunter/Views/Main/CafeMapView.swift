@@ -185,6 +185,17 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.startUpdatingLocation()
     }
 
+    /// Begin streaming location ONLY if access is already granted — never
+    /// prompts. The permission itself is asked by the priming queue (or the
+    /// Welcome card); the map just starts updates when it has access, instead
+    /// of re-firing the prompt on every appear.
+    func startUpdatingIfAuthorized() {
+        let status = manager.authorizationStatus
+        if status == .authorizedWhenInUse || status == .authorizedAlways {
+            manager.startUpdatingLocation()
+        }
+    }
+
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         let coord = location.coordinate
@@ -409,7 +420,10 @@ struct CafeMapView: View {
         .task(id: ClusterInputs(placeIds: friendPlaces.map(\.id), threshold: Int(clusterThresholdMeters))) {
             memoizedFriendClusters = clusterFriendPlaces(friendPlaces, thresholdMeters: clusterThresholdMeters)
         }
-        .onAppear { locationManager.requestPermission() }
+        // Start streaming if already authorized — never auto-prompts here (the
+        // priming queue / Welcome card own the location prompt). Re-prompting on
+        // every map appear was part of the old permission burst.
+        .onAppear { locationManager.startUpdatingIfAuthorized() }
         .onChange(of: centerOnUser) { _, shouldCenter in
             guard shouldCenter else { return }
             // Always clear the trigger so subsequent taps always fire onChange.
@@ -422,8 +436,11 @@ struct CafeMapView: View {
                     ))
                 }
             } else {
-                // GPS not ready — record that the user wants to center;
-                // we'll fly there once location arrives.
+                // No fix yet. A deliberate center-on-me tap is the right moment
+                // to ask if the user skipped location earlier (no-op once
+                // authorized; opens Settings is on them if denied). Record the
+                // intent so we fly there once a fix arrives.
+                locationManager.requestPermission()
                 centerRequestID += 1
             }
         }

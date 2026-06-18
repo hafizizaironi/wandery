@@ -18,7 +18,11 @@ enum AppleSignInNonce {
         if status != errSecSuccess {
             fatalError("SecRandomCopyBytes failed: \(status)")
         }
-        let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        // 64-char URL-safe charset (base64url). 256 % 64 == 0, so mapping a
+        // uniform random byte through it is bias-free; the previous set also had
+        // 64 chars but dropped 'W'. The nonce is SHA-256'd before use, so this
+        // is a correctness/cleanliness fix, not a security-critical one.
+        let charset: [Character] = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
         return String(randomBytes.map { charset[Int($0) % charset.count] })
     }
 

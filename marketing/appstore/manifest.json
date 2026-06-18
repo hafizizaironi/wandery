@@ -1,0 +1,69 @@
+{
+  "canvas": { "width": 1284, "height": 2778 },
+  "frames": [
+    {
+      "id": "frame1_feed",
+      "eyebrow": "01 — Your circle",
+      "headline": "Skip the algorithm.",
+      "sub": "See where your friends actually hunt.",
+      "background": "../raw/bg/v2/frame1_feed.png",
+      "screenshot": "../raw/screens/01_feed.png"
+    },
+    {
+      "id": "frame2_camera",
+      "eyebrow": "02 — Snap & score",
+      "headline": "Snap it. We score it.",
+      "sub": "On-device AI knows a beautiful spot.",
+      "background": "../raw/bg/v2/frame2_camera.png",
+      "screenshot": "../raw/screens/02_camera.png"
+    },
+    {
+      "id": "frame3_trending",
+      "eyebrow": "03 — Trending",
+      "headline": "What everyone's hunting.",
+      "sub": "The spots your city can't stop visiting.",
+      "background": "../raw/bg/v2/frame3_trending.png",
+      "screenshot": "../raw/screens/03_trending.png"
+    },
+    {
+      "id": "frame4_discover",
+      "eyebrow": "04 — Discover",
+      "headline": "Swipe to your next spot.",
+      "sub": "Save the ones your circle already loved.",
+      "background": "../raw/bg/v2/frame4_discover.png",
+      "screenshot": "../raw/screens/04_discover.png"
+    },
+    {
+      "id": "frame5_map",
+      "eyebrow": "05 — The map",
+      "headline": "Your whole map, pinned.",
+      "sub": "Every find plotted across the country.",
+      "background": "../raw/bg/v2/frame5_map.png",
+      "screenshot": "../raw/screens/05_map.png"
+    },
+    {
+      "id": "frame6_detail",
+      "eyebrow": "06 — Scouted",
+      "headline": "Fully scouted.",
+      "sub": "Who's been, real photos, one-tap directions.",
+      "background": "../raw/bg/v2/frame6_detail.png",
+      "screenshot": "../raw/screens/06_detail.png"
+    },
+    {
+      "id": "frame7_myhunt",
+      "eyebrow": "07 — My Hunt",
+      "headline": "Build your hunting history.",
+      "sub": "7 places, 4 cities, 22 days.",
+      "background": "../raw/bg/v2/frame7_myhunt.png",
+      "screenshot": "../raw/screens/07_myhunt.png"
+    },
+    {
+      "id": "frame8_widgets",
+      "eyebrow": "08 — Home Screen",
+      "headline": "Wandery on your Home Screen.",
+      "sub": "Your circle + your map, at a glance.",
+      "background": "../raw/bg/v2/frame8_widgets.png",
+      "screenshot": "../raw/screens/08_widgets.png"
+    }
+  ]
+}
