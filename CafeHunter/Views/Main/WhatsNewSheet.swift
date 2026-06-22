@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - What's New sheet
 //
@@ -10,7 +11,8 @@ import SwiftUI
 // Each page carries an animated SF Symbol illustration and an OPTIONAL
 // "jump to feature" button — tapping it dismisses the sheet and routes
 // the host (`MainShellView`) to the relevant page. Users can swipe through
-// every page and hit "Got it" at the end.
+// every page and hit "Got it" at the end. Page 1 is a special tester
+// celebration (pulse rings + bouncing icon + line-by-line thank-you reveal).
 
 /// Bump when the body of `WhatsNewSheet` changes meaningfully — the
 /// AppStorage gate re-presents the sheet on next launch for everyone.
@@ -27,12 +29,22 @@ enum WhatsNewFeature: String {
 struct WhatsNewSheet: View {
     var onDismiss: () -> Void
     /// True for users who can actually use the (still-gated) Receipt frame —
-    /// only they get the "exclusive frame" page. See `AuthService.canUseThermalFrame`.
+    /// only they get the "exclusive frame" footnote. See `AuthService.canUseThermalFrame`.
     var canUseThermalFrame: Bool = false
     var onJumpToFeature: (WhatsNewFeature) -> Void
+    /// Number of test-phase hunters, shouted out on the celebration opener.
+    var testerCount: Int = 18
 
     @State private var page: Int = 0
-    private var pages: [WhatsNewPage] { .badgesAndStreaks(includeFrame: canUseThermalFrame) }
+    /// Stable clock origin for the celebration's line reveal — captured ONCE when
+    /// the sheet is created. The reveal is a pure function of elapsed time since
+    /// this instant, so it advances monotonically and can never restart/loop when
+    /// the carousel re-renders the page.
+    @State private var revealStart = Date()
+
+    private var pages: [WhatsNewPage] {
+        .badgesAndStreaks(includeFrame: canUseThermalFrame, testerCount: testerCount)
+    }
 
     var body: some View {
         ZStack {
@@ -42,7 +54,7 @@ struct WhatsNewSheet: View {
                 header
                 TabView(selection: $page) {
                     ForEach(Array(pages.enumerated()), id: \.offset) { idx, p in
-                        WhatsNewPageView(page: p, isActive: idx == page) {
+                        WhatsNewPageView(page: p, isActive: idx == page, revealStart: revealStart) {
                             if let feature = p.feature { onJumpToFeature(feature) }
                         }
                         .tag(idx)
@@ -54,6 +66,10 @@ struct WhatsNewSheet: View {
 
                 footer
             }
+        }
+        .onAppear {
+            // One celebratory tap as the opener lands (page 1 is the celebration).
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
     }
 
@@ -126,6 +142,11 @@ struct WhatsNewPage: Identifiable {
     let footnote: String?
     let feature: WhatsNewFeature?       // jump target — nil hides the inline button
     let jumpCTA: String?                // inline "Try it" button copy
+    /// When true this page renders the tester celebration (pulse rings + bouncing
+    /// icon + line-by-line thank-you reveal) instead of the standard body text.
+    var isCelebration: Bool = false
+    /// Tester count shouted out on the celebration page.
+    var testerCount: Int? = nil
 }
 
 /// A small SF Symbol that floats around the main illustration. Drives the
@@ -138,10 +159,10 @@ struct AccentIcon {
 }
 
 extension Array where Element == WhatsNewPage {
-    /// This build's tour — the achievements glow-up + posting streaks, plus the
-    /// frame wardrobe. The Receipt-frame footnote only shows for testers who can
-    /// use it (`includeFrame`).
-    static func badgesAndStreaks(includeFrame: Bool) -> [WhatsNewPage] {
+    /// This build's tour — a tester celebration opener, then the achievements
+    /// glow-up, posting streaks, and the frame wardrobe. The Receipt-frame
+    /// footnote only shows for testers who can use it (`includeFrame`).
+    static func badgesAndStreaks(includeFrame: Bool, testerCount: Int) -> [WhatsNewPage] {
         [
             WhatsNewPage(
                 icon: "party.popper.fill",
@@ -150,12 +171,14 @@ extension Array where Element == WhatsNewPage {
                     AccentIcon(name: "heart.fill", offset: CGSize(width: -46, height:  44), scale: 0.28, anim: .pulse),
                 ],
                 accent: AppTheme.cafeAccent,
-                symbolAnim: .bounce,
-                headline: "A big new drop 🎉",
-                body: "Thanks for hunting with us through the test phase. This build is all about showing off — new badges to earn, streaks to keep, and a fresh home for your frames. Here's the tour.",
-                footnote: nil,
+                symbolAnim: .bounce,   // ignored for the celebration page — `celebrationIcon` hardcodes a repeating bounce
+                headline: "One last build before launch 🥹",
+                body: "",   // celebration uses the line-reveal thank-you, not the standard body
+                footnote: "Here's everything new — swipe through 👉",
                 feature: nil,
-                jumpCTA: nil
+                jumpCTA: nil,
+                isCelebration: true,
+                testerCount: testerCount
             ),
             WhatsNewPage(
                 icon: "trophy.fill",
@@ -223,28 +246,50 @@ extension Array where Element == WhatsNewPage {
 private struct WhatsNewPageView: View {
     let page: WhatsNewPage
     /// True when this is the currently selected page in the TabView — used
-    /// to retrigger one-shot animations on swipe-in.
+    /// to retrigger the standard pages' one-shot `.bounce` symbol.
     let isActive: Bool
+    /// Stable clock origin (from the sheet) for the celebration line reveal.
+    let revealStart: Date
     let onJump: () -> Void
 
-    /// Toggled when the page becomes active to retrigger `.bounce` symbols.
+    /// Bumped when the page becomes active to replay the standard `.bounce` symbol.
     @State private var bounceTrigger: Int = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 12)
-            illustration
+            if page.isCelebration {
+                celebrationIllustration
+            } else {
+                illustration
+            }
             Text(page.headline)
                 .font(.system(size: 26, weight: .bold, design: .serif).italic())
                 .foregroundStyle(AppTheme.textPrimary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 8)
-            Text(page.body)
-                .font(.system(size: 15))
-                .foregroundStyle(AppTheme.textPrimary.opacity(0.78))
-                .multilineTextAlignment(.center)
-                .lineSpacing(3)
-                .padding(.horizontal, 4)
+            if page.isCelebration {
+                // The centerpiece: each thank-you line wipes in left→right,
+                // staggered top-to-bottom. Driven purely by elapsed time since
+                // `revealStart` (monotonic, capped) — it reveals once and holds,
+                // and cannot loop no matter how the carousel re-renders.
+                LineRevealText(
+                    lines: celebrationLines,
+                    font: .system(size: 16.5, weight: .medium, design: .serif),
+                    color: AppTheme.textPrimary,
+                    start: reduceMotion ? nil : revealStart
+                )
+                .padding(.horizontal, 10)
+                .padding(.top, 2)
+            } else {
+                Text(page.body)
+                    .font(.system(size: 15))
+                    .foregroundStyle(AppTheme.textPrimary.opacity(0.78))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .padding(.horizontal, 4)
+            }
             if let foot = page.footnote {
                 Text(foot)
                     .font(.system(size: 12, weight: .medium))
@@ -288,6 +333,54 @@ private struct WhatsNewPageView: View {
         .shadow(color: page.accent.opacity(0.18), radius: 14, y: 4)
     }
 
+    /// The thank-you revealed line-by-line on the celebration opener.
+    private var celebrationLines: [String] {
+        [
+            "To our \(page.testerCount ?? 18) hunters —",
+            "every bug caught, every late-night hunt,",
+            "you got us to the doorstep of launch.",
+            "Thank you. 🔥",
+        ]
+    }
+
+    /// Celebration variant — expanding pulse rings behind a continuously
+    /// bouncing icon, on top of the standard disc + accent floaters.
+    private var celebrationIllustration: some View {
+        ZStack {
+            if !reduceMotion {
+                // FIXED layout footprint. CelebrationPulse's rings grow/shrink
+                // every frame; without a fixed frame its oscillating size reflows
+                // the whole VStack and BOBS the text up/down (the "looping" bug).
+                // The frame pins layout to the disc size; rings overflow visually.
+                CelebrationPulse(color: page.accent)
+                    .frame(width: 132, height: 132)
+            }
+            Circle()
+                .fill(page.accent.opacity(0.12))
+                .frame(width: 132, height: 132)
+            Circle()
+                .stroke(page.accent.opacity(0.25), lineWidth: 1)
+                .frame(width: 132, height: 132)
+            celebrationIcon
+            ForEach(Array(page.accentIcons.enumerated()), id: \.offset) { _, accent in
+                accentSymbol(accent)
+            }
+        }
+        .shadow(color: page.accent.opacity(0.18), radius: 14, y: 4)
+    }
+
+    @ViewBuilder
+    private var celebrationIcon: some View {
+        let base = Image(systemName: page.icon)
+            .font(.system(size: 56, weight: .semibold))
+            .foregroundStyle(page.accent)
+        if reduceMotion {
+            base
+        } else {
+            base.symbolEffect(.bounce, options: .repeating)
+        }
+    }
+
     @ViewBuilder
     private var mainIcon: some View {
         let base = Image(systemName: page.icon)
@@ -306,8 +399,14 @@ private struct WhatsNewPageView: View {
                     .fill(AppTheme.surfacePrimary)
                     .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
             )
-        return applyAnim(a.anim, to: base)
-            .offset(a.offset)
+        return Group {
+            if reduceMotion {
+                base   // honour Reduce Motion — no repeating symbol effect
+            } else {
+                applyAnim(a.anim, to: base)
+            }
+        }
+        .offset(a.offset)
     }
 
     /// Maps `WhatsNewSymbolAnim` onto SwiftUI's `.symbolEffect` variants.
@@ -344,5 +443,83 @@ private struct WhatsNewPageView: View {
             .buttonStyle(.plain)
             .accessibilityHint("Closes this tour and opens the feature")
         }
+    }
+}
+
+// MARK: - Celebration animation primitives (tester-celebration opener)
+
+/// Expanding concentric rings behind the celebration icon (RadialPulse-style).
+private struct CelebrationPulse: View {
+    var color: Color
+    var maxDiameter: CGFloat = 176
+    private let count = 3
+    private let period = 2.6
+
+    var body: some View {
+        TimelineView(.animation) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            ZStack {
+                ForEach(0..<count, id: \.self) { i in
+                    let p = ((t / period) + Double(i) / Double(count)).truncatingRemainder(dividingBy: 1)
+                    Circle()
+                        .stroke(color.opacity((1 - p) * 0.5), lineWidth: 2)
+                        .frame(width: maxDiameter * p, height: maxDiameter * p)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// Reveals a block of text one line at a time, each wiping in horizontally
+/// (left→right) staggered top-to-bottom.
+///
+/// CRITICAL: the reveal is a PURE FUNCTION of elapsed time since `start` (a
+/// stable timestamp owned by the sheet), evaluated each frame inside a
+/// `TimelineView`. Per-line progress is `clamp((elapsed − i·perLine) / dur, 0…1)`
+/// — strictly monotonic and capped at 1, so it reveals exactly once and HOLDS.
+/// There is NO `@State`, NO `onAppear`, NO reset — so it cannot restart or loop
+/// when the carousel re-renders/recreates the page (the bug the old version had).
+/// `start == nil` (Reduce Motion) renders every line fully, statically.
+private struct LineRevealText: View {
+    let lines: [String]
+    var font: Font
+    var color: Color
+    var start: Date?
+
+    private let perLine: Double = 0.42   // stagger between lines
+    private let dur: Double = 0.6        // each line's wipe duration
+
+    var body: some View {
+        Group {
+            if start == nil {
+                rows { _ in 1 }                       // static, fully revealed
+            } else {
+                TimelineView(.animation) { ctx in
+                    rows { i in progress(line: i, now: ctx.date) }
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(lines.joined(separator: " "))
+    }
+
+    private func rows(_ amount: @escaping (Int) -> CGFloat) -> some View {
+        VStack(spacing: 7) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                Text(line)
+                    .font(font)
+                    .foregroundStyle(color)
+                    .multilineTextAlignment(.center)
+                    .mask(Rectangle().scaleEffect(x: amount(i), anchor: .leading))
+            }
+        }
+    }
+
+    /// 0→1 reveal fraction for line `i` at `now`, clamped — never decreases.
+    private func progress(line i: Int, now: Date) -> CGFloat {
+        guard let start else { return 1 }
+        let elapsed = now.timeIntervalSince(start) - Double(i) * perLine
+        return CGFloat(min(1, max(0, elapsed / dur)))
     }
 }

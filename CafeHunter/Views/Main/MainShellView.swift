@@ -428,7 +428,8 @@ struct MainShellView: View {
                             showWanderyCode = true
                         }
                     }
-                }
+                },
+                testerCount: AuthService.testerCount
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)

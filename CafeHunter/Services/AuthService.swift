@@ -45,6 +45,10 @@ final class AuthService {
         return isAdmin || Self.thermalFrameTesters.contains(uid)
     }
 
+    /// Number of test-phase hunters (the allowlist size) — exposes the count
+    /// without leaking the UIDs. Used by the What's New tester-celebration page.
+    static var testerCount: Int { thermalFrameTesters.count }
+
     // `nonisolated(unsafe)` lets `deinit` (which is nonisolated) read the
     // handle to detach the listener. Only ever touched during init + deinit
     // so there's no real concurrency to protect against.
