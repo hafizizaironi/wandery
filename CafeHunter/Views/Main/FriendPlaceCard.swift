@@ -13,12 +13,26 @@ enum SwipeDirection {
 /// overlay the lower third, whole card is the tap target.
 struct FriendPlaceCard: View {
     let place: FriendPlace
+    /// Only the front card plays video; back/exiting cards render the thumbnail,
+    /// so the deck never holds more than one live AVPlayer. Declared before
+    /// `onTap` so the trailing-closure call sites keep working.
+    var isActive: Bool = false
     let onTap: () -> Void
+
+    @Environment(\.scenePhase) private var scenePhase
 
     private var heroURL: URL? {
         guard let post = place.mostRecent else { return nil }
         let urlString = post.isVideo ? (post.thumbnailURL ?? post.mediaURL) : post.mediaURL
         return URL(string: urlString)
+    }
+
+    /// Full video URL for the most-recent post when this is the active (front)
+    /// card and that post is a video; otherwise nil → fall back to the thumbnail.
+    private var heroVideoURL: URL? {
+        guard isActive, let post = place.mostRecent, post.isVideo,
+              let s = post.media.first?.url, !s.isEmpty else { return nil }
+        return URL(string: s)
     }
 
     private var visitsLabel: String {
@@ -54,21 +68,33 @@ struct FriendPlaceCard: View {
     // MARK: - Layers
 
     private var heroLayer: some View {
-        // `Color.clear` flexes to fill the ZStack frame; the image is
-        // placed as `.overlay` so its reported size matches the clear
-        // anchor instead of the image's intrinsic .fill expansion.
+        // `Color.clear` flexes to fill the ZStack frame; the media is placed as
+        // `.overlay` so its reported size matches the clear anchor instead of the
+        // media's intrinsic .fill expansion. The thumbnail stays resident UNDER
+        // the (clear-backed) player, so a video card shows its poster while the
+        // player builds — no thumbnail→black→video pop as the deck advances — and
+        // the image is never torn down when the front card toggles active.
         Color.clear
             .overlay {
-                CachedAsyncImage(url: heroURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    case .failure, .empty:
-                        fallbackHero
-                    @unknown default:
-                        fallbackHero
+                ZStack {
+                    CachedAsyncImage(url: heroURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        case .failure, .empty:
+                            fallbackHero
+                        @unknown default:
+                            fallbackHero
+                        }
+                    }
+                    if let u = heroVideoURL {
+                        // Front card + video → full looping muted player over the
+                        // resident poster. `.clear` reveals the poster until the
+                        // first frame decodes; once playing it fills the card.
+                        SquareVideoFillView(url: u, isPlaying: scenePhase == .active,
+                                            muted: true, backgroundColor: .clear)
                     }
                 }
             }
@@ -230,6 +256,20 @@ struct FriendPlaceCarousel: View {
         return cards.reversed()
     }
 
+    /// Warm the front + next places' most-recent video into `VideoCache` so the
+    /// front card's player builds from a local file (no network hitch) as the
+    /// deck advances. Off-drag, `.utility` priority, dedup handled by the cache.
+    private func prefetchUpcomingVideos() {
+        guard !places.isEmpty else { return }
+        let end = min(topIndex + stackDepth, places.count)
+        guard topIndex < end else { return }
+        for i in topIndex..<end {
+            guard let post = places[i].mostRecent, post.isVideo,
+                  let s = post.media.first?.url, let url = URL(string: s) else { continue }
+            Task.detached(priority: .utility) { _ = await VideoCache.shared.prefetch(url) }
+        }
+    }
+
     var body: some View {
         Group {
             // Keep the deck mounted while a card is still flying off, even once
@@ -249,8 +289,10 @@ struct FriendPlaceCarousel: View {
             // front card pinned at index 0 so the next card slides forward.
             topIndex = 0
             dragOffset = .zero
+            prefetchUpcomingVideos()
         }
         .onAppear {
+            prefetchUpcomingVideos()
             guard !reduceMotion else { return }
             withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
                 coachPulse = true
@@ -272,7 +314,7 @@ struct FriendPlaceCarousel: View {
             // Position-based identity recycled the view when the deck advanced,
             // which let the name update a frame ahead of the async image.
             ForEach(visibleCards) { card in
-                FriendPlaceCard(place: card.place) {
+                FriendPlaceCard(place: card.place, isActive: card.rel == 0) {
                     // Only the top card opens place-detail on tap — back
                     // cards are non-interactive. Also bail if a drag
                     // happened: a Button inside a parent

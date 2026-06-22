@@ -130,7 +130,8 @@ final class UserStatsService {
                     //  3. (inside persistNewlyUnlocked) only write when
                     //     there's a genuinely new unlock.
                     guard !hasPendingWrites, s != previous else { return }
-                    await self.persistNewlyUnlocked(uid: uid, stats: s, celebrate: !isBaseline)
+                    await self.persistNewlyUnlocked(uid: uid, previous: previous,
+                                                    stats: s, celebrate: !isBaseline)
                 }
             }
     }
@@ -145,18 +146,37 @@ final class UserStatsService {
     // MARK: - Auto-persist achievement unlocks
 
     @MainActor
-    private func persistNewlyUnlocked(uid: String, stats: UserStats, celebrate: Bool) async {
-        var updates: [String: Any] = [:]
-        var newly: [Achievement] = []
+    private func persistNewlyUnlocked(uid: String, previous: UserStats,
+                                      stats: UserStats, celebrate: Bool) async {
+        // Nested map written under `unlockedAchievements` — NOT dot-path keys.
+        // The previous code did `setData(["unlockedAchievements.<id>": ts], merge:)`,
+        // but setData treats keys as LITERAL field names (only updateData parses
+        // dots as field paths), so it wrote junk top-level fields and the real
+        // nested map was never populated. Every snapshot then re-read it as `[:]`,
+        // making every met condition look brand-new — the confetti re-fired on
+        // every post and replayed already-earned badges.
+        var unlocks: [String: Any] = [:]
+        var toCelebrate: [Achievement] = []
         for a in Achievement.definitions {
+            // Record any met-but-unrecorded achievement. This also silently
+            // back-fills on the first launch after this fix for accounts whose
+            // unlock map was never persisted (the dot-key bug above).
             guard stats.unlockedAchievements[a.id] == nil,
                   a.condition(stats) else { continue }
-            updates["unlockedAchievements.\(a.id)"] = Timestamp(date: Date())
-            newly.append(a)
+            unlocks[a.id] = Timestamp(date: Date())
+            // Celebrate ONLY a genuine lock→unlock transition on THIS snapshot,
+            // and never on the baseline load. Gating on the transition (not merely
+            // "absent from the persisted set") means a stale/empty unlock map can
+            // never by itself replay old badges — a flood would require every
+            // condition to flip true in a single update, i.e. a real milestone.
+            if celebrate, !a.condition(previous) { toCelebrate.append(a) }
         }
-        guard !updates.isEmpty else { return }
-        if celebrate { justUnlocked.append(contentsOf: newly) }
-        try? await db.collection("users").document(uid).setData(updates, merge: true)
+        guard !unlocks.isEmpty else { return }
+        if !toCelebrate.isEmpty { justUnlocked.append(contentsOf: toCelebrate) }
+        // merge:true deep-merges the nested map, preserving existing unlock
+        // timestamps and adding the new ones under the real field.
+        try? await db.collection("users").document(uid)
+            .setData(["unlockedAchievements": unlocks], merge: true)
     }
 
     // NOTE: the former `increment` / `record*` helpers were removed — they were

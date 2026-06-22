@@ -12,6 +12,11 @@ struct SquareVideoFillView: UIViewRepresentable {
     /// Mutes the audio track. Defaults to `false` so the capture-review
     /// preview keeps sound; the feed passes the user's global mute preference.
     var muted: Bool = false
+    /// Color shown before the first decoded frame attaches. Defaults to black
+    /// (feed / capture preview). Map surfaces that keep a poster thumbnail
+    /// resident BEHIND the player pass `.clear`, so the poster shows through
+    /// during the async build instead of a black flash.
+    var backgroundColor: UIColor = .black
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -21,6 +26,7 @@ struct SquareVideoFillView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> VideoFillContainerView {
         let v = VideoFillContainerView()
+        v.backgroundColor = backgroundColor
         v.setMuted(muted)
         context.coordinator.lastURL = url
         v.setLoopingVideo(url: url, shouldPlay: isPlaying)
@@ -28,6 +34,7 @@ struct SquareVideoFillView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: VideoFillContainerView, context: Context) {
+        uiView.backgroundColor = backgroundColor
         if context.coordinator.lastURL != url {
             context.coordinator.lastURL = url
             uiView.setLoopingVideo(url: url, shouldPlay: isPlaying)

@@ -251,7 +251,10 @@ struct PlaceDetailSheet: View {
                         post: flying.post,
                         media: flying.media,
                         hydrator: hydrator,
-                        shouldBlur: place.postsAreFallback && !flying.post.discoverable
+                        shouldBlur: place.postsAreFallback && !flying.post.discoverable,
+                        // The departing card flies off in 0.28s — its thumbnail
+                        // is fine; don't spin a player just to throw it away.
+                        isActive: false
                     )
                         .frame(width: cardSide, height: cardSide)
                         .offset(flyingOffset)
@@ -266,7 +269,24 @@ struct PlaceDetailSheet: View {
         .overlay(alignment: .top) {
             if showLoopHint { loopHintPill }
         }
-        .task { await runHintIfNeeded() }
+        .task {
+            prefetchUpcomingVideos()
+            await runHintIfNeeded()
+        }
+    }
+
+    /// Warm the front + next couple of tagged videos into `VideoCache` so the
+    /// player builds from a local file (no network hitch) the instant a card
+    /// becomes the front card. Off-drag, `.utility` priority, dedup handled by
+    /// the cache — mirrors `HeroPageView.prefetchFeedVideos`.
+    private func prefetchUpcomingVideos() {
+        let deck = cards
+        guard !deck.isEmpty else { return }
+        for offset in 0..<min(3, deck.count) {
+            let media = deck[(topIndex + offset) % deck.count].media
+            guard media.isVideo, let url = URL(string: media.url) else { continue }
+            Task.detached(priority: .utility) { _ = await VideoCache.shared.prefetch(url) }
+        }
     }
 
     /// Friendly "you've seen them all" toast. Wording adapts to a single-photo
@@ -394,7 +414,14 @@ struct PlaceDetailSheet: View {
             post: card.post,
             media: card.media,
             hydrator: hydrator,
-            shouldBlur: place.postsAreFallback && !card.post.discoverable
+            shouldBlur: place.postsAreFallback && !card.post.discoverable,
+            // Playback follows stack POSITION, not `isFront` — `isFront` is gated
+            // on `flyingCard == nil`, which stays non-nil for ~300ms after a
+            // swipe, so gating playback on it would stall the incoming front
+            // card's video. Position-only means it plays the instant topIndex
+            // advances. The departing overlay card is passed isActive:false, so
+            // there's still only one player.
+            isActive: stackPos == 0
         )
             .frame(width: side, height: side)
             .scaleEffect(isFront ? 1.0 : advancedScale)
@@ -474,6 +501,8 @@ struct PlaceDetailSheet: View {
             topIndex = (topIndex + 1) % n
             dragOffset = .zero
         }
+        // Warm the next window now that the deck advanced.
+        prefetchUpcomingVideos()
         // Track what's been seen. If the deck has now fully cycled (or the card
         // that just rose to the front is one we've already swiped), nudge the
         // user that there's nothing new — the stack itself just loops silently.
@@ -525,6 +554,11 @@ private struct PostStackCard: View {
     /// would otherwise see an empty stack) while preserving the privacy
     /// signal the trending grid already shows.
     var shouldBlur: Bool = false
+    /// True only for the front card. Only the active card builds a video
+    /// player; back/peek cards render the cheap poster thumbnail, so at most
+    /// one AVPlayer is ever alive in the stack (see prefetchUpcomingVideos).
+    var isActive: Bool = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -554,9 +588,28 @@ private struct PostStackCard: View {
     }
 
     private var mediaLayer: some View {
+        // Resident poster/thumbnail base + (only for the active video card) a
+        // clear-backed player ON TOP. Keeping the thumbnail always mounted means
+        // its loaded image is never torn down when the card toggles active, and
+        // it shows THROUGH the player while it builds — no thumbnail→black→video
+        // pop on swipe. The player's `.clear` background reveals the poster until
+        // the first frame decodes; once playing, resizeAspectFill covers it.
+        // Peek/back cards (isActive == false) and gated (`shouldBlur`) posts have
+        // no player at all, so at most one AVPlayer is alive in the stack.
+        ZStack {
+            thumbnailLayer
+            if media.isVideo, isActive, !shouldBlur, let u = URL(string: media.url) {
+                SquareVideoFillView(url: u, isPlaying: scenePhase == .active,
+                                    muted: true, backgroundColor: .clear)
+            }
+        }
+    }
+
+    /// `displayURL` resolves to the video thumbnail for videos and the image url
+    /// otherwise — the specific photo tagged to this place. Always mounted (see
+    /// `mediaLayer`); privacy-gated posts render it blurred with a lock chip.
+    private var thumbnailLayer: some View {
         Group {
-            // `displayURL` resolves to the video thumbnail for videos and the
-            // image url otherwise — the specific photo tagged to this place.
             if let url = URL(string: media.displayURL) {
                 CachedAsyncImage(url: url) { phase in
                     switch phase {
