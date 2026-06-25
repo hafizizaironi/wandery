@@ -2,6 +2,7 @@ import AuthenticationServices
 import CoreLocation
 import MapKit
 import SwiftUI
+import UIKit
 import FirebaseAuth
 
 struct LoginView: View {
@@ -13,6 +14,11 @@ struct LoginView: View {
     @State private var name = ""
     @State private var errorMessage = ""
     @State private var isLoading = false
+    /// Manual keyboard-height mirror. The entry layer (`WanderyEntryView`)
+    /// presents this sheet under a blanket `.ignoresSafeArea()`, which disables
+    /// SwiftUI's automatic keyboard avoidance — so we observe the keyboard frame
+    /// and lift the sheet ourselves (see `body`). Same approach as HeroPageView.
+    @State private var keyboardHeight: CGFloat = 0
     /// Captured per-attempt; the SHA-256 of this goes to Apple, the raw
     /// value goes to Firebase. Regenerated for each authorization request.
     @State private var appleNonce: String = ""
@@ -194,6 +200,12 @@ struct LoginView: View {
                     .padding(24)
                 }
                 .frame(maxWidth: .infinity)
+                // Lift the form above the keyboard by padding the sheet's bottom
+                // by the keyboard height. The padding sits INSIDE the cream
+                // background, so the sheet stays anchored to the screen bottom and
+                // the background grows to fill the area behind the keyboard — the
+                // map never shows through below the sheet. (0 at rest = no change.)
+                .padding(.bottom, keyboardHeight)
                 .background(AppTheme.surfaceCanvas)
                 .clipShape(.rect(topLeadingRadius: 34, topTrailingRadius: 34))
                 .overlay(alignment: .top) {
@@ -208,6 +220,18 @@ struct LoginView: View {
                 .ignoresSafeArea(edges: .bottom)
         }
         .keyboardDismissToolbar()
+        // Manual keyboard avoidance — the entry map's `.ignoresSafeArea()` kills
+        // SwiftUI's automatic version, so mirror the keyboard height and lift the
+        // sheet via the offset above. Mirrors HeroPageView's observer + curve.
+        .animation(.easeOut(duration: 0.25), value: keyboardHeight)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                keyboardHeight = frame.height
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardHeight = 0
+        }
         .task { await refreshLocalityHint() }
         .onChange(of: locationManager.userLocation?.latitude) { _, _ in
             Task { await refreshLocalityHint() }
