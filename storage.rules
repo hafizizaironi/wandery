@@ -17,11 +17,15 @@ service firebase.storage {
     }
 
     // Shared place photos. Any signed-in user may contribute (places are a
-    // shared namespace), but capped in size. Owner-scoping / callable-mediated
-    // uploads to stop cross-overwrite are tracked in SECURITY_REVIEW.md (H3).
+    // shared namespace), but capped in size and CREATE-ONLY: `resource == null`
+    // means an existing object can't be overwritten or deleted, killing the
+    // cross-overwrite vector. The client always writes new UUID filenames
+    // (FirestoreService.uploadImages), so legitimate uploads are unaffected.
+    // Full owner-scoping via a callable is still tracked in SECURITY_REVIEW.md (H3).
     match /places/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null && withinSize(20 * 1024 * 1024);
+      allow write: if request.auth != null && resource == null
+        && withinSize(20 * 1024 * 1024);
     }
     // Social media (images + short videos), owner-only writes.
     match /social/{uid}/{allPaths=**} {

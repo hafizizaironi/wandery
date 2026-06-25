@@ -209,14 +209,11 @@ service cloud.firestore {
     match /friendRequests/{requestId} {
       allow read: if signedIn() &&
         (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
-      // STAGED: once the app build that routes sends through the
-      // `sendFriendRequest` callable is live, replace this create rule with
-      // `if false` (server-owned, like the friends subcollection) to kill the
-      // direct client-write spam path. The callable + resolveWanderyCode use the
-      // admin SDK and bypass rules, so they keep working. See SECURITY_REVIEW.md (M5).
-      allow create: if signedIn()
-        && request.resource.data.fromUid == request.auth.uid
-        && request.resource.data.status == "pending";
+      // Server-owned: sends route through the `sendFriendRequest` callable
+      // (admin SDK, bypasses rules), which enforces the rate limits + anti-spam
+      // caps. Direct client create is denied to kill the spam/harass path. The
+      // callable + resolveWanderyCode keep working. See SECURITY_REVIEW.md (M5).
+      allow create: if false;
       allow update: if signedIn() &&
         resource.data.toUid == request.auth.uid;
       // Sender may cancel (delete) their own still-pending request.
