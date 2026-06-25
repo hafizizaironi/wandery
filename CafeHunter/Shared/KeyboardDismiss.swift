@@ -19,16 +19,4 @@ extension View {
             }
         }
     }
-
-    /// Dismisses the keyboard when the user taps outside any focused input.
-    /// Pair with `keyboardDismissToolbar()` on screens where the layout has
-    /// non-interactive empty space (e.g. forms with surrounding padding).
-    func dismissKeyboardOnTap() -> some View {
-        onTapGesture {
-            UIApplication.shared.sendAction(
-                #selector(UIResponder.resignFirstResponder),
-                to: nil, from: nil, for: nil
-            )
-        }
-    }
 }

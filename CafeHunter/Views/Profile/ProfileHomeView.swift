@@ -1393,10 +1393,12 @@ struct ProfileHomeView: View {
     }
 
     private func signOut() {
-        do {
-            try authService.signOut()
-        } catch {
-            signOutError = error.localizedDescription
+        Task { @MainActor in
+            do {
+                try await authService.signOut()
+            } catch {
+                signOutError = error.localizedDescription
+            }
         }
     }
 

@@ -29,7 +29,6 @@
 		C4795F752F8AE41D002495D1 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F742F8AE41D002495D1 /* FirebaseFirestore */; };
 		C4795F772F8AE41D002495D1 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F762F8AE41D002495D1 /* FirebaseStorage */; };
 		C4795F792F8AE41D002495D1 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F782F8AE41D002495D1 /* FirebaseMessaging */; };
-		C4795F7C2F8C0E2002495D1 /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = C4795F7B2F8C0E2002495D1 /* Lottie */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -223,7 +222,6 @@
 				C4795F772F8AE41D002495D1 /* FirebaseStorage in Frameworks */,
 				C4795F792F8AE41D002495D1 /* FirebaseMessaging in Frameworks */,
 				C40DF9052FA86EEB000FE277 /* GooglePlacesSwift in Frameworks */,
-				C4795F7C2F8C0E2002495D1 /* Lottie in Frameworks */,
 				C4795F692F8AE41D002495D1 /* GoogleSignIn in Frameworks */,
 				C4795F6B2F8AE41D002495D1 /* GoogleSignInSwift in Frameworks */,
 			);
@@ -367,7 +365,6 @@
 				C4795F742F8AE41D002495D1 /* FirebaseFirestore */,
 				C4795F762F8AE41D002495D1 /* FirebaseStorage */,
 				C4795F782F8AE41D002495D1 /* FirebaseMessaging */,
-				C4795F7B2F8C0E2002495D1 /* Lottie */,
 				C4795F682F8AE41D002495D1 /* GoogleSignIn */,
 				C4795F6A2F8AE41D002495D1 /* GoogleSignInSwift */,
 				C43CAA5B2F9B50EB00ABCA8A /* FirebaseFunctions */,
@@ -415,7 +412,6 @@
 			packageReferences = (
 				C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 				C4795F672F8AE41D002495D1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
-				C4795F7A2F8C0E2002495D1 /* XCRemoteSwiftPackageReference "lottie-spm" */,
 				C40DF9012FA86EEB000FE277 /* XCRemoteSwiftPackageReference "ios-places-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -990,14 +986,6 @@
 				kind = branch;
 			};
 		};
-		C4795F7A2F8C0E2002495D1 /* XCRemoteSwiftPackageReference "lottie-spm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/airbnb/lottie-spm.git";
-			requirement = {
-				kind = exactVersion;
-				version = 4.6.0;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1075,11 +1063,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C4795F662F8AE3D7002495D1 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseMessaging;
-		};
-		C4795F7B2F8C0E2002495D1 /* Lottie */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C4795F7A2F8C0E2002495D1 /* XCRemoteSwiftPackageReference "lottie-spm" */;
-			productName = Lottie;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

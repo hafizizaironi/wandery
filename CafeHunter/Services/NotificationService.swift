@@ -61,11 +61,21 @@ final class NotificationService: NSObject, ObservableObject {
         }
     }
 
-    func removeAllTokensForCurrentUser() {
+    /// Delete this user's FCM token docs and await server acknowledgement.
+    /// Must be awaited *before* `Auth.signOut()` — the `fcmTokens` rule is
+    /// `isSelf(uid)`, so a delete that lands after sign-out is rejected and the
+    /// token lingers, leaving the logged-out account still receiving pushes.
+    func removeAllTokensForCurrentUser() async {
         guard let uid = Auth.auth().currentUser?.uid else { return }
-        db.collection("users").document(uid).collection("fcmTokens").getDocuments { snap, _ in
-            snap?.documents.forEach { $0.reference.delete() }
-        }
+        guard let snap = try? await db.collection("users").document(uid)
+            .collection("fcmTokens").getDocuments() else { return }
+        for doc in snap.documents { try? await doc.reference.delete() }
+    }
+
+    /// Invalidate this device's FCM token so no push routes here until a new
+    /// token is issued on the next sign-in (via `saveCurrentToken()`).
+    func unregisterDeviceToken() async {
+        try? await Messaging.messaging().deleteToken()
     }
 
     private func tokenHash(_ token: String) -> String {

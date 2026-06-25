@@ -185,14 +185,21 @@ final class AuthService {
         try await request.commitChanges()
     }
 
-    func signOut() throws {
-        NotificationService.shared.removeAllTokensForCurrentUser()
+    func signOut() async throws {
+        // Remove this account's FCM token docs while still authenticated as it
+        // (the fcmTokens delete rule is isSelf(uid)); await so the delete is
+        // server-acked before sign-out, otherwise it's rejected and the
+        // logged-out account keeps receiving pushes on this device.
+        await NotificationService.shared.removeAllTokensForCurrentUser()
         // Drop the E2EE identity key so a different account on this device
         // can't reuse it. (Same-account re-login regenerates + republishes.)
         if let uid = Auth.auth().currentUser?.uid {
             MessageCrypto.deleteIdentityKey(uid: uid)
         }
         MessageCrypto.clearSharedIdentityKey()
+        // Kill the device-wide FCM token so any doc that survived can no longer
+        // deliver; the next sign-in regenerates one.
+        await NotificationService.shared.unregisterDeviceToken()
         try Auth.auth().signOut()
     }
 
@@ -215,7 +222,7 @@ final class AuthService {
         // cascade also deletes the fcmTokens subcollection, but unregistering
         // the FCM token locally now avoids a stale device receiving
         // notifications until the next launch.
-        NotificationService.shared.removeAllTokensForCurrentUser()
+        await NotificationService.shared.removeAllTokensForCurrentUser()
         MessageCrypto.deleteIdentityKey(uid: user.uid)
         MessageCrypto.clearSharedIdentityKey()
 

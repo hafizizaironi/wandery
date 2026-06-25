@@ -1,13 +1,6 @@
-import Lottie
 import SwiftUI
 
 enum NotoEmojiLottie {
-    private static let cdnBase = URL(string: "https://fonts.gstatic.com/s/e/notoemoji/latest/")!
-
-    static func lottieURL(notoCodepointHex: String) -> URL {
-        cdnBase.appendingPathComponent(notoCodepointHex).appendingPathComponent("lottie.json")
-    }
-
     /// Maps an emoji string to its Noto CDN slug via the full catalog.
     static func notoSlug(for reactionEmoji: String) -> String? {
         catalog.first(where: { $0.emoji == reactionEmoji })?.slug
@@ -41,13 +34,11 @@ struct NotoEmojiLottieView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Lottie path is disabled because the prebuilt `lottie-spm` binary is
-    /// crashing inside `LottieAnimation.from(data:strategy:)` for some
-    /// payloads (likely an ABI mismatch with the current Swift toolchain —
-    /// LLDB also warns: "compiled with a different Swift compiler"). The
-    /// crashes are hard faults inside the SDK that `try?` cannot catch, so
-    /// the only safe move is to skip the parser and always render the
-    /// system emoji `Text`. Re-enable once Lottie is upgraded.
+    /// Renders the system emoji as plain `Text`. This previously animated the
+    /// Noto emoji via Lottie, but the prebuilt `lottie-spm` binary hard-crashed
+    /// inside `LottieAnimation.from(data:strategy:)` (ABI mismatch with the
+    /// current Swift toolchain) — an uncatchable fault `try?` couldn't guard —
+    /// so the dependency was removed and we always render the system emoji.
     var body: some View {
         Text(fallbackEmoji)
             .font(.system(size: size))

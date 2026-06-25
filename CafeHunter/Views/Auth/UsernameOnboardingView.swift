@@ -69,10 +69,12 @@ struct UsernameOnboardingView: View {
     }
 
     private func signOut() {
-        do {
-            try authService.signOut()
-        } catch {
-            errorMessage = error.localizedDescription
+        Task { @MainActor in
+            do {
+                try await authService.signOut()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

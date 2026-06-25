@@ -72,12 +72,13 @@ async function sendToUser(uid, title, body, data = {}, options = {}) {
     .doc(uid)
     .collection("fcmTokens")
     .get();
-  const tokens = snap.docs.map((d) => d.data().token).filter(Boolean);
-  if (tokens.length === 0) return;
+  if (snap.empty) return;
   const dataPayload = Object.fromEntries(
     Object.entries(data).map(([k, v]) => [k, String(v)]),
   );
-  for (const token of tokens) {
+  for (const doc of snap.docs) {
+    const token = doc.data().token;
+    if (!token) continue;
     try {
       const message = {
         token,
@@ -93,6 +94,13 @@ async function sendToUser(uid, title, body, data = {}, options = {}) {
       await admin.messaging().send(message);
     } catch (e) {
       console.error("FCM send failed", e);
+      // Prune tokens FCM reports as dead so we stop pushing to logged-out /
+      // uninstalled devices and the doc stops lingering forever. Only on the
+      // definitive "not registered" code — not invalid-argument, which can be
+      // a transient/payload error that shouldn't nuke a still-good token.
+      if (e.code === "messaging/registration-token-not-registered") {
+        await doc.ref.delete().catch(() => {});
+      }
     }
   }
 }

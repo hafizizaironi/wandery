@@ -173,7 +173,7 @@ private struct PrimingContent {
             PrimingContent(
                 emoji: "🔔",
                 title: "Stay in\nthe loop.",
-                body: "Get a nudge when friends post, react, send a request, or message you. No spam — just your people.",
+                body: "Get a nudge when friends post, react, or message you — plus the occasional gentle reminder to go wander. Just the good stuff, promise.",
                 allowLabel: "Allow Notifications")
         case .contacts:
             PrimingContent(

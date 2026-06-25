@@ -79,25 +79,7 @@ actor VideoCache {
 
     /// Evict least-recently-modified files until under the size cap.
     private func trim() {
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
-        guard let files = try? fm.contentsOfDirectory(
-            at: Self.dir, includingPropertiesForKeys: keys
-        ) else { return }
-
-        var entries = files.compactMap { url -> (url: URL, date: Date, size: Int)? in
-            let v = try? url.resourceValues(forKeys: Set(keys))
-            guard let date = v?.contentModificationDate, let size = v?.fileSize else { return nil }
-            return (url, date, size)
-        }
-        var total = entries.reduce(0) { $0 + $1.size }
-        guard total > maxBytes else { return }
-
-        entries.sort { $0.date < $1.date }
-        for entry in entries {
-            if total <= maxBytes { break }
-            try? fm.removeItem(at: entry.url)
-            total -= entry.size
-        }
+        evictLeastRecentlyUsed(in: Self.dir, maxBytes: maxBytes)
     }
 
     nonisolated private static var dir: URL {
