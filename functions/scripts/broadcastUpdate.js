@@ -22,7 +22,7 @@ function arg(name, def) {
   return p ? p.slice(name.length + 1) : def;
 }
 const TITLE = arg("--title", "A new version is available 🔥");
-const BODY = arg("--body", "Update on TestFlight to keep hunting with everyone.");
+const BODY = arg("--body", "Update to the latest version to keep hunting with everyone.");
 const DATA = { type: "appUpdate" };
 
 admin.initializeApp();

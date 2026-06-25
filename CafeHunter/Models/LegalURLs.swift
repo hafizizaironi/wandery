@@ -32,33 +32,9 @@ enum LegalURLs {
     /// `https://apps.apple.com/app/id<APP_ID>`.
     static let appStoreURL = URL(string: "https://hafizizaironi.github.io/wandery/")!
 
-    /// Limited TestFlight beta invite for the final testing phase. Apple
-    /// caps public TestFlight links at 100 testers, so this is shared widely
-    /// while seats remain. Once the public App Store listing is live, point
-    /// invites at `appStoreURL` instead and retire this constant.
+    /// TestFlight join link — retained only for the admin marketing-mockup
+    /// QR/screenshot pages. Not used in any user-facing invite.
     static let testFlightInvite = URL(string: "https://testflight.apple.com/join/fhTBWC45")!
-
-    /// Subject line for invite emails sent from the share sheet.
-    static let inviteSubject = "Come hunt with me on Wandery 🔥"
-
-    /// Warm, on-brand invite copy for the share sheet. Shared as plain text
-    /// with the link inline — so the message + link travel intact across
-    /// every channel (Messages, WhatsApp, Instagram DMs, email), not only
-    /// the ones that render a URL preview. Makes the recipient feel
-    /// hand-picked for the beta rather than cold-blasted.
-    static var inviteShareText: String {
-        """
-        You're invited to Wandery 🔥
-
-        I'm building a little app for hunting down the best cafés & food spots — and sharing the finds with your circle. We're in the final stretch of testing with only a handful of beta seats left, so I saved one for you.
-
-        Jump in, post your finds, and tell me what feels off — you're part of the crew now. 🤝
-
-        \(testFlightInvite.absoluteString)
-
-        Stay hunting. 🔥
-        """
-    }
 
     /// Published support contact. Reviewers expect this to be reachable
     /// from inside the app — Profile → Settings → Contact support.
@@ -66,8 +42,8 @@ enum LegalURLs {
 
     /// `mailto:` URL with a friendly, pre-filled subject + body so reaching
     /// out feels like messaging a person, not filing a ticket. The prompt
-    /// nudges testers to describe what happened and attach a screenshot,
-    /// which is exactly the signal that's most useful during the beta.
+    /// nudges the user to describe what happened and attach a screenshot,
+    /// which is exactly the signal that's most useful for a bug report.
     /// Built with `URLComponents` so the emoji + newlines encode correctly.
     static var supportMailto: URL {
         var components = URLComponents()
@@ -93,12 +69,11 @@ enum LegalURLs {
     /// prompted on next launch. Date-based so the "what did they accept"
     /// answer is grep-able from Firestore.
     static let termsVersion = "2026-05-23"
-    // Re-bump to the analytics-disclosure date ("2026-06-08") ONLY in the
-    // release that actually ships product analytics to the App Store, and after
-    // the hosted privacy policy update is live — bumping re-prompts every user
-    // to re-accept (via the birthdate+consent screen). Held at 2026-05-23 for
-    // now so testers aren't re-prompted prematurely.
-    static let privacyVersion = "2026-05-23"
+    // Bumped to the analytics-disclosure date for the first public App Store
+    // release, which ships product analytics and points at the updated hosted
+    // privacy policy. Any carried-over user re-accepts via the birthdate+consent
+    // screen; new launch users see the current policy at onboarding.
+    static let privacyVersion = "2026-06-08"
 
     /// Minimum age required to use the app. 13 mirrors COPPA in the US and
     /// the most common floor across regions. Some EU member states require

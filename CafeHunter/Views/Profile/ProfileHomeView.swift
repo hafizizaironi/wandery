@@ -24,15 +24,6 @@ struct ProfileHomeView: View {
     /// floating panel. MainShellView responds by presenting the chat
     /// fullScreenCover already opened to this friend's thread.
     var onMessageFriend: (FriendRow) -> Void = { _ in }
-    /// Admin-only hook to re-present the "What's New" tutorial — bypasses
-    /// the once-per-release AppStorage gate so the admin can preview the
-    /// sheet without reinstalling. MainShellView toggles its own
-    /// `showWhatsNew` from this closure.
-    var onPreviewWhatsNew: () -> Void = {}
-    /// Re-open the one-time tester welcome sheet. MainShellView toggles its
-    /// own `showTesterWelcome`. Only surfaced on tester builds (the button
-    /// below is gated by `AppEnvironment.isTester`).
-    var onShowTesterWelcome: () -> Void = {}
     /// Admin-only hook to open the marketing-mockup screenshot pages.
     /// MainShellView toggles its own `showMarketingMockups`.
     var onShowMarketingMockups: () -> Void = {}
@@ -56,8 +47,6 @@ struct ProfileHomeView: View {
     /// render in a ForEach — the busy state has to be per-row.
     @State private var processingRequestId: String?
     @State private var signOutError       = ""
-    /// Transient "copied ✓" state for the invite card's copy-link fallback.
-    @State private var inviteCopied        = false
     @State private var showDeleteConfirm   = false
     @State private var isDeleting          = false
     @State private var deleteError         = ""
@@ -1169,9 +1158,6 @@ struct ProfileHomeView: View {
 
     private var settingsSection: some View {
         VStack(spacing: 18) {
-            // Founding-hunter highlight stays up top.
-            betaInviteCard
-
             // PERSONALIZE — how your posts look.
             settingsGroup("PERSONALIZE") {
                 feedStyleRow
@@ -1242,17 +1228,8 @@ struct ProfileHomeView: View {
                                 subtitle: "Inspect on-device photo scores") { showClassifierTuning = true }
                     settingsRow(icon: "chart.bar.xaxis", title: "Analytics",
                                 subtitle: "Usage & engagement") { showAdminAnalytics = true }
-                    settingsRow(icon: "sparkles.rectangle.stack.fill", title: "Preview What's New",
-                                subtitle: "Re-open the release tour") { onPreviewWhatsNew() }
                     settingsRow(icon: "photo.stack", title: "Marketing Mockups",
                                 subtitle: "Open the screenshot pages") { onShowMarketingMockups() }
-                }
-            }
-
-            // TESTER — re-open the one-time welcome intro (TestFlight/dev only).
-            if AppEnvironment.isTester {
-                settingsGroup("TESTER") {
-                    testerWelcomeRow
                 }
             }
 
@@ -1355,43 +1332,6 @@ struct ProfileHomeView: View {
         if !isStyleAvailable(feedCardStyle) { feedCardStyle = .plain }
     }
 
-    /// Tester-only "re-read the welcome intro" row.
-    private var testerWelcomeRow: some View {
-        Button {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            onShowTesterWelcome()
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "flame.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.accentAction)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Welcome message")
-                        .font(.subheadline).bold()
-                        .foregroundStyle(AppTheme.textPrimary)
-                    Text("Re-read the tester intro")
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.textSecondary)
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.textSecondary.opacity(0.6))
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(AppTheme.textPrimary.opacity(0.04))
-            .clipShape(.rect(cornerRadius: 14))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Re-read the welcome message")
-    }
-
     private func signOut() {
         Task { @MainActor in
             do {
@@ -1455,94 +1395,6 @@ struct ProfileHomeView: View {
                      systemImage: "lock.shield",
                      url: LegalURLs.privacyPolicy)
         }
-    }
-
-    /// Final-phase beta invite. Apple caps the public TestFlight link at 100
-    /// testers, so this leans on urgency ("seats are filling") + belonging
-    /// ("founding hunter") to turn every tester into a referrer. Shares the
-    /// warm copy in `LegalURLs.inviteShareText` through the system share sheet
-    /// so it travels intact across Messages, WhatsApp, IG DMs, and email.
-    @ViewBuilder
-    private var betaInviteCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "flame.fill")
-                    .font(.title3)
-                    .foregroundStyle(AppTheme.accentAction)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("You're a founding hunter 🔥")
-                        .font(.subheadline).bold()
-                        .foregroundStyle(AppTheme.textPrimary)
-                    Text("Wandery's better with your people on it.")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.textSecondary)
-                }
-            }
-
-            Text("We're in the final stretch of testing — and the beta is capped at 100 seats. Every friend you bring means more spots on the map and more bugs caught before launch. Pull in the people you'd actually love to hunt cafés with, and help us build this thing.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            ShareLink(
-                item: LegalURLs.inviteShareText,
-                subject: Text(LegalURLs.inviteSubject),
-                preview: SharePreview("Wandery beta invite")
-            ) {
-                HStack(spacing: 8) {
-                    Image(systemName: "paperplane.fill")
-                    Text("Invite friends to the beta").bold()
-                }
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.textOnAccent)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 13)
-                .background(AppTheme.accentAction)
-                .clipShape(.rect(cornerRadius: 12))
-            }
-            .simultaneousGesture(TapGesture().onEnded {
-                AnalyticsService.shared.log(.inviteContact, area: .profile)
-            })
-
-            // Bulletproof fallback. The system share sheet hands off to each
-            // target app's own extension, and some (notably WhatsApp) can show
-            // a blank compose panel or a dead "Next" — a third-party bug we
-            // can't fix from here. Copying the full invite text lets the user
-            // paste it into literally any chat, no extension involved.
-            Button {
-                UIPasteboard.general.string = LegalURLs.inviteShareText
-                AnalyticsService.shared.log(.inviteContact, area: .profile)
-                withAnimation(.easeInOut(duration: 0.2)) { inviteCopied = true }
-                Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    withAnimation(.easeInOut(duration: 0.2)) { inviteCopied = false }
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: inviteCopied ? "checkmark.circle.fill" : "doc.on.doc")
-                    Text(inviteCopied ? "Copied — paste it in any chat" : "Or copy the invite")
-                        .bold()
-                }
-                .font(.caption)
-                .foregroundStyle(AppTheme.accentAction)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(inviteCopied ? "Invite copied to clipboard" : "Copy the invite to paste anywhere")
-        }
-        .padding(16)
-        .background(AppTheme.accentAction.opacity(0.06))
-        .clipShape(.rect(cornerRadius: 16))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(AppTheme.accentAction.opacity(0.25), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Invite friends to the Wandery beta")
-        .accessibilityHint("Opens the share sheet with an invite link. The beta is limited to 100 testers.")
     }
 
     /// Warmer "talk to a human" surface than a bare link row. During the beta

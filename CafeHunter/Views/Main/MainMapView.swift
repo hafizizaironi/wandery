@@ -248,9 +248,9 @@ struct MainMapView: View {
     /// Set externally (e.g. from a feed pill tap) to fly to a place + open
     /// the detail sheet. Cleared once consumed.
     @Binding var pendingPlaceJumpId: String?
-    /// Pulse-binding from the WhatsNew "Show me the map →" jump. When set
-    /// true by the host, the view opens the Trending sheet and resets the
-    /// flag. No-op when already showing or when there's no friend pin to land on.
+    /// Pulse-binding host trigger to open the Trending sheet. When set true
+    /// by the host, the view opens the Trending sheet and resets the flag.
+    /// No-op when already showing or when there's no friend pin to land on.
     @Binding var pendingShowTrending: Bool
 
     @State private var friendPlacesService = FriendPlacesService()
@@ -460,7 +460,7 @@ struct MainMapView: View {
                 guard let placeId = newId else { return }
                 Task { await consumePlaceJump(placeId: placeId) }
             }
-            // External "open Trending" trigger from the WhatsNew sheet.
+            // External "open Trending" trigger (e.g. from the guided tour).
             .onChange(of: pendingShowTrending) { _, new in
                 guard new else { return }
                 pendingShowTrending = false
@@ -602,6 +602,8 @@ struct MainMapView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Discover trending places")
+            // Frame published for the first-run guided tour's spotlight.
+            .tourAnchor(.trending)
 
             // Toggle the friend-of-friend ("Circle") pin layer on the map.
             // Hidden entirely for users who've opted out of contributing —

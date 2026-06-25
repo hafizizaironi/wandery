@@ -152,6 +152,17 @@ struct ArcNavBar: View {
         .buttonStyle(.scalePress)
         .accessibilityLabel(tab.label)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        // Frame published for the first-run guided tour's spotlight.
+        .tourAnchor(tourTarget(tab.page))
+    }
+
+    /// Maps a shell page to its guided-tour spotlight target.
+    private func tourTarget(_ page: ShellPage) -> TourTarget {
+        switch page {
+        case .map:     return .mapTab
+        case .hero:    return .heroTab
+        case .profile: return .profileTab
+        }
     }
 
     // MARK: - Profile avatar

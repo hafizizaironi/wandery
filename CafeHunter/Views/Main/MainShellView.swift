@@ -72,30 +72,18 @@ struct MainShellView: View {
     @State private var showMyHunt = false
     @State private var friendPlacesService = FriendPlacesService()
 
-    /// "What's new" carousel — shown once per release. The release identity
-    /// is `whatsNewReleaseKey` in `WhatsNewSheet.swift`; bump that constant
-    /// for the next round of changes and the sheet shows again automatically
-    /// for everyone (existing users + brand-new accounts).
-    @AppStorage("whatsNew.lastSeenKey") private var whatsNewLastSeen: String = ""
-    @State private var showWhatsNew = false
     /// The achievement currently shown in the unlock-celebration toast (one at a
     /// time; the rest wait in `statsService.justUnlocked`).
     @State private var celebratingAchievement: Achievement?
-    /// One-time warm intro for testers (TestFlight/dev builds only — see
-    /// `AppEnvironment.isTester`). Auto-shows once per device, re-openable
-    /// from the "Welcome message" row in Profile.
-    @AppStorage("tester.welcome.seen") private var testerWelcomeSeen = false
-    @State private var showTesterWelcome = false
     /// Admin-only: full-screen marketing-mockup pages for App Store screenshots.
     @State private var showMarketingMockups = false
-    /// What's New jump targets that present their own surface here (rather than
-    /// switching tabs): the Home Screen widget tutorial + the Wandery Code screen.
-    @State private var showWidgetTutorial = false
-    @State private var showWanderyCode = false
-    /// Pulse-binding for the WhatsNew "Show me the map →" jump:
-    /// MainShellView sets this true, MainMapView watches and opens the
+    /// External "open Trending" trigger: set true → MainMapView opens the
     /// Trending sheet, then resets the flag.
     @State private var pendingShowTrending = false
+    /// First-run guided tour. `guidedTourSeen` latches it to once per install;
+    /// `tourStep` is the current step index (nil = not running). See GuidedTour.swift.
+    @AppStorage("guidedTour.seen") private var guidedTourSeen = false
+    @State private var tourStep: Int? = nil
     /// Set when arriving at a post via a notification tap; HeroPageView gives
     /// that post a brief highlight, then clears this.
     @State private var highlightedPostId: String?
@@ -179,8 +167,6 @@ struct MainShellView: View {
                                 photoURL: row.photoURL
                             )
                         },
-                        onPreviewWhatsNew:   { showWhatsNew = true },
-                        onShowTesterWelcome: { showTesterWelcome = true },
                         onShowMarketingMockups: { showMarketingMockups = true },
                         scrollToRequestsToken: scrollToRequestsToken
                     )
@@ -277,6 +263,25 @@ struct MainShellView: View {
             }
             .animation(.easeInOut(duration: 0.25), value: socialService.pendingUploadError)
             .animation(.easeInOut(duration: 0.25), value: socialService.isUploadingPost)
+            // Guided-tour spotlight — reads the `.tourAnchor` frames published by
+            // the navbar / feed / Trending control and dims everything but the
+            // current step's target. Above the navbar; below the achievement toast.
+            .overlayPreferenceValue(TourAnchorKey.self) { anchors in
+                GeometryReader { proxy in
+                    if let step = tourStep, step < tourSteps.count {
+                        let s = tourSteps[step]
+                        GuidedTourOverlay(
+                            step: s,
+                            index: step,
+                            count: tourSteps.count,
+                            frame: anchors[s.target].map { proxy[$0] },
+                            onNext: advanceTour,
+                            onSkip: endTour
+                        )
+                    }
+                }
+                .ignoresSafeArea()
+            }
         }
         .ignoresSafeArea()
         // Soft check for a newer published build (config/app) — best-effort.
@@ -383,78 +388,8 @@ struct MainShellView: View {
                 onClose:            { showFriendFindSheet = false }
             )
         }
-        .sheet(isPresented: $showWhatsNew) {
-            WhatsNewSheet(
-                onDismiss: {
-                    whatsNewLastSeen = whatsNewReleaseKey
-                    showWhatsNew = false
-                },
-                canUseThermalFrame: authService.canUseThermalFrame,
-                onJumpToFeature: { feature in
-                    // Mark the tour as seen + close, then route. The deeper
-                    // navs (Discover sheet / My Hunt overlay) fire after a
-                    // short delay so the page-switch animation lands first.
-                    whatsNewLastSeen = whatsNewReleaseKey
-                    showWhatsNew = false
-                    switch feature {
-                    case .camera:
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
-                            selectedPage = .hero
-                        }
-                    case .discover:
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
-                            selectedPage = .map
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
-                            pendingShowTrending = true
-                        }
-                    case .myHunt:
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
-                            selectedPage = .profile
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
-                            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
-                                showMyHunt = true
-                            }
-                        }
-                    case .widgets:
-                        // Present the in-app widget tutorial after the What's New
-                        // sheet has dismissed (avoids a present-while-dismissing clash).
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
-                            showWidgetTutorial = true
-                        }
-                    case .wanderyCode:
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
-                            showWanderyCode = true
-                        }
-                    }
-                },
-                testerCount: AuthService.testerCount
-            )
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showTesterWelcome) {
-            TesterWelcomeSheet(onDismiss: {
-                testerWelcomeSeen = true
-                showTesterWelcome = false
-            })
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-        }
         .fullScreenCover(isPresented: $showMarketingMockups) {
             MarketingMockupsView(onClose: { showMarketingMockups = false })
-        }
-        .sheet(isPresented: $showWidgetTutorial) {
-            WidgetTutorialView()
-        }
-        .fullScreenCover(isPresented: $showWanderyCode) {
-            WanderyCodeSpikeView(
-                displayName: whatsNewDisplayName,
-                username: socialService.profile?.username,
-                photoURL: authService.user?.photoURL?.absoluteString,
-                onClose: { showWanderyCode = false }
-            )
         }
         // Achievement unlock celebration — a confetti toast when a new badge
         // unlocks DURING the session (queued in `statsService.justUnlocked`).
@@ -494,35 +429,19 @@ struct MainShellView: View {
                 }
             }
 
-            // Tester welcome — once per device, testers only. Fires just
-            // before What's New so a fresh tester install sees the welcome
-            // first; What's New then defers to the next cold launch.
-            if AppEnvironment.isTester, !testerWelcomeSeen {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                    guard !testerWelcomeSeen else { return }
+            // First-run guided tour — once per install. Delayed so it never
+            // piles on top of the phone/contacts prompts; if one is up when the
+            // timer fires, defer to the next cold launch (the flag stays false
+            // until the user finishes or skips the tour).
+            if !guidedTourSeen {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    guard !guidedTourSeen, tourStep == nil else { return }
                     guard !showPhonePromptPanel,
                           !showContactsSuggestionPanel,
                           !showPhoneOnboardingSheet,
                           !showFriendFindSheet,
                           chatPresentation == nil else { return }
-                    showTesterWelcome = true
-                }
-            }
-
-            // What's New — once per release. Delayed longer than the phone/
-            // contacts prompts so it never piles on; if either is up when
-            // the timer fires, defer to next cold launch (the key won't
-            // update until the user dismisses *this* sheet).
-            if whatsNewLastSeen != whatsNewReleaseKey {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    guard whatsNewLastSeen != whatsNewReleaseKey else { return }
-                    guard !showPhonePromptPanel,
-                          !showContactsSuggestionPanel,
-                          !showPhoneOnboardingSheet,
-                          !showFriendFindSheet,
-                          !showTesterWelcome,
-                          chatPresentation == nil else { return }
-                    showWhatsNew = true
+                    startTour()
                 }
             }
         }
@@ -541,6 +460,58 @@ struct MainShellView: View {
     }
 
     private func trackArea() { AnalyticsService.shared.screen(effectiveArea) }
+
+    // MARK: - Guided first-run tour
+
+    /// The 5-step spotlight walkthrough. Each step's `onEnter` switches the tab
+    /// so the spotlit element is on-screen before the cutout lands.
+    private var tourSteps: [TourStep] {
+        [
+            TourStep(target: .mapTab, title: "Start on the map",
+                     body: "Find cafés and food spots near you — they all live here.",
+                     onEnter: { goToPage(.map) }),
+            TourStep(target: .heroTab, title: "Post a find",
+                     body: "Tap here to open the camera and share where you are.",
+                     onEnter: { goToPage(.hero) }),
+            TourStep(target: .feed, title: "Your feed",
+                     body: "Swipe up to scroll through your friends' latest finds.",
+                     onEnter: { goToPage(.hero) }),
+            TourStep(target: .trending, title: "See what's trending",
+                     body: "Tap Trending on the map for the spots everyone's hunting.",
+                     onEnter: { goToPage(.map) }),
+            TourStep(target: .profileTab, title: "Your profile",
+                     body: "Your hunt, badges, and streak — all in one place.",
+                     onEnter: { goToPage(.profile) }),
+        ]
+    }
+
+    private func goToPage(_ page: ShellPage) {
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+            selectedPage = page
+            pageProgress = CGFloat(page.rawValue)
+        }
+    }
+
+    private func startTour() {
+        tourStep = 0
+        tourSteps[0].onEnter()
+    }
+
+    private func advanceTour() {
+        guard let current = tourStep else { return }
+        let next = current + 1
+        if next < tourSteps.count {
+            tourStep = next
+            tourSteps[next].onEnter()
+        } else {
+            endTour()
+        }
+    }
+
+    private func endTour() {
+        tourStep = nil
+        guidedTourSeen = true
+    }
 
     // MARK: - Achievement unlock celebration (queue drain)
 
@@ -561,15 +532,6 @@ struct MainShellView: View {
             try? await Task.sleep(for: .milliseconds(400))
             showNextCelebrationIfIdle()
         }
-    }
-
-    /// Display name for the Wandery Code screen when opened from What's New.
-    /// Mirrors `ProfileHomeView.displayName` so the code looks identical
-    /// whether reached from Profile or the release tour.
-    private var whatsNewDisplayName: String {
-        authService.user?.displayName
-            ?? authService.user?.email?.components(separatedBy: "@").first
-            ?? "Explorer"
     }
 
     /// Triggered from a post-reference bubble in chat: dismiss the
